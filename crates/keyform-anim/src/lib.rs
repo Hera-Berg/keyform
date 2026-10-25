@@ -3,9 +3,11 @@
 //!
 //! spec: 60-animation/motion3-json.md, 70-advanced/viewer.md
 
+pub mod audio;
 pub mod expression;
 pub mod json;
 pub mod motion;
+pub mod motionsync;
 pub mod player;
 pub mod pose;
 pub mod tracking;

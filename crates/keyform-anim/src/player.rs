@@ -173,6 +173,13 @@ impl MotionPlayer {
         self.queue.clear();
     }
 
+    /// Seconds since the newest motion started (its sound position), once
+    /// it has been updated.
+    pub fn newest_elapsed(&self) -> Option<f64> {
+        let e = self.queue.last()?;
+        Some(self.clock - e.start?)
+    }
+
     /// Queues `motion`; existing entries get a pending fade-out (§3.2).
     pub fn start(&mut self, motion: Arc<Motion>, looped: bool) {
         for e in &mut self.queue {

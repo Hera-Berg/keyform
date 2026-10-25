@@ -650,11 +650,8 @@ impl KeyformApp {
         ui.checkbox(&mut o.eye_blink, "Automatic Eye-Blinking");
         ui.checkbox(&mut o.physics, "Apply Physics");
         ui.checkbox(&mut o.pose, "Enable Pose Switching");
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut o.motion_sync, "Motion-sync"),
-        )
-        .on_disabled_hover_text("Motion-sync lip sync is not implemented yet");
+        ui.checkbox(&mut o.motion_sync, "Motion-sync")
+            .on_hover_text("Lip sync from the playing motion's sound (motionsync3.json)");
         ui.checkbox(&mut o.idle_motion, "Idle Motion");
         ui.checkbox(&mut o.track_cursor, "Track cursor")
             .on_hover_text("Drag over the view: left button = primary, right = secondary target");

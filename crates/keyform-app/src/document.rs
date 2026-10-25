@@ -68,7 +68,8 @@ pub struct PlaybackOptions {
     pub eye_blink: bool,
     pub physics: bool,
     pub pose: bool,
-    /// Motion-sync lip sync (§3.1 step 11). TODO(Q-0013): stored only.
+    /// Motion-sync lip sync while a motion with a sound plays (§3.1 step 11,
+    /// §3.8).
     pub motion_sync: bool,
     /// Start a random motion whenever the queue is empty (§3.1 step 2).
     pub idle_motion: bool,
@@ -176,6 +177,12 @@ pub struct Document {
     breath: Breath,
     /// Cursor tracking state (viewer.md §3.6).
     pub tracking: Tracking,
+    /// Motion-sync settings of a runtime model (motionsync3.json).
+    pub motion_sync: Vec<keyform_anim::motionsync::Setting>,
+    /// Analysed frames per motion index (`None` = no usable sound).
+    motion_sync_frames: HashMap<usize, Option<(f32, Vec<keyform_anim::motionsync::FrameMap>)>>,
+    /// The motion most recently started (its model3.json entry).
+    playing_motion: Option<usize>,
     /// Index of the last motion started by idle playback.
     idle_last: Option<usize>,
     idle_rng: Rng,
@@ -262,6 +269,7 @@ impl Document {
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let lower = name.to_lowercase();
         let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let mut motion_sync = Vec::new();
         let (source, mut model, mut motions, mut expressions, mut pose, mut hit_areas) = (
             None,
             Model::default(),
@@ -385,6 +393,15 @@ impl Document {
                 }
             }
             hit_areas = m3.hit_areas.clone().unwrap_or_default();
+            if let Some(f) = &m3.motion_sync {
+                match std::fs::read_to_string(dir.join(f))
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| keyform_anim::motionsync::parse(&t).map_err(|e| e.to_string()))
+                {
+                    Ok(s) => motion_sync = s,
+                    Err(e) => log.error(format!("{f}: {e}")),
+                }
+            }
             source = Some(Source::Runtime {
                 model3: Some(Box::new(m3)),
                 dir: dir.clone(),
@@ -450,6 +467,9 @@ impl Document {
             motion_out: MotionOutputs::default(),
             breath: Breath::default(),
             tracking: Tracking::new(model.parameters.iter().map(|p| p.id.as_str())),
+            motion_sync,
+            motion_sync_frames: HashMap::new(),
+            playing_motion: None,
             idle_last: None,
             idle_rng: Rng::new(
                 std::time::SystemTime::now()
@@ -864,6 +884,7 @@ impl Document {
     pub fn play_motion(&mut self, i: usize) {
         if let Some(m) = self.motions.get(i).and_then(|m| m.motion.clone()) {
             self.motion_player.start(m, self.looping);
+            self.playing_motion = Some(i);
         }
     }
 
@@ -1037,7 +1058,44 @@ impl Document {
         self.idle_last = Some(i);
         if let Some(m) = self.motions[i].motion.clone() {
             self.motion_player.start(m, false);
+            self.playing_motion = Some(i);
         }
+    }
+
+    /// Analysed motion-sync frames of motion `i` (computed on first use):
+    /// the setting named by its model3.json `MotionSync` entry applied to
+    /// its `Sound`. spec: viewer.md §3.8
+    fn motion_sync_frames(
+        &mut self,
+        i: usize,
+        log: &mut Log,
+    ) -> Option<&(f32, Vec<keyform_anim::motionsync::FrameMap>)> {
+        if !self.motion_sync_frames.contains_key(&i) {
+            let computed = (|| {
+                let entry = self.motions.get(i)?;
+                let name = entry.reference.motion_sync.as_deref()?;
+                let setting = self
+                    .motion_sync
+                    .iter()
+                    .find(|s| s.name == name || s.id == name)?;
+                let sound = entry.reference.sound.as_deref()?;
+                let Source::Runtime { dir, .. } = &self.source else {
+                    return None;
+                };
+                let pcm = std::fs::read(dir.join(sound))
+                    .map_err(|e| e.to_string())
+                    .and_then(|d| keyform_anim::audio::read_wav(&d).map_err(|e| e.to_string()));
+                match pcm {
+                    Ok(pcm) => Some((setting.sample_rate, setting.frames(&pcm))),
+                    Err(e) => {
+                        log.warn(format!("{sound}: {e}"));
+                        None
+                    }
+                }
+            })();
+            self.motion_sync_frames.insert(i, computed);
+        }
+        self.motion_sync_frames.get(&i).and_then(Option::as_ref)
     }
 
     /// Advances playback by `dt` seconds and evaluates the model, in the
@@ -1063,6 +1121,13 @@ impl Document {
         self.expression_player.old_fading = o.old_fading;
         if o.idle_motion && !self.motion_player.is_playing() {
             self.start_idle_motion();
+        }
+        // Motion-sync data of the playing motion, analysed on first use.
+        let sync_motion = self
+            .playing_motion
+            .filter(|_| o.motion_sync && !self.motion_sync.is_empty());
+        if let Some(i) = sync_motion {
+            let _ = self.motion_sync_frames(i, log);
         }
         // 1. Restore the values saved after the previous motion update.
         self.live.clone_from(&self.saved);
@@ -1126,6 +1191,12 @@ impl Document {
                 if let Some(&pi) = self.part_index.get(&id) {
                     ov.part_opacity[pi] = Some(o);
                 }
+            }
+        }
+        // 11. Motion-sync lip sync at the sound position (viewer.md §3.8).
+        if let (Some(i), Some(t)) = (sync_motion, self.motion_player.newest_elapsed()) {
+            if let Some(Some((rate, frames))) = self.motion_sync_frames.get(&i) {
+                keyform_anim::motionsync::apply(frames, *rate, t * 1e6, &mut p);
             }
         }
         let ev = Evaluator::new(&self.model);
@@ -1406,5 +1477,103 @@ mod tests {
         doc.undo();
         doc.tick(0.0, &PlaybackOptions::default(), &mut log);
         assert_eq!(doc.frame.as_ref().unwrap().meshes[h].positions, before);
+    }
+
+    /// Motion-sync end to end on a scratch copy of a sample runtime folder:
+    /// a vowel sound opens the mouth while the motion plays.
+    #[test]
+    fn motion_sync_opens_the_mouth() {
+        let Ok(dirs) = std::env::var("KEYFORM_SAMPLES") else {
+            return;
+        };
+        let Some(model3) = std::env::split_paths(&dirs)
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().ends_with(".model3.json"))
+        else {
+            return;
+        };
+        let scratch =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-scratch/motion-sync");
+        let _ = std::fs::remove_dir_all(&scratch);
+        copy_dir(model3.parent().unwrap(), &scratch);
+        let path = scratch.join(model3.file_name().unwrap());
+        let mut m3 = Model3::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let Some((_, refs)) = m3.motions.as_mut().and_then(|g| g.first_mut()) else {
+            return;
+        };
+        let Some(r) = refs.first_mut() else { return };
+        r.sound = Some("vowel.wav".into());
+        r.motion_sync = Some("Mouth".into());
+        m3.motion_sync = Some("test.motionsync3.json".into());
+        std::fs::write(&path, m3.to_string_pretty()).unwrap();
+        std::fs::write(
+            scratch.join("test.motionsync3.json"),
+            r#"{"Version":1,"Meta":{"SettingCount":1,"Dictionary":[{"Id":"S","Name":"Mouth"}]},
+            "Settings":[{"Id":"S","AnalysisType":"CRI","UseCase":"Mouth",
+            "CubismParameters":[{"Name":"Open","Id":"ParamMouthOpenY","Min":0,"Max":1,"Damper":0,"Smooth":0}],
+            "AudioParameters":[{"Name":"A","Id":"A","Min":0,"Max":1,"Scale":1,"Enabled":true},
+              {"Name":"Silence","Id":"Silence","Min":0,"Max":1,"Scale":1,"Enabled":true}],
+            "Mappings":[{"Type":"Shape","Id":"A","Targets":[{"Id":"ParamMouthOpenY","Value":1}]},
+              {"Type":"Shape","Id":"Silence","Targets":[{"Id":"ParamMouthOpenY","Value":0}]}],
+            "PostProcessing":{"BlendRatio":100,"Smoothing":0,"SampleRate":30}}]}"#,
+        )
+        .unwrap();
+        // 0.5 s of a loud 220 Hz buzz with formants near "a", 16 kHz mono.
+        let rate = 16000u32;
+        let samples: Vec<i16> = (0..rate / 2)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let s = (std::f32::consts::TAU * 750.0 * t).sin() * 0.6
+                    + (std::f32::consts::TAU * 1200.0 * t).sin() * 0.3
+                    + (std::f32::consts::TAU * 220.0 * t).sin() * 0.1;
+                (s * 0.8 * 32767.0) as i16
+            })
+            .collect();
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+        for v in samples {
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(scratch.join("vowel.wav"), wav).unwrap();
+
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        assert_eq!(doc.motion_sync.len(), 1);
+        let Some(&mouth) = doc.param_index.get("ParamMouthOpenY") else {
+            return;
+        };
+        let o = PlaybackOptions::default();
+        doc.play_motion(0);
+        doc.tick(0.0, &o, &mut log);
+        let mut peak = 0.0f32;
+        for _ in 0..12 {
+            doc.tick(1.0 / 60.0, &o, &mut log);
+            peak = peak.max(doc.live[mouth]);
+        }
+        assert!(peak > 0.5, "mouth peak {peak}");
+        // With the toggle off nothing opens it (the motion itself may).
+        let off = PlaybackOptions {
+            motion_sync: false,
+            ..o
+        };
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        doc.play_motion(0);
+        doc.tick(0.0, &off, &mut log);
+        let mut peak_off = 0.0f32;
+        for _ in 0..12 {
+            doc.tick(1.0 / 60.0, &off, &mut log);
+            peak_off = peak_off.max(doc.live[mouth]);
+        }
+        eprintln!("motion-sync mouth peak {peak}, toggle off {peak_off}");
+        assert!(peak_off < peak, "{peak_off} vs {peak}");
     }
 }
