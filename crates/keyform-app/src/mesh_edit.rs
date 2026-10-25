@@ -31,6 +31,10 @@ pub struct MeshEdit {
     start: MeshGraph,
     /// Live triangulation of `graph`.
     pub preview: Vec<u32>,
+    /// The graph `preview` was computed for: only edge changes
+    /// re-triangulate, moving points keeps the triangles
+    /// (mesh-triangulation.md §3a).
+    triangulated: MeshGraph,
     /// Crossing constraint edges in the preview.
     pub unresolved: usize,
     /// Texture coordinates of the working points.
@@ -55,8 +59,9 @@ impl MeshEdit {
         let mut s = Self {
             mesh: i,
             start: graph.clone(),
+            triangulated: graph.clone(),
             graph,
-            preview: Vec::new(),
+            preview: a.indices.clone(),
             unresolved: 0,
             uvs: Vec::new(),
             remap: Remap::new(&a.positions, &a.indices),
@@ -77,15 +82,20 @@ impl MeshEdit {
         self.graph != self.start
     }
 
-    /// Re-triangulates the preview and recomputes the UVs.
+    /// Re-triangulates the preview after edge changes and recomputes the
+    /// UVs.
     fn refresh(&mut self) {
         let g = &self.graph;
-        match triangulate(&g.points, &g.mesh.edges, &g.mesh.edge_priority) {
-            Ok(t) => {
-                self.preview = t.indices;
-                self.unresolved = t.unresolved;
+        if !g.same_edges(&self.triangulated) {
+            let m = &g.mesh;
+            match triangulate(&g.points, &m.edges, &m.edge_priority, m.delaunay) {
+                Ok(t) => {
+                    self.preview = t.indices;
+                    self.unresolved = t.unresolved;
+                }
+                Err(_) => self.preview.clear(),
             }
-            Err(_) => self.preview.clear(),
+            self.triangulated = g.clone();
         }
         // UVs follow the positions like keyforms do (texture-atlas.md §4).
         self.uvs = (0..g.len())

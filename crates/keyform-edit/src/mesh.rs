@@ -182,10 +182,25 @@ impl MeshGraph {
         }
     }
 
-    /// Re-triangulates the graph (spec: mesh-triangulation.md §3): the
+    /// Whether `other` has the same points (by UID, in order) and edges:
+    /// then only positions differ, and the triangle list is kept
+    /// (spec: mesh-triangulation.md §3a).
+    pub fn same_edges(&self, other: &MeshGraph) -> bool {
+        self.uids == other.uids
+            && self.mesh.edges == other.mesh.edges
+            && self.mesh.edge_priority == other.mesh.edge_priority
+    }
+
+    /// Re-triangulates the graph (spec: mesh-triangulation.md §3, or the
+    /// face fans of §3a when `useDelaunayTriangulation` is off): the
     /// auto-triangulation edges are regenerated from the result.
     pub fn triangulate(&mut self) -> Result<Triangulated, MeshError> {
-        let t = triangulate(&self.points, &self.mesh.edges, &self.mesh.edge_priority)?;
+        let t = triangulate(
+            &self.points,
+            &self.mesh.edges,
+            &self.mesh.edge_priority,
+            self.mesh.delaunay,
+        )?;
         // Step 9: every triangle edge that isn't a constraint becomes an
         // auto-triangulation edge.
         let keep: Vec<bool> = self
@@ -220,24 +235,153 @@ fn retain_parallel<A, B>(a: &mut Vec<A>, b: &mut Vec<B>, keep: &[bool]) {
     b.retain(|_| *k.next().unwrap_or(&true));
 }
 
-/// Constrained Delaunay triangulation of `points` honouring every edge
-/// whose priority isn't auto-triangulation, keeping only the triangles
-/// enclosed by those edges, oriented to positive area.
-/// spec: 30-algorithms/mesh-triangulation.md §2–3
+/// Triangles of the graph: constrained Delaunay (§2–3) or, with
+/// `delaunay` off, face fans (§3a). spec: 30-algorithms/mesh-triangulation.md
 pub fn triangulate(
     points: &[f32],
     edges: &[[u32; 2]],
     priority: &[i8],
+    delaunay: bool,
 ) -> Result<Triangulated, MeshError> {
-    let n = points.len() / 2;
-    let constraints: Vec<[usize; 2]> = edges
+    if points.iter().any(|v| !v.is_finite()) {
+        return Err(MeshError::InvalidPoint);
+    }
+    let constraints = constraint_edges(points.len() / 2, edges, priority);
+    if delaunay {
+        triangulate_delaunay(points, &constraints)
+    } else {
+        Ok(triangulate_fans(points, &constraints))
+    }
+}
+
+/// The edges that must appear in the result: every edge whose priority
+/// isn't auto-triangulation (§1).
+fn constraint_edges(n: usize, edges: &[[u32; 2]], priority: &[i8]) -> Vec<[usize; 2]> {
+    edges
         .iter()
         .zip(priority.iter().chain(std::iter::repeat(&EDGE_NORMAL)))
         .filter(|&(e, &p)| {
             p != EDGE_AUTO_TRIANGULATION && (e[0] as usize) < n && (e[1] as usize) < n
         })
         .map(|(e, _)| [e[0] as usize, e[1] as usize])
-        .collect();
+        .collect()
+}
+
+/// The older non-Delaunay mode (`useDelaunayTriangulation` = false): faces
+/// traced on the constraint edges, kept by the top-most-vertex test, and
+/// fanned from their first vertex. Orientation is left as traced.
+/// spec: 30-algorithms/mesh-triangulation.md §3a
+fn triangulate_fans(points: &[f32], constraints: &[[usize; 2]]) -> Triangulated {
+    let n = points.len() / 2;
+    let p = |i: usize| (f64::from(points[2 * i]), f64::from(points[2 * i + 1]));
+    let angle = |from: usize, to: usize| {
+        let ((x0, y0), (x1, y1)) = (p(from), p(to));
+        (y1 - y0).atan2(x1 - x0)
+    };
+    // Half-edges in edge order, both directions; `out[v]` lists v's.
+    let mut half: Vec<[usize; 2]> = Vec::new();
+    let mut seen = HashSet::new();
+    for &[a, b] in constraints {
+        if a != b && seen.insert((a.min(b), a.max(b))) {
+            half.push([a, b]);
+            half.push([b, a]);
+        }
+    }
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (h, e) in half.iter().enumerate() {
+        out[e[0]].push(h);
+    }
+    let mut used = vec![false; half.len()];
+    let mut faces: Vec<Vec<usize>> = Vec::new();
+    let two_pi = std::f64::consts::TAU;
+    for start in 0..half.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let [s, mut v] = half[start];
+        let mut prev = s;
+        let mut walk = vec![s, v];
+        for _ in 0..2 * n {
+            if v == s {
+                walk.pop();
+                faces.push(std::mem::take(&mut walk));
+                break;
+            }
+            // Leave by the unused half-edge with the smallest
+            // (back − out) normalised to [0, 2π]; never straight back.
+            let back = angle(v, prev);
+            let next = out[v]
+                .iter()
+                .copied()
+                .filter(|&h| !used[h] && half[h][1] != prev)
+                .map(|h| {
+                    let mut d = back - angle(v, half[h][1]);
+                    while d < 0.0 {
+                        d += two_pi;
+                    }
+                    while d > two_pi {
+                        d -= two_pi;
+                    }
+                    (h, d)
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            let Some((h, _)) = next else { break };
+            used[h] = true;
+            let w = half[h][1];
+            (prev, v) = (v, w);
+            if w != s {
+                // A repeated vertex closes a sub-loop: cut it off.
+                if let Some(i) = walk.iter().position(|&x| x == w) {
+                    faces.push(walk.split_off(i));
+                }
+            }
+            walk.push(w);
+        }
+    }
+    let mut indices = Vec::new();
+    for f in faces {
+        if f.len() < 3 || f.len() > 1000 {
+            continue;
+        }
+        // The vertex with the greatest y, first reached walking cyclically
+        // from the last vertex.
+        let m = f.len();
+        let mut best = m - 1;
+        for k in (0..m).map(|k| (m - 1 + k) % m) {
+            if p(f[k]).1 > p(f[best]).1 {
+                best = k;
+            }
+        }
+        let (v, a, b) = (f[best], f[(best + m - 1) % m], f[(best + 1) % m]);
+        let ((xv, yv), (xa, ya), (xb, yb)) = (p(v), p(a), p(b));
+        let keep = if ya == yv {
+            xv < xa
+        } else if yb == yv {
+            xv > xb
+        } else {
+            angle(v, b) < angle(v, a)
+        };
+        if keep {
+            for i in 1..m - 1 {
+                indices.extend_from_slice(&[f[0] as u32, f[i] as u32, f[i + 1] as u32]);
+            }
+        }
+    }
+    Triangulated {
+        indices,
+        unresolved: 0,
+    }
+}
+
+/// Constrained Delaunay triangulation of `points` honouring the
+/// constraint edges, keeping only the triangles enclosed by them, oriented
+/// to positive area. spec: 30-algorithms/mesh-triangulation.md §2–3
+fn triangulate_delaunay(
+    points: &[f32],
+    constraints: &[[usize; 2]],
+) -> Result<Triangulated, MeshError> {
+    let n = points.len() / 2;
     let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
     let mut handle: Vec<Option<FixedVertexHandle>> = vec![None; n];
     // Vertex handle → the first point inserted there (coincident points
@@ -259,7 +403,7 @@ pub fn triangulate(
         Ok(())
     };
     // Steps 2 and 5: constraint endpoints first, then the other points.
-    for c in &constraints {
+    for c in constraints {
         insert(&mut cdt, &mut handle, c[0])?;
         insert(&mut cdt, &mut handle, c[1])?;
     }
@@ -268,7 +412,7 @@ pub fn triangulate(
     }
     // Steps 3–4 (spade restores the Delaunay property itself).
     let mut unresolved = 0;
-    for c in &constraints {
+    for c in constraints {
         let (Some(a), Some(b)) = (handle[c[0]], handle[c[1]]) else {
             continue;
         };
@@ -281,8 +425,8 @@ pub fn triangulate(
             unresolved += 1;
         }
     }
-    // Step 8: drop the triangles outside every outline. TODO(Q-0015): some
-    // sample meshes store fewer triangles than this keeps. A triangle is
+    // Step 8: drop the triangles outside every outline. Stored triangle
+    // lists with fewer triangles get filled by this (§3a, as the reference). A triangle is
     // inside an outline (a bounded face of the constraint graph) exactly
     // when it can't be reached from the outer face without crossing a
     // constraint edge; with no outlines every triangle is kept.
@@ -473,7 +617,15 @@ pub fn set_mesh(m: &mut Model, i: usize, g: &MeshGraph) -> Result<Triangulated, 
         return Err(MeshError::InvalidPoint);
     }
     let mut g = g.clone();
-    let t = g.triangulate()?;
+    // Moving points alone keeps the triangle list (§3a).
+    let t = if g.same_edges(&MeshGraph::of(&old)) {
+        Triangulated {
+            indices: old.indices.clone(),
+            unresolved: 0,
+        }
+    } else {
+        g.triangulate()?
+    };
     let n = g.len();
 
     // Glue pairs are stored by vertex UID.
@@ -616,7 +768,7 @@ mod tests {
             [0.0, 10.0],
         ];
         let edges = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0]];
-        let t = triangulate(&graph(&pts, &edges).points, &edges, &[EDGE_NORMAL; 6]).unwrap();
+        let t = triangulate(&graph(&pts, &edges).points, &edges, &[EDGE_NORMAL; 6], true).unwrap();
         assert_eq!(t.indices.len() / 3, 4);
         assert!(!tri_set(&t.indices).contains(&[2, 3, 4]));
         // The constraint (3,4)–(2,3) are triangle edges, and every
@@ -642,7 +794,7 @@ mod tests {
             [4.0, 6.0],
         ];
         let g = graph(&pts, &[]);
-        let t = triangulate(&g.points, &[], &[]).unwrap();
+        let t = triangulate(&g.points, &[], &[], true).unwrap();
         assert_eq!(t.indices.len() / 3, 4);
         assert!(positive(&g.points, &t.indices));
     }
@@ -652,7 +804,7 @@ mod tests {
         let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let edges = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2], [1, 3]];
         let g = graph(&pts, &edges);
-        let t = triangulate(&g.points, &edges, &[EDGE_LOCKED; 6]).unwrap();
+        let t = triangulate(&g.points, &edges, &[EDGE_LOCKED; 6], true).unwrap();
         assert_eq!(t.unresolved, 1);
         assert_eq!(t.indices.len(), 6);
     }
@@ -660,7 +812,7 @@ mod tests {
     #[test]
     fn invalid_points_fail() {
         let edges = [[0, 1]];
-        let r = triangulate(&[0.0, 0.0, f32::NAN, 1.0], &edges, &[EDGE_NORMAL]);
+        let r = triangulate(&[0.0, 0.0, f32::NAN, 1.0], &edges, &[EDGE_NORMAL], true);
         assert_eq!(r, Err(MeshError::InvalidPoint));
     }
 
@@ -749,6 +901,52 @@ mod tests {
             assert!((a.uvs[2 * k] - p[0] / 20.0).abs() < 1e-6);
             assert!((a.uvs[2 * k + 1] - p[1] / 20.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn moving_points_keeps_triangles() {
+        let mut m = Model::default();
+        let mut a = quad_mesh();
+        // A stored list that re-triangulation would change (one triangle).
+        a.indices = vec![0, 1, 2];
+        m.art_meshes.push(Arc::new(a));
+        let mut g = MeshGraph::of(&m.art_meshes[0]);
+        g.set_point(2, [11.0, 12.0]);
+        set_mesh(&mut m, 0, &g).unwrap();
+        assert_eq!(m.art_meshes[0].indices, vec![0, 1, 2]);
+        assert_eq!(m.art_meshes[0].positions[4..6], [11.0, 12.0]);
+        // An edge change re-triangulates (and fills).
+        let mut g = MeshGraph::of(&m.art_meshes[0]);
+        g.add_edge(1, 3, EDGE_NORMAL);
+        g.mesh.edge_priority[4] = EDGE_AUTO_TRIANGULATION;
+        set_mesh(&mut m, 0, &g).unwrap();
+        assert_eq!(m.art_meshes[0].indices.len(), 6);
+    }
+
+    #[test]
+    fn face_fans() {
+        // A square split by a diagonal, traced and fanned (§3a).
+        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let edges = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]];
+        let g = graph(&pts, &edges);
+        let t = triangulate(&g.points, &edges, &[EDGE_NORMAL; 5], false).unwrap();
+        assert_eq!(tri_set(&t.indices), HashSet::from([[0, 1, 2], [0, 2, 3]]));
+        // A pentagon is one fan of three triangles; the outer face is
+        // dropped.
+        let pts = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [12.0, 8.0],
+            [5.0, 12.0],
+            [-2.0, 8.0],
+        ];
+        let edges = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]];
+        let g = graph(&pts, &edges);
+        let t = triangulate(&g.points, &edges, &[EDGE_NORMAL; 5], false).unwrap();
+        assert_eq!(t.indices.len(), 9);
+        // An open chain has no face.
+        let t = triangulate(&g.points, &edges[..3], &[EDGE_NORMAL; 3], false).unwrap();
+        assert!(t.indices.is_empty());
     }
 
     #[test]

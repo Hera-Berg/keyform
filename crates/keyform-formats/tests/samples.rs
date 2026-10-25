@@ -591,8 +591,9 @@ fn cmo3_save_after_structural_edits() {
 }
 
 /// Re-triangulating an unchanged editable mesh reproduces the stored
-/// triangles (spec: 30-algorithms/mesh-triangulation.md), and the graph's
-/// points are the art mesh's base positions (10-formats/cmo3.md §4).
+/// triangles (spec: 30-algorithms/mesh-triangulation.md §2–3, face fans
+/// §3a). Stored lists that are a strict subset (some hiyori meshes) get
+/// filled, as in the reference (Q-0015).
 #[test]
 fn retriangulation_matches_samples() {
     use keyform_edit::mesh::MeshGraph;
@@ -610,6 +611,7 @@ fn retriangulation_matches_samples() {
     for path in sample_files("cmo3") {
         let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
         let (mut same, mut total, mut tris, mut tri_same) = (0, 0, 0, 0);
+        let (mut fan_total, mut fan_exact) = (0, 0);
         let mut worst = Vec::new();
         for a in &doc.model.art_meshes {
             if a.mesh.edges.is_empty() {
@@ -619,6 +621,20 @@ fn retriangulation_matches_samples() {
             let mut g = MeshGraph::of(a);
             let t = g.triangulate().unwrap();
             let (want, got) = (set(&a.indices), set(&t.indices));
+            if !a.mesh.delaunay {
+                // Face fans keep their traced orientation (§3a): compare
+                // the triangles with their vertex order (up to rotation).
+                let cyc = |ix: &[u32]| -> HashSet<[u32; 3]> {
+                    ix.chunks_exact(3)
+                        .map(|t| {
+                            let k = (0..3).min_by_key(|&k| t[k]).unwrap_or(0);
+                            [t[k], t[(k + 1) % 3], t[(k + 2) % 3]]
+                        })
+                        .collect()
+                };
+                fan_total += 1;
+                fan_exact += usize::from(cyc(&a.indices) == cyc(&t.indices));
+            }
             tris += want.len();
             tri_same += want.intersection(&got).count();
             if want == got {
@@ -639,6 +655,12 @@ fn retriangulation_matches_samples() {
             &worst[..worst.len().min(5)]
         );
         assert!(tri_same * 100 >= tris * 97, "{tri_same}/{tris}");
+        if fan_total > 0 {
+            eprintln!(
+                "  face-fan meshes with identical oriented triangles: {fan_exact}/{fan_total}"
+            );
+            assert_eq!(fan_exact, fan_total, "{path:?}");
+        }
     }
 }
 
