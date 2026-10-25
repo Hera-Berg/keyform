@@ -1,0 +1,914 @@
+//! `.cmo3` model projects: CAFF archive + `main.xml` object graph → [`Model`].
+//!
+//! The parsed XML document is kept alongside the typed model, so saving an
+//! unmodified project reproduces the original document exactly.
+//! spec: 10-formats/cmo3.md, 10-formats/cmo3-schema.md, 20-model/object-model.md
+
+use std::collections::HashMap;
+
+use keyform_model::*;
+
+use crate::caff::CaffArchive;
+use crate::error::{invalid, FormatError, Result};
+use crate::graph::{parse_f32, Obj, ObjectGraph};
+use crate::xml::XmlDocument;
+
+/// Highest root schema version this reader knows. spec: cmo3.md §2
+pub const CMODEL_SOURCE_VERSION: u32 = 15;
+/// spec: 20-model/object-model.md §1 — ROOT, NOT INITIALIZED and unresolved
+/// target GUIDs all mean "attached to the canvas" on read.
+pub use keyform_model::{NOT_INITIALIZED_GUID as NULL_GUID, ROOT_DEFORMER_GUID};
+
+/// A loaded project: archive, lossless document and the typed model.
+pub struct Cmo3Document {
+    pub archive: CaffArchive,
+    pub xml: XmlDocument,
+    pub model: Model,
+    /// Non-fatal inconsistencies found while loading.
+    pub warnings: Vec<String>,
+}
+
+impl Cmo3Document {
+    pub fn read(data: &[u8]) -> Result<Self> {
+        let archive = CaffArchive::read(data)?;
+        let xml_bytes = &archive
+            .main_xml()
+            .ok_or_else(|| FormatError::Invalid("archive has no main.xml".into()))?
+            .data;
+        let xml = XmlDocument::parse(xml_bytes)?;
+        let mut warnings = Vec::new();
+        if !archive.guard_ok {
+            warnings.push("archive guard bytes missing".into());
+        }
+        let model = {
+            let g = ObjectGraph::new(&xml)?;
+            let mut l = Loader {
+                g: &g,
+                archive: &archive,
+                warnings: &mut warnings,
+                idx: Index::default(),
+            };
+            l.load()?
+        };
+        Ok(Self {
+            archive,
+            xml,
+            model,
+            warnings,
+        })
+    }
+
+    /// Writes the project back (the document as loaded; edits to `model` are
+    /// not yet written back).
+    pub fn write(&self) -> Result<Vec<u8>> {
+        let mut archive = self.archive.clone();
+        let xml = self.xml.write();
+        match archive.entries.iter_mut().find(|e| e.tag == "main_xml") {
+            Some(e) => e.data = xml,
+            None => return invalid("archive has no main.xml"),
+        }
+        archive.write()
+    }
+}
+
+/// moc3 header version of an export-dialog `FormatVersion` constant.
+/// spec: 70-advanced/export-dialog.md §1.1 (`UNSELECTED` is replaced by the
+/// default, so it maps to `None` here).
+fn moc_version_of(name: &str) -> Option<u8> {
+    Some(match name.strip_prefix("VERSION_")? {
+        "30" => 1,
+        "33" => 2,
+        "40" => 3,
+        "42" => 4,
+        "50" => 5,
+        "53" => 6,
+        _ => return None,
+    })
+}
+
+#[derive(Default)]
+struct Index {
+    params: HashMap<String, ParamIndex>,
+    groups: HashMap<String, usize>,
+    parts: HashMap<String, PartIndex>,
+    deformers: HashMap<String, DeformerIndex>,
+    meshes: HashMap<String, MeshIndex>,
+    glues: HashMap<String, GlueIndex>,
+    /// CImageResource identity → texture index.
+    texture_images: HashMap<*const crate::xml::Element, usize>,
+    textures_by_guid: HashMap<String, usize>,
+}
+
+struct Loader<'a, 'd> {
+    g: &'a ObjectGraph<'d>,
+    archive: &'a CaffArchive,
+    warnings: &'a mut Vec<String>,
+    idx: Index,
+}
+
+type O<'g, 'd> = Obj<'g, 'd>;
+
+fn color(o: Option<O>, default: Color) -> Result<Color> {
+    let Some(o) = o else { return Ok(default) };
+    Ok([
+        o.f32("red")?.unwrap_or(default[0]),
+        o.f32("green")?.unwrap_or(default[1]),
+        o.f32("blue")?.unwrap_or(default[2]),
+        o.f32("alpha")?.unwrap_or(default[3]),
+    ])
+}
+
+impl<'a, 'd> Loader<'a, 'd> {
+    fn warn(&mut self, msg: impl Into<String>) {
+        self.warnings.push(msg.into());
+    }
+
+    fn load(&mut self) -> Result<Model> {
+        let doc = self.g.document();
+        let root = self.g.main()?;
+        if root.tag() != "CModelSource" {
+            return invalid(format!(
+                "root object is <{}>, expected <CModelSource>",
+                root.tag()
+            ));
+        }
+        if let Some(v) = doc.version_of("CModelSource") {
+            if v > CMODEL_SOURCE_VERSION {
+                self.warn(format!(
+                    "CModelSource version {v} is newer than supported ({CMODEL_SOURCE_VERSION})"
+                ));
+            }
+        }
+
+        let mut m = Model {
+            guid: root.guid("guid")?.unwrap_or_default().to_owned(),
+            name: root.string("name")?.unwrap_or_default(),
+            ..Model::default()
+        };
+        if let Some(c) = root.field("canvas")? {
+            let w = c.i32("pixelWidth")?.unwrap_or(1280);
+            let h = c.i32("pixelHeight")?.unwrap_or(720);
+            if !(1..=30000).contains(&w) || !(1..=30000).contains(&h) {
+                return invalid(format!("canvas size {w}×{h} out of range"));
+            }
+            m.canvas = Canvas {
+                width: w as u32,
+                height: h as u32,
+            };
+        }
+        m.target_version = root.i32("targetVersionNo")?.unwrap_or(0);
+
+        self.load_textures(&root, &mut m)?;
+        self.load_parameters(&root, &mut m)?;
+
+        // Index every object by GUID first: references go in all directions.
+        let part_objs = self.sources(&root, "partSourceSet")?;
+        let deformer_objs = self.sources(&root, "deformerSourceSet")?;
+        let drawable_objs = self.sources(&root, "drawableSourceSet")?;
+        let affecter_objs = self.sources(&root, "affecterSourceSet")?;
+
+        for (i, p) in part_objs.iter().enumerate() {
+            self.idx
+                .parts
+                .insert(p.guid("guid")?.unwrap_or_default().to_owned(), i);
+        }
+        for (i, d) in deformer_objs.iter().enumerate() {
+            self.idx
+                .deformers
+                .insert(d.guid("guid")?.unwrap_or_default().to_owned(), i);
+        }
+        let meshes: Vec<O> = drawable_objs
+            .iter()
+            .copied()
+            .filter(|d| {
+                let keep = d.tag() == "CArtMeshSource";
+                keep
+            })
+            .collect();
+        let skipped = drawable_objs.len() - meshes.len();
+        if skipped > 0 {
+            self.warn(format!(
+                "{skipped} drawables of unsupported kinds (art paths) skipped"
+            ));
+        }
+        for (i, d) in meshes.iter().enumerate() {
+            self.idx
+                .meshes
+                .insert(d.guid("guid")?.unwrap_or_default().to_owned(), i);
+        }
+        let glues: Vec<O> = affecter_objs
+            .iter()
+            .copied()
+            .filter(|a| a.tag() == "CGlueSource")
+            .collect();
+        for (i, a) in glues.iter().enumerate() {
+            self.idx
+                .glues
+                .insert(a.guid("guid")?.unwrap_or_default().to_owned(), i);
+        }
+
+        for p in &part_objs {
+            m.parts.push(self.load_part(p, &m)?);
+        }
+        m.root_part = match root.field("rootPart")? {
+            Some(rp) => rp
+                .guid("guid")?
+                .and_then(|g| self.idx.parts.get(g).copied()),
+            None => None,
+        };
+        for d in &deformer_objs {
+            m.deformers.push(self.load_deformer(d, &m)?);
+        }
+        for d in &meshes {
+            m.art_meshes.push(self.load_art_mesh(d, &m)?);
+        }
+        for a in &glues {
+            m.glues.push(self.load_glue(a, &m)?);
+        }
+        self.check_deformer_cycles(&mut m);
+
+        if let Some(opts) = root.field("modelOptions")? {
+            if let Some(e) = opts.own_field("MODEL_EXPORT_SETTING_KEY")? {
+                m.export = ExportSettings {
+                    moc_version: e.enum_value("version")?.and_then(moc_version_of),
+                    origin_normalized: [
+                        e.f32("normalOriginX")?.unwrap_or(0.5),
+                        e.f32("normalOriginY")?.unwrap_or(0.5),
+                    ],
+                    pixels_per_unit: e.f32("pixelsPerUnit")?.filter(|v| *v > 0.0),
+                    export_invisible_parts: e.bool("exportInvisiblePart")?.unwrap_or(false),
+                    export_invisible_art_meshes: e.bool("exportInvisibleArtMesh")?.unwrap_or(false),
+                    export_sketch_parts: e.bool("exportSketchPart")?.unwrap_or(false),
+                    extend_edge_color: e.bool("enableExtendEdgeColor")?.unwrap_or(true),
+                };
+            }
+        }
+        if let Some(info) = root.field("modelInfo")? {
+            if let Some(groups) = info
+                .field("_effectParameterGroups")?
+                .map(|e| e.field("_parameterGroups"))
+                .transpose()?
+                .flatten()
+            {
+                for entry in groups.items()? {
+                    let kind = entry.enum_value("key")?.unwrap_or_default();
+                    let list: Vec<ParamIndex> = entry
+                        .list("value")?
+                        .iter()
+                        .filter_map(|p| {
+                            p.attr("uuid").and_then(|u| self.idx.params.get(u).copied())
+                        })
+                        .collect();
+                    match kind {
+                        "EYE_BLINK" => m.eye_blink_parameters = list,
+                        "LIPSYNC" => m.lip_sync_parameters = list,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(m)
+    }
+
+    fn sources(&self, root: &O<'a, 'd>, set: &str) -> Result<Vec<O<'a, 'd>>> {
+        match root.field(set)? {
+            Some(s) => s.list("_sources"),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn load_textures(&mut self, root: &O<'a, 'd>, m: &mut Model) -> Result<()> {
+        let Some(tm) = root.field("textureManager")? else {
+            return Ok(());
+        };
+        for atlas in tm.list("_textureAtlases")? {
+            let guid = atlas.guid("guid")?.unwrap_or_default().to_owned();
+            let image = atlas.field("cachedAtlasImage")?;
+            let png = match image {
+                Some(img) => self.image_payload(&img)?,
+                None => None,
+            };
+            let ti = m.textures.len();
+            if let Some(img) = image {
+                self.idx.texture_images.insert(img.identity(), ti);
+            }
+            self.idx.textures_by_guid.insert(guid.clone(), ti);
+            m.textures.push(Texture {
+                guid,
+                name: atlas.string("name")?.unwrap_or_default(),
+                width: atlas.i32("width")?.unwrap_or(0).max(0) as u32,
+                height: atlas.i32("height")?.unwrap_or(0).max(0) as u32,
+                png,
+                locked: atlas.bool("lockCachedAtlasImage")?.unwrap_or(false),
+            });
+        }
+        Ok(())
+    }
+
+    /// PNG bytes of a `CImageResource`. spec: cmo3.md §3
+    fn image_payload(&mut self, img: &O<'a, 'd>) -> Result<Option<Vec<u8>>> {
+        let Some(path) = img.field("imageFileBuf")?.and_then(|f| f.attr("path")) else {
+            return Ok(None);
+        };
+        match self.archive.entry(path) {
+            Some(e) => Ok(Some(e.data.clone())),
+            None => {
+                self.warn(format!("image payload {path:?} missing from archive"));
+                Ok(None)
+            }
+        }
+    }
+
+    fn load_parameters(&mut self, root: &O<'a, 'd>, m: &mut Model) -> Result<()> {
+        let params = match root.field("parameterSourceSet")? {
+            Some(s) => s.list("_sources")?,
+            None => Vec::new(),
+        };
+        for p in &params {
+            let guid = p.guid("guid")?.unwrap_or_default().to_owned();
+            let id = p.id("id")?.unwrap_or_default().to_owned();
+            let min = p.f32("minValue")?.unwrap_or(0.0);
+            let max = p.f32("maxValue")?.unwrap_or(1.0);
+            let default = p.f32("defaultValue")?.unwrap_or(0.0);
+            let decimal_places = p.i32("decimalPlaces")?.unwrap_or(3);
+            let snap_epsilon = p
+                .f32("snapEpsilon")?
+                .filter(|e| *e > 0.0)
+                .unwrap_or_else(|| 10f32.powi(-decimal_places.clamp(0, 10)));
+            let kind = match p.enum_value("paramType")? {
+                Some("MORPH_TARGET") => ParameterKind::BlendShape,
+                _ => ParameterKind::Normal,
+            };
+            self.idx.params.insert(guid.clone(), m.parameters.len());
+            m.parameters.push(Parameter {
+                guid,
+                name: p.string("name")?.unwrap_or_else(|| id.clone()),
+                id,
+                description: p.string("description")?.unwrap_or_default(),
+                min,
+                max,
+                default,
+                repeat: p.bool("isRepeat")?.unwrap_or(false),
+                kind,
+                decimal_places,
+                snap_epsilon,
+                combined: p.bool("combined")?.unwrap_or(false),
+                group: None,
+            });
+        }
+
+        // Groups: folders of the Parameter palette.
+        let groups = match root.field("parameterGroupSet")? {
+            Some(s) => s.list("_groups")?,
+            None => Vec::new(),
+        };
+        let root_group = root.field("rootParameterGroup")?;
+        let root_guid = match root_group {
+            Some(r) => r.guid("guid")?.map(str::to_owned),
+            None => None,
+        };
+        let mut group_objs = Vec::new();
+        for gr in &groups {
+            let guid = gr.guid("guid")?.unwrap_or_default().to_owned();
+            if Some(&guid) == root_guid.as_ref() {
+                continue;
+            }
+            self.idx
+                .groups
+                .insert(guid.clone(), m.parameter_groups.len());
+            m.parameter_groups.push(ParameterGroup {
+                guid,
+                id: gr.id("id")?.unwrap_or_default().to_owned(),
+                name: gr.string("name")?.unwrap_or_default(),
+                parent: None,
+                children: Vec::new(),
+            });
+            group_objs.push(*gr);
+        }
+        for (gi, gr) in group_objs.iter().enumerate() {
+            let children = self.param_entries(gr)?;
+            for c in &children {
+                match *c {
+                    ParamEntry::Parameter(p) => m.parameters[p].group = Some(gi),
+                    ParamEntry::Group(g) => m.parameter_groups[g].parent = Some(gi),
+                }
+            }
+            m.parameter_groups[gi].children = children;
+        }
+        m.root_parameter_entries = match root_group {
+            Some(r) => self.param_entries(&r)?,
+            None => (0..m.parameters.len()).map(ParamEntry::Parameter).collect(),
+        };
+        Ok(())
+    }
+
+    fn param_entries(&self, group: &O<'a, 'd>) -> Result<Vec<ParamEntry>> {
+        let mut out = Vec::new();
+        for c in group.list("_childGuids")? {
+            let Some(uuid) = c.attr("uuid") else { continue };
+            match c.tag() {
+                "CParameterGuid" => {
+                    if let Some(&p) = self.idx.params.get(uuid) {
+                        out.push(ParamEntry::Parameter(p));
+                    }
+                }
+                "CParameterGroupGuid" => {
+                    if let Some(&g) = self.idx.groups.get(uuid) {
+                        out.push(ParamEntry::Group(g));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    fn info(&mut self, o: &O<'a, 'd>) -> Result<ObjectInfo> {
+        let parent_part = match o.guid("parentGuid")? {
+            Some(g) => self.idx.parts.get(g).copied(),
+            None => None,
+        };
+        Ok(ObjectInfo {
+            guid: o.guid("guid")?.unwrap_or_default().to_owned(),
+            id: o.id("id")?.unwrap_or_default().to_owned(),
+            name: o.string("localName")?.unwrap_or_default(),
+            parent_part,
+            visible: o.bool("isVisible")?.unwrap_or(true),
+            locked: o.bool("isLocked")?.unwrap_or(false),
+        })
+    }
+
+    fn target_deformer(&mut self, o: &O<'a, 'd>, what: &str) -> Result<Option<DeformerIndex>> {
+        let Some(g) = o.guid("targetDeformerGuid")? else {
+            return Ok(None);
+        };
+        if g == NULL_GUID || g == ROOT_DEFORMER_GUID {
+            return Ok(None);
+        }
+        match self.idx.deformers.get(g) {
+            Some(&d) => Ok(Some(d)),
+            None => {
+                self.warn(format!(
+                    "{what}: target deformer {g} not found; attached to root"
+                ));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Keyforms of an object: grid (one form per cell) and blend shapes.
+    /// spec: object-model.md §5–6
+    fn keyforms<F: Clone>(
+        &mut self,
+        o: &O<'a, 'd>,
+        m: &Model,
+        parse: impl Fn(&O<'a, 'd>) -> Result<F>,
+    ) -> Result<(KeyformGrid<F>, BlendShapes<F>)> {
+        let what = o.id("id")?.unwrap_or("?").to_owned();
+        let mut forms: HashMap<String, F> = HashMap::new();
+        let mut first = None;
+        for f in o.list("keyforms")? {
+            let parsed = parse(&f)?;
+            if first.is_none() {
+                first = Some(parsed.clone());
+            }
+            if let Some(g) = f.guid("guid")? {
+                forms.insert(g.to_owned(), parsed);
+            }
+        }
+        let Some(first) = first else {
+            return invalid(format!("{what}: object has no keyforms"));
+        };
+
+        let mut bindings = Vec::new();
+        let mut binding_ids = Vec::new();
+        let grid_src = o.field("keyformGridSource")?;
+        if let Some(gs) = grid_src {
+            for b in gs.list("keyformBindings")? {
+                let pg = b.guid("parameterGuid")?.unwrap_or_default();
+                let Some(&param) = self.idx.params.get(pg) else {
+                    return invalid(format!("{what}: binding to unknown parameter {pg}"));
+                };
+                let keys: Vec<f32> = match b.field("keys")? {
+                    Some(k) => k
+                        .scalar_items()
+                        .map(|s| {
+                            parse_f32(s).ok_or_else(|| {
+                                FormatError::Invalid(format!("{what}: bad key {s:?}"))
+                            })
+                        })
+                        .collect::<Result<_>>()?,
+                    None => Vec::new(),
+                };
+                if keys.is_empty() || !keys.windows(2).all(|w| w[0] < w[1]) {
+                    return invalid(format!("{what}: binding keys not strictly ascending"));
+                }
+                let extended = match b.enum_value("extendedInterpolationType")? {
+                    Some("ELLIPSE") => ExtendedInterpolationKind::Ellipse,
+                    Some("SNS_CURVE") => ExtendedInterpolationKind::SnsCurve,
+                    _ => ExtendedInterpolationKind::Linear,
+                };
+                binding_ids.push(b.identity());
+                bindings.push(Binding {
+                    parameter: param,
+                    keys,
+                    interpolation: b
+                        .enum_value("interpolationType")?
+                        .unwrap_or("LINEAR")
+                        .to_owned(),
+                    extended,
+                    insert_point_count: b.i32("insertPointCount")?.unwrap_or(1),
+                    extended_scale: b.f32("extendedInterpolationScale")?.unwrap_or(1.0),
+                });
+            }
+        }
+        let mut grid = KeyformGrid {
+            bindings,
+            keyforms: Vec::new(),
+        };
+        let cells = grid.cell_count();
+        if cells > 1 << 20 {
+            return Err(FormatError::LimitExceeded(format!(
+                "{what}: keyform grid of {cells} cells"
+            )));
+        }
+        let mut slots: Vec<Option<F>> = vec![None; cells];
+        if let Some(gs) = grid_src {
+            for kog in gs.list("keyformsOnGrid")? {
+                let mut idx = vec![usize::MAX; grid.bindings.len()];
+                if let Some(ak) = kog.field("accessKey")? {
+                    for kop in ak.list("_keyOnParameterList")? {
+                        let Some(b) = kop.field("binding")? else {
+                            continue;
+                        };
+                        let Some(bi) = binding_ids.iter().position(|&id| id == b.identity()) else {
+                            return invalid(format!("{what}: access key names a foreign binding"));
+                        };
+                        idx[bi] = kop.i32("keyIndex")?.unwrap_or(-1).max(-1) as usize;
+                    }
+                }
+                let Some(cell) = grid.cell_index(&idx) else {
+                    return invalid(format!("{what}: access key {idx:?} outside the grid"));
+                };
+                let fg = kog.guid("keyformGuid")?.unwrap_or_default();
+                match forms.get(fg) {
+                    Some(f) => slots[cell] = Some(f.clone()),
+                    None => return invalid(format!("{what}: grid names unknown keyform {fg}")),
+                }
+            }
+        }
+        let missing = slots.iter().filter(|s| s.is_none()).count();
+        if missing > 0 {
+            self.warn(format!(
+                "{what}: {missing} grid cells without keyform (filled with the first)"
+            ));
+        }
+        grid.keyforms = slots
+            .into_iter()
+            .map(|s| s.unwrap_or_else(|| first.clone()))
+            .collect();
+
+        let mut blend = BlendShapes::default();
+        if let Some(set) = o.field("keyformMorphTargetSet")? {
+            for mt in set.list("_morphTargets")? {
+                let pg = mt.guid("parameterGuid")?.unwrap_or_default();
+                let Some(&param) = self.idx.params.get(pg) else {
+                    self.warn(format!("{what}: blend shape on unknown parameter"));
+                    continue;
+                };
+                let fg = mt.guid("keyformGuid")?.unwrap_or_default();
+                let Some(form) = forms.get(fg) else {
+                    self.warn(format!("{what}: blend shape names unknown keyform"));
+                    continue;
+                };
+                // keyValue is a nullable Float; unset = parameter max (blend-shapes.md §1).
+                let key = match mt.field("keyValue")? {
+                    Some(k) => parse_f32(&k.element().text),
+                    None => mt.f32("keyValue")?,
+                };
+                blend.shapes.push(BlendShape {
+                    parameter: param,
+                    key,
+                    form: form.clone(),
+                });
+            }
+            if let Some(cs) = set.field("blendWeightConstraintSet")? {
+                for c in cs.list("_constraints")? {
+                    let p = |n: &str| -> Result<Option<ParamIndex>> {
+                        Ok(c.guid(n)?.and_then(|g| self.idx.params.get(g).copied()))
+                    };
+                    let (Some(bp), Some(cp)) = (
+                        p("morphTargetParameterGuid")?,
+                        p("constraintParameterGuid")?,
+                    ) else {
+                        continue;
+                    };
+                    blend.constraints.push(BlendConstraint {
+                        blend_parameter: bp,
+                        constraint_parameter: cp,
+                        value: c.f32("constraintParameterValue")?.unwrap_or(0.0),
+                        weight: c.f32("blendWeight")?.unwrap_or(1.0),
+                    });
+                }
+            }
+        }
+        let _ = m;
+        Ok((grid, blend))
+    }
+
+    fn load_part(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<Part> {
+        let info = self.info(o)?;
+        let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+            Ok(PartForm {
+                draw_order: f.i32("drawOrder")?.unwrap_or(500) as f32,
+                opacity: f.f32("opacity")?.unwrap_or(1.0),
+                multiply: color(f.field("multiplyColor")?, WHITE)?,
+                screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+            })
+        })?;
+        let mut children = Vec::new();
+        for c in o.list("_childGuids")? {
+            let Some(uuid) = c.attr("uuid") else { continue };
+            let child = match c.tag() {
+                "CPartGuid" => self.idx.parts.get(uuid).map(|&i| PartChild::Part(i)),
+                "CDeformerGuid" => self
+                    .idx
+                    .deformers
+                    .get(uuid)
+                    .map(|&i| PartChild::Deformer(i)),
+                "CDrawableGuid" => self.idx.meshes.get(uuid).map(|&i| PartChild::ArtMesh(i)),
+                "CAffecterGuid" => self.idx.glues.get(uuid).map(|&i| PartChild::Glue(i)),
+                _ => None,
+            };
+            children.push(child.unwrap_or(PartChild::Other));
+        }
+        let clip = self.clip_list(o)?;
+        Ok(Part {
+            info,
+            children,
+            draw_order_group: o.bool("enableDrawOrderGroup")?.unwrap_or(false),
+            sketch: o.bool("isSketch")?.unwrap_or(false),
+            offscreen: o.bool("useOffscreen")?.unwrap_or(false),
+            clip,
+            invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
+            color_composition: o
+                .enum_value("colorComposition")?
+                .and_then(ColorComposition::from_name)
+                .unwrap_or_default(),
+            alpha_composition: o
+                .enum_value("alphaComposition")?
+                .and_then(AlphaComposition::from_name)
+                .unwrap_or_default(),
+            default_order: o.i32("defaultOrder_forEditor")?.unwrap_or(500),
+            grid,
+            blend_shapes,
+        })
+    }
+
+    fn clip_list(&self, o: &O<'a, 'd>) -> Result<Vec<MeshIndex>> {
+        Ok(o.list("clipGuidList")?
+            .iter()
+            .filter_map(|c| c.attr("uuid").and_then(|u| self.idx.meshes.get(u).copied()))
+            .collect())
+    }
+
+    fn load_deformer(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<Deformer> {
+        let info = self.info(o)?;
+        let target = self.target_deformer(o, &info.id)?;
+        let kind = match o.tag() {
+            "CWarpDeformerSource" => {
+                let cols = o.i32("col")?.unwrap_or(0);
+                let rows = o.i32("row")?.unwrap_or(0);
+                if !(1..=1000).contains(&cols) || !(1..=1000).contains(&rows) {
+                    return invalid(format!("{}: warp grid {cols}×{rows}", info.id));
+                }
+                let n = 2 * (cols as usize + 1) * (rows as usize + 1);
+                let id = info.id.clone();
+                let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+                    let positions = f.f32_array("positions")?.unwrap_or_default();
+                    if positions.len() != n {
+                        return invalid(format!(
+                            "{id}: warp keyform has {} coords, expected {n}",
+                            positions.len()
+                        ));
+                    }
+                    Ok(WarpForm {
+                        positions,
+                        opacity: f.f32("opacity")?.unwrap_or(1.0),
+                        multiply: color(f.field("multiplyColor")?, WHITE)?,
+                        screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+                    })
+                })?;
+                DeformerKind::Warp(WarpDeformer {
+                    cols: cols as u32,
+                    rows: rows as u32,
+                    quad: o.bool("isQuadTransform")?.unwrap_or(false),
+                    grid,
+                    blend_shapes,
+                })
+            }
+            "CRotationDeformerSource" => {
+                let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+                    Ok(RotationForm {
+                        angle: f.f32("angle")?.unwrap_or(0.0),
+                        origin: [
+                            f.f32("originX")?.unwrap_or(0.0),
+                            f.f32("originY")?.unwrap_or(0.0),
+                        ],
+                        scale: f.f32("scale")?.unwrap_or(1.0),
+                        reflect_x: f.bool("isReflectX")?.unwrap_or(false),
+                        reflect_y: f.bool("isReflectY")?.unwrap_or(false),
+                        opacity: f.f32("opacity")?.unwrap_or(1.0),
+                        multiply: color(f.field("multiplyColor")?, WHITE)?,
+                        screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+                    })
+                })?;
+                DeformerKind::Rotation(RotationDeformer {
+                    base_angle: o.f32("baseAngle")?.unwrap_or(0.0),
+                    grid,
+                    blend_shapes,
+                })
+            }
+            t => return Err(FormatError::Unsupported(format!("deformer kind <{t}>"))),
+        };
+        Ok(Deformer { info, target, kind })
+    }
+
+    fn load_art_mesh(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<ArtMesh> {
+        let info = self.info(o)?;
+        let target = self.target_deformer(o, &info.id)?;
+        let positions = o.f32_array("positions")?.unwrap_or_default();
+        let nv = positions.len() / 2;
+        if positions.len() % 2 != 0 {
+            return invalid(format!("{}: odd position count", info.id));
+        }
+        let uvs = o.f32_array("uvs")?.unwrap_or_default();
+        if uvs.len() != positions.len() {
+            return invalid(format!(
+                "{}: {} UVs for {nv} vertices",
+                info.id,
+                uvs.len() / 2
+            ));
+        }
+        let indices: Vec<u32> = o
+            .i32_array("indices")?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| u32::try_from(i).ok().filter(|&i| (i as usize) < nv))
+            .collect::<Option<_>>()
+            .ok_or_else(|| {
+                FormatError::Invalid(format!("{}: triangle index out of range", info.id))
+            })?;
+        if !indices.len().is_multiple_of(3) {
+            return invalid(format!("{}: index count not a multiple of 3", info.id));
+        }
+        let id = info.id.clone();
+        let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+            let positions = f.f32_array("positions")?.unwrap_or_default();
+            if positions.len() != 2 * nv {
+                return invalid(format!(
+                    "{id}: keyform has {} coords, expected {}",
+                    positions.len(),
+                    2 * nv
+                ));
+            }
+            Ok(ArtMeshForm {
+                positions,
+                draw_order: f.i32("drawOrder")?.unwrap_or(500) as f32,
+                opacity: f.f32("opacity")?.unwrap_or(1.0),
+                multiply: color(f.field("multiplyColor")?, WHITE)?,
+                screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+            })
+        })?;
+
+        let mut point_uids = Vec::new();
+        let mut texture = None;
+        for ext in o.list("_extensions")? {
+            match ext.tag() {
+                "CEditableMeshExtension" => {
+                    if let Some(em) = ext.field("editableMesh")? {
+                        point_uids = em
+                            .i32_array("pointUid")?
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(i64::from)
+                            .collect();
+                    }
+                }
+                "CTextureInputExtension" => {
+                    if let Some(cur) = ext.field("currentTextureInputData")? {
+                        if let Some(g) = cur.guid("textureAtlasGuid")? {
+                            texture = self.idx.textures_by_guid.get(g).copied();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if point_uids.len() != nv {
+            if !point_uids.is_empty() {
+                self.warn(format!(
+                    "{}: editable mesh has {} points for {nv} vertices",
+                    info.id,
+                    point_uids.len()
+                ));
+            }
+            point_uids = (0..nv as i64).collect();
+        }
+        if texture.is_none() {
+            if let Some(img) = o
+                .field("texture")?
+                .map(|t| t.field("srcImageResource"))
+                .transpose()?
+                .flatten()
+            {
+                texture = self.idx.texture_images.get(&img.identity()).copied();
+            }
+        }
+        let _ = m;
+        Ok(ArtMesh {
+            clip: self.clip_list(o)?,
+            invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
+            info,
+            target,
+            positions,
+            uvs,
+            indices,
+            texture,
+            culling: o.bool("culling")?.unwrap_or(false),
+            color_composition: o
+                .enum_value("colorComposition")?
+                .and_then(ColorComposition::from_name)
+                .unwrap_or_default(),
+            alpha_composition: o
+                .enum_value("alphaComposition")?
+                .and_then(AlphaComposition::from_name)
+                .unwrap_or_default(),
+            user_data: o.string("userData")?.unwrap_or_default(),
+            point_uids,
+            grid,
+            blend_shapes,
+        })
+    }
+
+    fn load_glue(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<Glue> {
+        let info = self.info(o)?;
+        let mesh = |n: &str, l: &Self| -> Result<Option<MeshIndex>> {
+            Ok(o.guid(n)?.and_then(|g| l.idx.meshes.get(g).copied()))
+        };
+        let mesh_a = mesh("targetArtMeshA_guid", self)?;
+        let mesh_b = mesh("targetArtMeshB_guid", self)?;
+        let uids = o.i64_array("bindVertexUids")?.unwrap_or_default();
+        let w = o.f32_array("weights")?.unwrap_or_default();
+        if uids.len() % 2 != 0 || w.len() != uids.len() {
+            return invalid(format!(
+                "{}: {} vertex UIDs, {} weights",
+                info.id,
+                uids.len(),
+                w.len()
+            ));
+        }
+        // Pairs are interleaved (uidA, uidB); weights likewise (wA, wB). spec: glue.md
+        let resolve =
+            |mi: Option<MeshIndex>, uid: i64| mi.and_then(|i| m.art_meshes[i].vertex_of_uid(uid));
+        let pairs = uids
+            .chunks(2)
+            .map(|p| (resolve(mesh_a, p[0]), resolve(mesh_b, p[1])))
+            .collect();
+        let weights = w.chunks(2).map(|p| [p[0], p[1]]).collect();
+        let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+            Ok(GlueForm {
+                intensity: f.f32("intensity")?.unwrap_or(1.0),
+            })
+        })?;
+        Ok(Glue {
+            info,
+            mesh_a,
+            mesh_b,
+            pairs,
+            weights,
+            grid,
+            blend_shapes,
+        })
+    }
+
+    /// Breaks target-deformer cycles (malformed input) by detaching.
+    fn check_deformer_cycles(&mut self, m: &mut Model) {
+        for start in 0..m.deformers.len() {
+            let mut cur = m.deformers[start].target;
+            let mut steps = 0;
+            while let Some(d) = cur {
+                if d == start || steps > m.deformers.len() {
+                    self.warn(format!(
+                        "{}: target deformer cycle broken",
+                        m.deformers[start].info.id
+                    ));
+                    m.deformers[start].target = None;
+                    break;
+                }
+                cur = m.deformers[d].target;
+                steps += 1;
+            }
+        }
+    }
+}

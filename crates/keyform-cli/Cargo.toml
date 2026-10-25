@@ -1,0 +1,19 @@
+[package]
+name = "keyform-cli"
+description = "Keyform command-line tools: inspect, round-trip, export, render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kf"
+path = "src/main.rs"
+
+[dependencies]
+keyform-model.workspace = true
+keyform-eval.workspace = true
+keyform-formats.workspace = true
+keyform-render.workspace = true
+
+[lints]
+workspace = true

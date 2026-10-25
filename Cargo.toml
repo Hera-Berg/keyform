@@ -1,0 +1,48 @@
+[workspace]
+exclude = ["fuzz"]
+resolver = "2"
+members = [
+    "crates/keyform-model",
+    "crates/keyform-eval",
+    "crates/keyform-formats",
+    "crates/keyform-render",
+    "crates/keyform-cli",
+    
+    
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+keyform-model = { path = "crates/keyform-model" }
+keyform-eval = { path = "crates/keyform-eval" }
+keyform-formats = { path = "crates/keyform-formats" }
+keyform-render = { path = "crates/keyform-render" }
+thiserror = "2"
+quick-xml = "0.37"
+flate2 = "1"
+crc32fast = "1"
+png = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Parsers must never panic on untrusted input.
+unwrap_used = "warn"
+indexing_slicing = "allow"
+# Numeric kernels index several parallel arrays with one loop variable.
+needless_range_loop = "allow"
+chunks_exact_to_as_chunks = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 1

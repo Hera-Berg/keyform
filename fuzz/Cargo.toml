@@ -1,0 +1,40 @@
+[package]
+name = "keyform-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keyform-formats = { path = "../crates/keyform-formats" }
+keyform-eval = { path = "../crates/keyform-eval" }
+
+# Not part of the main workspace (needs nightly + cargo-fuzz).
+[workspace]
+
+[[bin]]
+name = "caff"
+path = "fuzz_targets/caff.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "xml"
+path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "moc3"
+path = "fuzz_targets/moc3.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cmo3"
+path = "fuzz_targets/cmo3.rs"
+test = false
+doc = false

@@ -1,0 +1,20 @@
+[package]
+name = "keyform-formats"
+description = "Keyform file formats: CAFF (.cmo3/.can3), XML object graph, moc3, runtime JSON"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+keyform-model.workspace = true
+keyform-eval.workspace = true
+thiserror.workspace = true
+quick-xml.workspace = true
+flate2.workspace = true
+crc32fast.workspace = true
+serde_json.workspace = true
+png.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

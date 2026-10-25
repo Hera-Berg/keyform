@@ -1,0 +1,7 @@
+/target
+# Sample models are licensed test inputs, never committed (keyform-spec/test-data/README.md).
+/*.cmo3
+/*.can3
+/*.moc3
+/test-data/
+/out/

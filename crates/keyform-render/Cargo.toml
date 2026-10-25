@@ -1,0 +1,16 @@
+[package]
+name = "keyform-render"
+description = "Keyform renderer: deterministic CPU reference rasterizer (and GPU path)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+keyform-model.workspace = true
+keyform-eval.workspace = true
+keyform-formats.workspace = true
+png.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

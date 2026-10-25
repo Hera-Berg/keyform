@@ -1,0 +1,11 @@
+[package]
+name = "keyform-model"
+description = "Keyform data model (no GPU, no UI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
