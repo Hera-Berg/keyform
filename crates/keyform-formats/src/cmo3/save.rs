@@ -17,6 +17,7 @@ use std::sync::Arc;
 use keyform_model::*;
 
 mod grid;
+mod mesh;
 mod objects;
 mod params;
 
@@ -473,6 +474,11 @@ fn set_array(e: &mut Element, name: &str, tag: &str, values: &[f32]) {
         .map(|v| format_f32(*v))
         .collect::<Vec<_>>()
         .join(" ");
+    set_array_text(e, name, tag, values.len(), text);
+}
+
+/// Sets array field `name` to `count` space-separated values.
+fn set_array_text(e: &mut Element, name: &str, tag: &str, count: usize, text: String) {
     let d = holder_depth(e, name);
     let h = match d {
         Some(d) => level_mut(e, d),
@@ -489,7 +495,7 @@ fn set_array(e: &mut Element, name: &str, tag: &str, values: &[f32]) {
     c.name = tag.to_owned();
     // Arrays can be shared (`xs.ref`); the new values belong to this object.
     c.attrs.retain(|(k, _)| k != "xs.ref");
-    c.set_attr("count", values.len().to_string());
+    c.set_attr("count", count.to_string());
     c.text = text;
 }
 
@@ -673,9 +679,8 @@ impl FormFields for PartForm {
 
 impl FormFields for ArtMeshForm {
     fn write(f: &mut Fields, o: &Self, n: &Self) -> Result<()> {
-        if o.positions.len() != n.positions.len() {
-            return unsupported("keyform vertex count");
-        }
+        // A changed vertex count comes with a topology change, which
+        // `write_art_mesh` checks.
         f.positions("positions", &o.positions, &n.positions);
         f.draw_order(o.draw_order, n.draw_order);
         f.f32("opacity", o.opacity, n.opacity);
@@ -937,10 +942,21 @@ fn write_art_mesh(
         user_data: o.user_data.clone(),
         grid: o.grid.clone(),
         blend_shapes: o.blend_shapes.clone(),
+        positions: o.positions.clone(),
+        uvs: o.uvs.clone(),
+        indices: o.indices.clone(),
+        point_uids: o.point_uids.clone(),
+        mesh: o.mesh.clone(),
         ..n.clone()
     } == *o;
     if !rest_same {
-        return unsupported(format!("art mesh {}: mesh, texture or clipping", o.info.id));
+        return unsupported(format!("art mesh {}: texture or clipping", o.info.id));
+    }
+    if mesh::topology_changed(o, n) {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        mesh::write_topology(root, &path, n)?;
     }
     write_parents(
         root,

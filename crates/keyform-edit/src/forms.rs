@@ -269,7 +269,7 @@ pub fn scale(m: &mut Model, o: ObjectRef, cell: usize, factor: f32) -> Result<bo
 mod tests {
     use super::*;
     use keyform_eval::{RotationMap, WarpMap};
-    use keyform_model::{ArtMesh, ArtMeshForm, KeyformGrid, ObjectInfo};
+    use keyform_model::{ArtMesh, ArtMeshForm, EditableMesh, KeyformGrid, ObjectInfo};
 
     fn mesh_model() -> Model {
         let a = ArtMesh {
@@ -287,6 +287,7 @@ mod tests {
             alpha_composition: Default::default(),
             user_data: String::new(),
             point_uids: vec![0, 1],
+            mesh: EditableMesh::default(),
             grid: KeyformGrid {
                 bindings: vec![Binding::new(0, vec![-1.0, 1.0])],
                 keyforms: vec![

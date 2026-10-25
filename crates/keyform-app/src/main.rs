@@ -11,6 +11,7 @@ mod export_image;
 mod fonts;
 mod icons;
 mod log;
+mod mesh_edit;
 mod palettes;
 mod param_dialog;
 mod theme;
@@ -26,12 +27,14 @@ fn main() -> eframe::Result<()> {
     let mut values = Vec::new();
     let mut play = None;
     let mut select = None;
+    let mut mesh_edit = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--screenshot" => screenshot = args.next().map(PathBuf::from),
             "--play" => play = args.next().and_then(|n| n.parse::<usize>().ok()),
             "--select" => select = args.next(),
+            "--mesh-edit" => mesh_edit = true,
             "--frames" => frames = args.next().and_then(|n| n.parse().ok()).unwrap_or(frames),
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
@@ -83,6 +86,7 @@ fn main() -> eframe::Result<()> {
             a.initial_values = values;
             a.initial_motion = play;
             a.initial_select = select;
+            a.initial_mesh_edit = mesh_edit;
             Ok(Box::new(a))
         }),
     )

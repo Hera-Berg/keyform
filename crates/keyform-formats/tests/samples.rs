@@ -589,3 +589,112 @@ fn cmo3_save_after_structural_edits() {
         eprintln!("{path:?}: structural edits saved and reloaded");
     }
 }
+
+/// Re-triangulating an unchanged editable mesh reproduces the stored
+/// triangles (spec: 30-algorithms/mesh-triangulation.md), and the graph's
+/// points are the art mesh's base positions (10-formats/cmo3.md §4).
+#[test]
+fn retriangulation_matches_samples() {
+    use keyform_edit::mesh::MeshGraph;
+    use keyform_formats::cmo3::Cmo3Document;
+    use std::collections::HashSet;
+    let set = |ix: &[u32]| -> HashSet<[u32; 3]> {
+        ix.chunks_exact(3)
+            .map(|t| {
+                let mut s = [t[0], t[1], t[2]];
+                s.sort_unstable();
+                s
+            })
+            .collect()
+    };
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let (mut same, mut total, mut tris, mut tri_same) = (0, 0, 0, 0);
+        let mut worst = Vec::new();
+        for a in &doc.model.art_meshes {
+            if a.mesh.edges.is_empty() {
+                continue;
+            }
+            total += 1;
+            let mut g = MeshGraph::of(a);
+            let t = g.triangulate().unwrap();
+            let (want, got) = (set(&a.indices), set(&t.indices));
+            tris += want.len();
+            tri_same += want.intersection(&got).count();
+            if want == got {
+                same += 1;
+            } else {
+                worst.push((
+                    a.info.id.clone(),
+                    want.len(),
+                    got.len(),
+                    want.intersection(&got).count(),
+                    t.unresolved,
+                ));
+            }
+        }
+        worst.sort_by_key(|w| w.3 as isize - w.1 as isize);
+        eprintln!(
+            "{path:?}: {same}/{total} meshes identical, {tri_same}/{tris} triangles; worst {:?}",
+            &worst[..worst.len().min(5)]
+        );
+        assert!(tri_same * 100 >= tris * 97, "{tri_same}/{tris}");
+    }
+}
+
+/// Mesh-editor topology changes (new, split and deleted points with
+/// remapped keyforms) survive a save and reload.
+#[test]
+fn cmo3_save_after_mesh_edits() {
+    use keyform_edit::mesh::{set_mesh, MeshGraph};
+    use keyform_formats::cmo3::Cmo3Document;
+    use std::collections::HashSet;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        let glued: HashSet<usize> = m
+            .glues
+            .iter()
+            .flat_map(|g| [g.mesh_a, g.mesh_b])
+            .flatten()
+            .collect();
+        let picks: Vec<usize> = (0..m.art_meshes.len())
+            .filter(|&i| {
+                let a = &m.art_meshes[i];
+                !a.mesh.edges.is_empty()
+                    && !a.mesh.observed
+                    && !glued.contains(&i)
+                    && a.grid.keyforms.len() > 1
+            })
+            .take(3)
+            .collect();
+        for &i in &picks {
+            let a = m.art_meshes[i].clone();
+            let mut g = MeshGraph::of(&a);
+            let t = &a.indices[..3];
+            let c = t.iter().fold([0.0f32; 2], |c, &v| {
+                let p = g.point(v as usize);
+                [c[0] + p[0] / 3.0, c[1] + p[1] / 3.0]
+            });
+            g.add_point(c);
+            let [p, q] = g.mesh.edges[0].map(|v| g.point(v as usize));
+            g.split_edge(0, [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0]);
+            g.delete_points(&HashSet::from([g.len() / 2]));
+            set_mesh(m, i, &g).unwrap();
+            assert_eq!(m.art_meshes[i].vertex_count(), a.vertex_count() + 1);
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}");
+        // The export still works with the new vertex counts.
+        let opts = keyform_formats::moc3::ExportOptions::for_model(&back.model);
+        keyform_formats::moc3::export_moc3(&back.model, &opts)
+            .unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        eprintln!(
+            "{path:?}: {} meshes edited, saved and reloaded",
+            picks.len()
+        );
+    }
+}

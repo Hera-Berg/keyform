@@ -9,6 +9,7 @@ license.workspace = true
 keyform-model.workspace = true
 keyform-eval.workspace = true
 thiserror.workspace = true
+spade = "2.15.1"
 
 [lints]
 workspace = true

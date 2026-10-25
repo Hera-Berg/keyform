@@ -19,6 +19,8 @@ pub struct ViewGpu {
     /// Rectangle selection in progress: start (screen) and whether it
     /// selects points (of the selected objects) rather than objects.
     rect: Option<(Pos2, bool)>,
+    /// The texture page shown in mesh edit mode (texture index).
+    mesh_texture: Option<(usize, egui::TextureHandle)>,
 }
 
 /// Pick radius for points, in screen points.
@@ -53,12 +55,15 @@ pub fn view_of(doc: &Document, rect: Rect, ppp: f32) -> View {
 }
 
 pub fn fit(doc: &mut Document, rect: Rect) {
-    let (cw, ch) = (
-        doc.model.canvas.width.max(1) as f32,
-        doc.model.canvas.height.max(1) as f32,
-    );
+    let [x0, y0, x1, y1] = doc.view.fit_box.take().unwrap_or([
+        0.0,
+        0.0,
+        doc.model.canvas.width as f32,
+        doc.model.canvas.height as f32,
+    ]);
+    let (cw, ch) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
     doc.view.zoom = (rect.width() / cw).min(rect.height() / ch) * 0.92;
-    doc.view.center = [cw / 2.0, ch / 2.0];
+    doc.view.center = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
     doc.view.rotation = 0.0;
     doc.view.fit_pending = false;
 }
@@ -113,6 +118,8 @@ pub fn canvas_ui(
     navigate(ui, &response, doc, gpu, rect, ppp);
     if doc.mode == crate::document::Mode::Viewer {
         track_cursor(ui, &response, doc, rect);
+    } else if doc.mesh_edit.is_some() {
+        mesh_tool(ui, &response, doc, gpu, rect, ppp);
     } else {
         arrow_tool(ui, &response, doc, gpu, rect, ppp);
     }
@@ -213,7 +220,11 @@ pub fn canvas_ui(
         }
     }
 
-    draw_selection(&painter, doc, &to_screen, tokens);
+    if doc.mesh_edit.is_some() {
+        draw_mesh_edit(ui.ctx(), &painter, doc, gpu, rect, &to_screen, tokens);
+    } else {
+        draw_selection(&painter, doc, &to_screen, tokens);
+    }
     if let (Some((a, _)), Some(b)) = (gpu.rect, ui.input(|i| i.pointer.interact_pos())) {
         let r = Rect::from_two_pos(a, b);
         painter.rect_stroke(
@@ -381,6 +392,220 @@ fn arrow_tool(
             }
         } else {
             doc.drag_end();
+        }
+    }
+}
+
+/// Mesh edit mode input (canvas-and-tools.md §5). Select: click a vertex
+/// to select it (Shift toggles), drag selected vertices to move them, drag
+/// on empty space for a rectangle (Shift adds). Add Point: press to add a
+/// vertex (on an edge it splits the edge) and drag to place it. Eraser:
+/// press or drag over vertices and edges; Alt erases edges only.
+fn mesh_tool(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    doc: &mut Document,
+    gpu: &mut ViewGpu,
+    rect: Rect,
+    ppp: f32,
+) {
+    use crate::mesh_edit::MeshTool;
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let (space, rkey, shift, alt) = ui.input(|i| {
+        (
+            !typing && i.key_down(egui::Key::Space),
+            !typing && i.key_down(egui::Key::R),
+            i.modifiers.shift,
+            i.modifiers.alt,
+        )
+    });
+    if space || rkey {
+        return;
+    }
+    let view = view_of(doc, rect, ppp);
+    let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
+    let radius = POINT_PICK / doc.view.zoom.max(1e-6);
+    let Some(s) = doc.mesh_edit.as_mut() else {
+        return;
+    };
+    let primary = egui::PointerButton::Primary;
+    let press = ui.input(|i| i.pointer.press_origin());
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let started = response.drag_started_by(primary) || response.clicked_by(primary);
+    match s.tool {
+        MeshTool::Select => {
+            if started {
+                let Some(press) = press else { return };
+                let q = to_canvas(press);
+                let mut sel = s.selected.clone();
+                if let Some(k) = s.point_at(q, radius) {
+                    if shift {
+                        match sel.iter().position(|&p| p == k) {
+                            Some(i) => {
+                                sel.remove(i);
+                            }
+                            None => sel.push(k),
+                        }
+                    } else if !sel.contains(&k) {
+                        sel = vec![k];
+                    }
+                    s.set_selected(sel);
+                    if response.drag_started_by(primary) && !shift {
+                        s.drag_begin();
+                    }
+                } else if response.drag_started_by(primary) {
+                    gpu.rect = Some((press, true));
+                } else if !shift {
+                    s.set_selected(Vec::new());
+                }
+            }
+            if let Some((start, _)) = gpu.rect {
+                if !response.dragged_by(primary) {
+                    gpu.rect = None;
+                    if let Some(end) = pointer {
+                        let r = Rect::from_two_pos(start, end);
+                        let quad = [
+                            r.left_top(),
+                            r.right_top(),
+                            r.right_bottom(),
+                            r.left_bottom(),
+                        ]
+                        .map(to_canvas);
+                        let mut sel = if shift {
+                            s.selected.clone()
+                        } else {
+                            Vec::new()
+                        };
+                        for k in s.points_in(&quad) {
+                            if !sel.contains(&k) {
+                                sel.push(k);
+                            }
+                        }
+                        s.set_selected(sel);
+                    }
+                }
+                return;
+            }
+        }
+        MeshTool::AddPoint => {
+            if started {
+                let Some(press) = press else { return };
+                let q = to_canvas(press);
+                match s.point_at(q, radius) {
+                    // Pressing an existing vertex picks it up instead.
+                    Some(k) => s.set_selected(vec![k]),
+                    None => {
+                        s.add_point(q, radius);
+                    }
+                }
+                if response.drag_started_by(primary) {
+                    s.drag_begin();
+                }
+            }
+        }
+        MeshTool::Erase => {
+            if response.dragged_by(primary) || response.clicked_by(primary) {
+                if let Some(p) = pointer {
+                    s.erase(to_canvas(p), radius, alt);
+                }
+            }
+            return;
+        }
+    }
+    if s.is_dragging() {
+        if response.dragged_by(primary) {
+            if let (Some(a), Some(b)) = (press, pointer) {
+                let (ca, cb) = (to_canvas(a), to_canvas(b));
+                s.drag_update([cb[0] - ca[0], cb[1] - ca[1]]);
+            }
+        } else {
+            s.drag_end();
+        }
+    }
+}
+
+/// Mesh edit mode view: the model dimmed, the edited mesh's texture
+/// undeformed on its working triangulation, the graph edges and vertices.
+/// spec: canvas-and-tools.md §5 ("deformation does not affect the texture"),
+/// main-window.md §6 ("dims other meshes")
+fn draw_mesh_edit(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    doc: &Document,
+    gpu: &mut ViewGpu,
+    rect: Rect,
+    to_screen: &dyn Fn([f32; 2]) -> Pos2,
+    tokens: &Tokens,
+) {
+    let Some(s) = doc.mesh_edit.as_ref() else {
+        return;
+    };
+    painter.rect_filled(rect, 0.0, tokens.canvas_viewport.gamma_multiply(0.75));
+    let g = &s.graph;
+    if let Some(t) = s.texture {
+        if gpu.mesh_texture.as_ref().is_none_or(|(i, _)| *i != t) {
+            gpu.mesh_texture = doc.model.textures.get(t).and_then(|tex| {
+                let img = keyform_formats::image::RgbaImage::decode_png(tex.png.as_ref()?).ok()?;
+                let c = egui::ColorImage::from_rgba_unmultiplied(
+                    [img.width as usize, img.height as usize],
+                    &img.data,
+                );
+                Some((
+                    t,
+                    ctx.load_texture("mesh-edit", c, egui::TextureOptions::LINEAR),
+                ))
+            });
+        }
+    }
+    if let Some((_, tex)) = gpu
+        .mesh_texture
+        .as_ref()
+        .filter(|(i, _)| Some(*i) == s.texture)
+    {
+        let mut mesh = egui::Mesh::with_texture(tex.id());
+        for k in 0..g.len() {
+            let uv = Pos2::new(s.uvs[2 * k], s.uvs[2 * k + 1]);
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: to_screen(g.point(k)),
+                uv,
+                color: Color32::WHITE,
+            });
+        }
+        mesh.indices.extend_from_slice(&s.preview);
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    // Triangulation (thin), then the graph's own edges on top.
+    let thin = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.35));
+    for t in s.preview.chunks_exact(3) {
+        let p = [t[0], t[1], t[2]].map(|v| to_screen(g.point(v as usize)));
+        painter.line_segment([p[0], p[1]], thin);
+        painter.line_segment([p[1], p[2]], thin);
+        painter.line_segment([p[2], p[0]], thin);
+    }
+    let edge = egui::Stroke::new(1.0, tokens.accent);
+    for (e, &pr) in g.mesh.edges.iter().zip(&g.mesh.edge_priority) {
+        if pr != keyform_model::EDGE_AUTO_TRIANGULATION {
+            let [a, b] = e.map(|v| to_screen(g.point(v as usize)));
+            painter.line_segment([a, b], edge);
+        }
+    }
+    for k in 0..g.len() {
+        let c = to_screen(g.point(k));
+        if s.selected.contains(&k) {
+            painter.circle_filled(c, 3.5, tokens.accent);
+            painter.circle_stroke(c, 3.5, egui::Stroke::new(1.0, Color32::WHITE));
+        } else {
+            painter.rect_filled(
+                Rect::from_center_size(c, egui::vec2(4.0, 4.0)),
+                0.0,
+                Color32::WHITE,
+            );
+            painter.rect_stroke(
+                Rect::from_center_size(c, egui::vec2(4.0, 4.0)),
+                0.0,
+                egui::Stroke::new(1.0, tokens.accent),
+                egui::StrokeKind::Outside,
+            );
         }
     }
 }

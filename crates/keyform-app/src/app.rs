@@ -108,6 +108,8 @@ pub struct KeyformApp {
     pub initial_motion: Option<usize>,
     /// Object to select in the first document (`--select ID`).
     pub initial_select: Option<String>,
+    /// Start mesh editing on that object (`--mesh-edit`).
+    pub initial_mesh_edit: bool,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
     /// first (main-window.md §5).
     closing: Vec<u64>,
@@ -235,6 +237,7 @@ impl KeyformApp {
             initial_values: Vec::new(),
             initial_motion: None,
             initial_select: None,
+            initial_mesh_edit: false,
             closing: Vec::new(),
             quit_after_closing: false,
             allow_quit: false,
@@ -631,7 +634,11 @@ impl KeyformApp {
                     }
                 }
             });
-            ui.menu_button("Modeling", |ui| self.modeling_menu(ui));
+            if self.active_doc().is_some_and(|d| d.mesh_edit.is_some()) {
+                ui.menu_button("Mesh Edit", |ui| self.mesh_edit_menu(ui));
+            } else {
+                ui.menu_button("Modeling", |ui| self.modeling_menu(ui));
+            }
             ui.menu_button("Animation", |ui| self.animation_menu(ui));
             ui.menu_button("Window", |ui| {
                 for (tab, name) in Tab::PALETTES {
@@ -683,6 +690,25 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        ui.menu_button("ArtMesh", |ui| {
+            let one = ok
+                && doc
+                    .selection
+                    .objects
+                    .iter()
+                    .filter(|o| matches!(o, crate::document::Selection::ArtMesh(_)))
+                    .count()
+                    == 1;
+            if ui
+                .add_enabled(one, egui::Button::new("Mesh edit").shortcut_text("Ctrl+E"))
+                .clicked()
+            {
+                if let Err(e) = doc.start_mesh_edit() {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+        });
         ui.menu_button("Part", |ui| {
             if ui.add_enabled(ok, egui::Button::new("New Part")).clicked() {
                 let parent = match doc.primary() {
@@ -698,6 +724,66 @@ impl KeyformApp {
                 ui.close();
             }
         });
+    }
+
+    /// The "Mesh Edit mode" menu (subset). spec: 50-ui/menus.md "Mesh Edit mode"
+    fn mesh_edit_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::mesh_edit::MeshTool;
+        if ui
+            .add(egui::Button::new("Finish Mesh editing").shortcut_text("Ctrl+E"))
+            .clicked()
+        {
+            self.toggle_mesh_edit();
+            ui.close();
+        }
+        ui.separator();
+        let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) else {
+            return;
+        };
+        if ui
+            .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
+            .clicked()
+        {
+            s.connect();
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                !s.selected.is_empty(),
+                egui::Button::new("Delete Vertex").shortcut_text("Delete"),
+            )
+            .clicked()
+        {
+            s.delete_selected();
+            ui.close();
+        }
+        ui.menu_button("Subtools", |ui| {
+            for (t, name) in [
+                (MeshTool::Select, "Select Arrow"),
+                (MeshTool::AddPoint, "Add Point Tool"),
+                (MeshTool::Erase, "Eraser"),
+            ] {
+                if ui.selectable_label(s.tool == t, name).clicked() {
+                    s.tool = t;
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// Mesh edit [Ctrl+E]: starts or finishes mesh editing.
+    fn toggle_mesh_edit(&mut self) {
+        let Some(d) = self.active_doc() else { return };
+        let r = if d.mesh_edit.is_some() {
+            d.finish_mesh_edit()
+        } else {
+            d.start_mesh_edit().map(|()| None)
+        };
+        match r {
+            Ok(Some(w)) => self.log.warn(w),
+            Ok(None) => {}
+            Err(e) => self.log.warn(e),
+        }
     }
 
     /// Playback toggles. spec: 70-advanced/viewer.md §3.7
@@ -767,8 +853,12 @@ impl KeyformApp {
                 });
             if let Some(d) = doc {
                 if chosen != d.mode {
-                    d.mode = chosen;
-                    d.reset_parameters();
+                    if let Err(e) = d.finish_mesh_edit() {
+                        self.log.warn(e);
+                    } else {
+                        d.mode = chosen;
+                        d.reset_parameters();
+                    }
                 }
             }
             ui.separator();
@@ -794,6 +884,56 @@ impl KeyformApp {
                 d.set_edit_level(l);
             }
             ui.separator();
+            if let Some(s) = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .and_then(|s| s.doc.mesh_edit.as_mut())
+            {
+                use crate::mesh_edit::MeshTool;
+                ui.weak("Mesh:");
+                for (t, name, tip) in [
+                    (MeshTool::Select, "Select", "Select and move vertices"),
+                    (
+                        MeshTool::AddPoint,
+                        "Add Point",
+                        "Add a vertex; on an edge it splits the edge",
+                    ),
+                    (
+                        MeshTool::Erase,
+                        "Eraser",
+                        "Delete vertices and edges (Alt: edges only)",
+                    ),
+                ] {
+                    if ui
+                        .add(egui::Button::selectable(s.tool == t, name))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        s.tool = t;
+                    }
+                }
+                if ui
+                    .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
+                    .on_hover_text("Connect the selected vertices with edges")
+                    .clicked()
+                {
+                    s.connect();
+                }
+                if s.unresolved > 0 {
+                    ui.colored_label(
+                        self.tokens.warning,
+                        format!("{} crossing edges", s.unresolved),
+                    );
+                }
+                if ui
+                    .button("Finish")
+                    .on_hover_text("Finish Mesh editing (Ctrl+E)")
+                    .clicked()
+                {
+                    self.toggle_mesh_edit();
+                }
+                ui.separator();
+            }
             if let Some(i) = self.active {
                 if ui.button("Reset parameters").clicked() {
                     self.slots[i].doc.reset_parameters();
@@ -967,6 +1107,10 @@ impl KeyformApp {
     }
 
     fn delete_active(&mut self) {
+        if let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) {
+            s.delete_selected();
+            return;
+        }
         if let Some(d) = self.active_doc() {
             if let Err(e) = d.delete_selection() {
                 self.log.warn(e);
@@ -976,6 +1120,13 @@ impl KeyformApp {
 
     fn undo_active(&mut self, redo: bool) {
         let Some(d) = self.active_doc() else { return };
+        // Mesh edit mode has its own steps until it is finished.
+        if let Some(s) = d.mesh_edit.as_mut() {
+            if if redo { s.redo() } else { s.undo() } {
+                self.log.status = format!("{}: Mesh Edit", if redo { "Redo" } else { "Undo" });
+            }
+            return;
+        }
         let name = if redo { d.redo() } else { d.undo() };
         if let Some(n) = name {
             self.log.status = format!("{}: {n}", if redo { "Redo" } else { "Undo" });
@@ -1004,6 +1155,10 @@ impl KeyformApp {
             })
         {
             self.delete_active();
+        }
+        // Mesh edit [Ctrl+E] (menus.md "ArtMesh", "Mesh Edit mode").
+        if ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::E))) {
+            self.toggle_mesh_edit();
         }
         // Edit level keys 1, 2, 3 (main-window.md §1).
         if !ctx.egui_wants_keyboard_input() {
@@ -1353,6 +1508,28 @@ impl eframe::App for KeyformApp {
                         .map(Selection::Part)
                 });
             s.doc.select(sel);
+            if self.initial_mesh_edit {
+                match s.doc.start_mesh_edit() {
+                    Ok(()) => {
+                        // Frame the mesh.
+                        let p = s.doc.mesh_edit.as_ref().map(|e| &e.graph.points);
+                        if let Some(p) = p.filter(|p| !p.is_empty()) {
+                            let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                            for q in p.chunks_exact(2) {
+                                b = [
+                                    b[0].min(q[0]),
+                                    b[1].min(q[1]),
+                                    b[2].max(q[0]),
+                                    b[3].max(q[1]),
+                                ];
+                            }
+                            s.doc.view.fit_box = Some(b);
+                            s.doc.view.fit_pending = true;
+                        }
+                    }
+                    Err(e) => self.log.warn(e),
+                }
+            }
         }
 
         // Playback clock.

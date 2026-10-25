@@ -336,6 +336,7 @@ mod tests {
             alpha_composition: Default::default(),
             user_data: String::new(),
             point_uids: Vec::new(),
+            mesh: EditableMesh::default(),
             grid,
             blend_shapes: Default::default(),
         }

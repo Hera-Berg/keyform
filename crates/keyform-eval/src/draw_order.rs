@@ -104,6 +104,7 @@ mod tests {
             alpha_composition: AlphaComposition::Over,
             user_data: String::new(),
             point_uids: vec![],
+            mesh: EditableMesh::default(),
             grid: KeyformGrid::single(ArtMeshForm::default()),
             blend_shapes: BlendShapes::default(),
         };

@@ -516,6 +516,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             alpha_composition: ac,
             user_data: String::new(),
             point_uids: (0..nvu as i64).collect(),
+            mesh: EditableMesh::default(),
             grid: KeyformGrid {
                 bindings,
                 keyforms,

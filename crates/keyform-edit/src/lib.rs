@@ -5,6 +5,7 @@ pub mod checks;
 pub mod forms;
 pub mod history;
 pub mod keys;
+pub mod mesh;
 pub mod objects;
 pub mod warp_net;
 

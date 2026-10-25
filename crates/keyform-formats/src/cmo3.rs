@@ -1022,6 +1022,8 @@ impl<'a, 'd> Loader<'a, 'd> {
         })?;
 
         let mut point_uids = Vec::new();
+        let mut mesh = EditableMesh::default();
+        let mut observed = false;
         let mut texture = None;
         for ext in o.list("_extensions")? {
             match ext.tag() {
@@ -1033,7 +1035,11 @@ impl<'a, 'd> Loader<'a, 'd> {
                             .into_iter()
                             .map(i64::from)
                             .collect();
+                        mesh = self.editable_mesh(&em, &info.id, nv)?;
                     }
+                }
+                "CTopologyObserverExtension" => {
+                    observed |= !ext.list("observers")?.is_empty();
                 }
                 "CTextureInputExtension" => {
                     if let Some(cur) = ext.field("currentTextureInputData")? {
@@ -1045,6 +1051,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 _ => {}
             }
         }
+        mesh.observed = observed;
         if point_uids.len() != nv {
             if !point_uids.is_empty() {
                 self.warn(format!(
@@ -1093,9 +1100,46 @@ impl<'a, 'd> Loader<'a, 'd> {
                 .unwrap_or_default(),
             user_data: o.string("userData")?.unwrap_or_default(),
             point_uids,
+            mesh,
             grid,
             blend_shapes,
         })
+    }
+
+    /// The mesh-editor graph; malformed parts are dropped with a warning.
+    /// spec: 10-formats/cmo3.md §4
+    fn editable_mesh(&mut self, em: &O<'a, 'd>, id: &str, nv: usize) -> Result<EditableMesh> {
+        let mut mesh = EditableMesh::default();
+        if let Some(v) = em.attr("nextPointUid") {
+            mesh.next_point_uid = v.trim().parse().unwrap_or(mesh.next_point_uid);
+        }
+        if let Some(v) = em.attr("useDelaunayTriangulation") {
+            mesh.delaunay = crate::graph::parse_bool(v);
+        }
+        let points = em.i8_array("pointPriority")?.unwrap_or_default();
+        if points.len() == nv {
+            mesh.point_priority = points;
+        }
+        let edges = em.i16_array("edge")?.unwrap_or_default();
+        let mut priority = em.i8_array("edgePriority")?.unwrap_or_default();
+        priority.resize(edges.len() / 2, EDGE_NORMAL);
+        let mut dropped = 0;
+        for (e, &p) in edges.chunks_exact(2).zip(&priority) {
+            // Stored as signed shorts; indices past 32767 wrap.
+            let (a, b) = (u32::from(e[0] as u16), u32::from(e[1] as u16));
+            if a as usize >= nv || b as usize >= nv || a == b {
+                dropped += 1;
+                continue;
+            }
+            mesh.edges.push([a, b]);
+            mesh.edge_priority.push(p);
+        }
+        if dropped > 0 {
+            self.warn(format!(
+                "{id}: {dropped} editable-mesh edges are out of range"
+            ));
+        }
+        Ok(mesh)
     }
 
     fn load_glue(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<Glue> {

@@ -209,6 +209,8 @@ pub struct ViewState {
     pub mirror: bool,
     /// Fit the canvas into the view on the next frame.
     pub fit_pending: bool,
+    /// Fit this canvas box (min x, min y, max x, max y) instead.
+    pub fit_box: Option<[f32; 4]>,
 }
 
 pub enum Source {
@@ -286,6 +288,8 @@ pub struct Document {
     pub mask_issues: keyform_edit::MaskIssues,
     /// History revision at the last save (the unmodified state).
     saved_revision: u64,
+    /// Mesh edit mode on one art mesh (main-window.md §6).
+    pub mesh_edit: Option<crate::mesh_edit::MeshEdit>,
 }
 
 pub fn load_motion(dir: &Path, file: &str, log: &mut Log) -> Option<Arc<Motion>> {
@@ -565,6 +569,7 @@ impl Document {
                 rotation: 0.0,
                 mirror: false,
                 fit_pending: true,
+                fit_box: None,
             },
             selection: SelectionSet::default(),
             hit_areas,
@@ -575,6 +580,7 @@ impl Document {
                 edit_level: 2,
             }),
             saved_revision: 0,
+            mesh_edit: None,
             drag: None,
             edit_level: 2,
             notice: None,
@@ -1037,6 +1043,64 @@ impl Document {
             }
             Ok(())
         })
+    }
+
+    /// Start Mesh editing on the selected art mesh (canvas-and-tools.md §5).
+    pub fn start_mesh_edit(&mut self) -> Result<(), String> {
+        if !self.editable() || self.mode != Mode::Modeling {
+            return Err("Mesh editing needs a model project in the Modeling workspace.".into());
+        }
+        if self.mesh_edit.is_some() || self.drag.is_some() {
+            return Ok(());
+        }
+        let meshes: Vec<usize> = self
+            .selection
+            .objects
+            .iter()
+            .filter_map(|o| match o {
+                Selection::ArtMesh(a) => Some(*a),
+                _ => None,
+            })
+            .collect();
+        let [a] = meshes[..] else {
+            return Err("Select one ArtMesh to edit its mesh.".into());
+        };
+        let s = crate::mesh_edit::MeshEdit::start(a, &self.model.art_meshes[a])?;
+        self.mesh_edit = Some(s);
+        Ok(())
+    }
+
+    /// Finish Mesh editing: the mesh is re-triangulated and its keyforms
+    /// remapped as one undo step. Returns a warning to show, if any.
+    pub fn finish_mesh_edit(&mut self) -> Result<Option<String>, String> {
+        let Some(s) = self.mesh_edit.take() else {
+            return Ok(None);
+        };
+        if !s.changed() {
+            return Ok(None);
+        }
+        let a = s.mesh;
+        let graph = s.graph;
+        let t = self.try_edit("Mesh Edit", |m| {
+            keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())
+        });
+        let t = match t {
+            Ok(t) => t,
+            Err(e) => {
+                // Keep editing so nothing is lost.
+                let mut s = crate::mesh_edit::MeshEdit::start(a, &self.model.art_meshes[a])?;
+                s.change(|g, _| *g = graph);
+                self.mesh_edit = Some(s);
+                return Err(e);
+            }
+        };
+        self.select(Some(Selection::ArtMesh(a)));
+        Ok((t.unresolved > 0).then(|| {
+            format!(
+                "{} crossing edges could not be kept in the mesh.",
+                t.unresolved
+            )
+        }))
     }
 
     /// The primary (last selected) object.

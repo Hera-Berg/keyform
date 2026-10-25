@@ -256,7 +256,7 @@ pub fn delete_all_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyform_model::{ArtMesh, ArtMeshForm, ObjectInfo};
+    use keyform_model::{ArtMesh, ArtMeshForm, EditableMesh, ObjectInfo};
 
     fn model() -> Model {
         let form = |x: f32| ArtMeshForm {
@@ -278,6 +278,7 @@ mod tests {
             alpha_composition: Default::default(),
             user_data: String::new(),
             point_uids: vec![0],
+            mesh: EditableMesh::default(),
             grid: KeyformGrid::single(form(0.0)),
             blend_shapes: Default::default(),
         };

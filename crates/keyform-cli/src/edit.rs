@@ -11,7 +11,10 @@
 //! - rotation `deformer`: `angle+=DEG` (every keyform);
 //! - `mesh`: `culling`;
 //! - every kind with keyforms: `addkey=PARAM_ID:VALUE`, `removekey=PARAM_ID:VALUE`
-//!   (keys.md §1–2).
+//!   (keys.md §1–2);
+//! - `mesh` topology (re-triangulated, keyforms remapped): `addpoint=X,Y`
+//!   (canvas pixels; on an edge it splits the edge), `movepoint=K:DX,DY`,
+//!   `deletepoint=K`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -115,6 +118,51 @@ fn structural(
                 create_warp_deformer(m, &nd, 5, 5, (2, 2))?;
             } else {
                 create_rotation_deformer(m, &nd)?;
+            }
+            Ok(true)
+        }
+        ("mesh", "addpoint" | "movepoint" | "deletepoint") => {
+            use keyform_edit::mesh::{set_mesh, MeshGraph};
+            let a = find(&m.art_meshes, id, |x| &x.info.id)?;
+            let mut g = MeshGraph::of(&m.art_meshes[a]);
+            let xy = |v: &str| -> Result<[f32; 2], Box<dyn std::error::Error>> {
+                let (x, y) = v.split_once(',').ok_or("expected X,Y")?;
+                Ok([x.trim().parse()?, y.trim().parse()?])
+            };
+            match field {
+                "addpoint" => {
+                    let q = xy(value)?;
+                    let on_edge = (0..g.mesh.edges.len()).find(|&e| {
+                        let [p0, p1] = g.mesh.edges[e].map(|v| g.point(v as usize));
+                        let (dx, dy) = (p1[0] - p0[0], p1[1] - p0[1]);
+                        let len = dx.hypot(dy);
+                        let cross = ((q[0] - p0[0]) * dy - (q[1] - p0[1]) * dx).abs();
+                        let t = ((q[0] - p0[0]) * dx + (q[1] - p0[1]) * dy) / (len * len);
+                        len > 0.0 && cross / len <= 1.0 && (0.0..=1.0).contains(&t)
+                    });
+                    match on_edge {
+                        Some(e) => g.split_edge(e, q),
+                        None => g.add_point(q),
+                    };
+                }
+                "movepoint" => {
+                    let (k, d) = value.split_once(':').ok_or("expected K:DX,DY")?;
+                    let k: usize = k.parse()?;
+                    let d = xy(d)?;
+                    if k >= g.len() {
+                        return Err(format!("{id}: no vertex {k}").into());
+                    }
+                    let p = g.point(k);
+                    g.set_point(k, [p[0] + d[0], p[1] + d[1]]);
+                }
+                _ => {
+                    let k: usize = value.parse()?;
+                    g.delete_points(&std::collections::HashSet::from([k]));
+                }
+            }
+            let t = set_mesh(m, a, &g)?;
+            if t.unresolved > 0 {
+                eprintln!("{id}: {} crossing edges left out", t.unresolved);
             }
             Ok(true)
         }
