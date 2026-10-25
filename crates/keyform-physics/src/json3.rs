@@ -2,6 +2,8 @@
 
 use serde_json::{json, Map, Number, Value};
 
+use std::borrow::Borrow;
+
 use keyform_model::*;
 
 use crate::PhysicsError;
@@ -30,7 +32,7 @@ fn kind_name(k: PhysicsKind) -> &'static str {
 
 /// Export verification on a copy (§4): invalid inputs/outputs and settings are
 /// removed, each removal reported.
-pub fn verify(rig: &PhysicsRig, params: &[Parameter]) -> (PhysicsRig, Vec<String>) {
+pub fn verify(rig: &PhysicsRig, params: &[impl Borrow<Parameter>]) -> (PhysicsRig, Vec<String>) {
     let mut r = rig.clone();
     let mut msgs = Vec::new();
     for s in &mut r.settings {
@@ -79,11 +81,19 @@ pub fn verify(rig: &PhysicsRig, params: &[Parameter]) -> (PhysicsRig, Vec<String
 }
 
 /// physics3.json for `rig` (already verified). `None` when nothing remains.
-pub fn to_json(rig: &PhysicsRig, params: &[Parameter], include_fps: bool) -> Option<Value> {
+pub fn to_json(
+    rig: &PhysicsRig,
+    params: &[impl Borrow<Parameter>],
+    include_fps: bool,
+) -> Option<Value> {
     if rig.settings.is_empty() {
         return None;
     }
-    let pid = |i: usize| params.get(i).map_or(String::new(), |p| p.id.clone());
+    let pid = |i: usize| {
+        params
+            .get(i)
+            .map_or(String::new(), |p| p.borrow().id.clone())
+    };
     let ids: Vec<String> = (1..=rig.settings.len())
         .map(|i| format!("PhysicsSetting{i}"))
         .collect();

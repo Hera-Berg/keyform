@@ -84,14 +84,14 @@ fn load_any(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
             let (w, h) = keyform_formats::image::RgbaImage::decode_png(&png)
                 .map(|i| (i.width, i.height))
                 .unwrap_or((0, 0));
-            m.textures.push(keyform_model::Texture {
+            m.textures.push(std::sync::Arc::new(keyform_model::Texture {
                 guid: String::new(),
                 name: format!("texture_{i:02}"),
                 width: w,
                 height: h,
                 png: Some(png),
                 locked: true,
-            });
+            }));
         }
         return Ok(m);
     }

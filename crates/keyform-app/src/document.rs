@@ -147,14 +147,14 @@ fn load_runtime_textures(m: &mut Model, dir: &Path, files: &[String], log: &mut 
             Ok(png) => {
                 let (w, h) = keyform_formats::image::RgbaImage::decode_png(&png)
                     .map_or((0, 0), |i| (i.width, i.height));
-                m.textures.push(Texture {
+                m.textures.push(std::sync::Arc::new(Texture {
                     guid: String::new(),
                     name: format!("texture_{i:02}"),
                     width: w,
                     height: h,
                     png: Some(png),
                     locked: true,
-                });
+                }));
             }
             Err(e) => log.warn(format!("texture {t}: {e}")),
         }

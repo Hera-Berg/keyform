@@ -131,7 +131,7 @@ mod tests {
             ("g2", 100.0),
         ] {
             let (a, s) = mesh(id, d);
-            m.art_meshes.push(a);
+            m.art_meshes.push(a.into());
             states.push(s);
         }
         let mut root = Part::new("__RootPart__");
@@ -150,7 +150,7 @@ mod tests {
         ];
         inl.children = vec![PartChild::ArtMesh(1), PartChild::ArtMesh(2)];
         grp.children = vec![PartChild::ArtMesh(3), PartChild::ArtMesh(4)];
-        m.parts = vec![root, inl, grp];
+        m.parts = vec![root.into(), inl.into(), grp.into()];
         m.root_part = Some(0);
         let parts: Vec<PartState> = m
             .parts

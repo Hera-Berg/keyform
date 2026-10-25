@@ -205,7 +205,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
         for b in rg {
             binding_param[b] = p;
         }
-        m.parameters.push(param);
+        m.parameters.push(std::sync::Arc::new(param));
         m.root_parameter_entries.push(ParamEntry::Parameter(p));
     }
     if let Some(b) = binding_param.iter().position(|&p| p == usize::MAX) {
@@ -249,13 +249,13 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
         if r.version >= 6 && at(what, r.i32s("parts.offscreen"), p)? >= 0 {
             part.offscreen = true;
         }
-        m.parts.push(part);
+        m.parts.push(std::sync::Arc::new(part));
     }
     let root = m.parts.len();
-    m.parts.push(Part::new("__RootPart__"));
+    m.parts.push(std::sync::Arc::new(Part::new("__RootPart__")));
     for p in 0..n_parts {
         if m.parts[p].info.parent_part.is_none() {
-            m.parts[p].info.parent_part = Some(root);
+            std::sync::Arc::make_mut(&mut m.parts[p]).info.parent_part = Some(root);
         }
     }
     m.root_part = Some(root);
@@ -393,7 +393,8 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             }
             t => return invalid(format!("{what}: deformer type {t}")),
         };
-        m.deformers.push(Deformer { info, target, kind });
+        m.deformers
+            .push(std::sync::Arc::new(Deformer { info, target, kind }));
     }
 
     // Art meshes.
@@ -485,7 +486,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             });
         }
         let nvu = nv as usize;
-        m.art_meshes.push(ArtMesh {
+        m.art_meshes.push(std::sync::Arc::new(ArtMesh {
             info,
             target,
             positions: keyforms
@@ -504,7 +505,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             point_uids: (0..nvu as i64).collect(),
             grid: KeyformGrid { bindings, keyforms },
             blend_shapes: BlendShapes::default(),
-        });
+        }));
     }
 
     // Glue.
@@ -542,7 +543,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             g("glues.keyform_count")?,
             gk.len(),
         )?;
-        m.glues.push(Glue {
+        m.glues.push(std::sync::Arc::new(Glue {
             info: ObjectInfo::new(what),
             mesh_a,
             mesh_b,
@@ -553,7 +554,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                 keyforms: gk[kr].iter().map(|&i| GlueForm { intensity: i }).collect(),
             },
             blend_shapes: BlendShapes::default(),
-        });
+        }));
     }
 
     build_draw_order_tree(r, &mut m, root)?;
@@ -607,7 +608,7 @@ fn build_draw_order_tree(r: &Moc3Raw, m: &mut Model, root: PartIndex) -> Result<
                 )),
                 1 => {
                     if let Some(pi) = opt_index("group item", ix[i], root)? {
-                        m.parts[pi].draw_order_group = true;
+                        std::sync::Arc::make_mut(&mut m.parts[pi]).draw_order_group = true;
                         children.push(PartChild::Part(pi));
                     }
                 }
@@ -615,7 +616,7 @@ fn build_draw_order_tree(r: &Moc3Raw, m: &mut Model, root: PartIndex) -> Result<
             }
         }
         if p != root || g == 0 {
-            m.parts[p].children = children;
+            std::sync::Arc::make_mut(&mut m.parts[p]).children = children;
         }
     }
     Ok(())

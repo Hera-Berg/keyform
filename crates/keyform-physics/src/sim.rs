@@ -1,5 +1,7 @@
 //! Pendulum simulation. spec: 70-advanced/physics.md §2–3
 
+use std::borrow::Borrow;
+
 use keyform_model::{Parameter, PhysicsKind, PhysicsRig, PhysicsSetting};
 
 type V2 = [f32; 2];
@@ -91,7 +93,13 @@ impl PhysicsSim {
 
     /// Advances `dt` seconds, reading inputs from and writing outputs to
     /// `values` (indexed like `params`). Disabled settings are skipped.
-    pub fn step(&mut self, rig: &PhysicsRig, params: &[Parameter], values: &mut [f32], dt: f32) {
+    pub fn step(
+        &mut self,
+        rig: &PhysicsRig,
+        params: &[impl Borrow<Parameter>],
+        values: &mut [f32],
+        dt: f32,
+    ) {
         if self.particles.len() != rig.settings.len() {
             self.reset(rig);
         }
@@ -146,7 +154,7 @@ fn normalized_input(st: &PhysicsSetting, kind: PhysicsKind, p: &Parameter, v: f3
 fn step_setting(
     st: &PhysicsSetting,
     rig: &PhysicsRig,
-    params: &[Parameter],
+    params: &[impl Borrow<Parameter>],
     values: &mut [f32],
     dt: f32,
     ps: &mut [Particle],
@@ -155,7 +163,10 @@ fn step_setting(
     // §3.1 inputs.
     let (mut tr, mut angle) = ([0.0f32, 0.0f32], 0.0f32);
     for inp in &st.inputs {
-        let (Some(p), Some(&v)) = (params.get(inp.parameter), values.get(inp.parameter)) else {
+        let (Some(p), Some(&v)) = (
+            params.get(inp.parameter).map(Borrow::<Parameter>::borrow),
+            values.get(inp.parameter),
+        ) else {
             continue;
         };
         let mut n = normalized_input(st, inp.kind, p, v);
@@ -240,8 +251,10 @@ fn step_setting(
             e[0] = e[0].min(value);
             e[1] = e[1].max(value);
         }
-        let (Some(p), Some(slot)) = (params.get(out.parameter), values.get_mut(out.parameter))
-        else {
+        let (Some(p), Some(slot)) = (
+            params.get(out.parameter).map(Borrow::<Parameter>::borrow),
+            values.get_mut(out.parameter),
+        ) else {
             continue;
         };
         let c = value.clamp(p.min.min(p.max), p.min.max(p.max));

@@ -481,20 +481,22 @@ pub fn apply_display_info(m: &mut Model, text: &str) -> Result<usize> {
     m.parameter_groups.clear();
     for (id, _, name) in &groups {
         group_index.insert(id.clone(), m.parameter_groups.len());
-        m.parameter_groups.push(ParameterGroup {
+        m.parameter_groups.push(std::sync::Arc::new(ParameterGroup {
             guid: String::new(),
             id: id.clone(),
             name: name.clone(),
             parent: None,
             children: Vec::new(),
-        });
+        }));
     }
     let mut root = Vec::new();
     for (i, (_, parent, _)) in groups.iter().enumerate() {
         match group_index.get(parent) {
             Some(&p) if p != i => {
-                m.parameter_groups[i].parent = Some(p);
-                m.parameter_groups[p].children.push(ParamEntry::Group(i));
+                std::sync::Arc::make_mut(&mut m.parameter_groups[i]).parent = Some(p);
+                std::sync::Arc::make_mut(&mut m.parameter_groups[p])
+                    .children
+                    .push(ParamEntry::Group(i));
             }
             _ => root.push(ParamEntry::Group(i)),
         }
@@ -515,12 +517,12 @@ pub fn apply_display_info(m: &mut Model, text: &str) -> Result<usize> {
         }
         placed[pi] = true;
         if let Some(n) = s(&p["Name"]).filter(|n| !n.is_empty()) {
-            m.parameters[pi].name = n;
+            std::sync::Arc::make_mut(&mut m.parameters[pi]).name = n;
         }
         match s(&p["GroupId"]).and_then(|g| group_index.get(&g).copied()) {
             Some(g) => {
-                m.parameters[pi].group = Some(g);
-                m.parameter_groups[g]
+                std::sync::Arc::make_mut(&mut m.parameters[pi]).group = Some(g);
+                std::sync::Arc::make_mut(&mut m.parameter_groups[g])
                     .children
                     .push(ParamEntry::Parameter(pi));
             }
@@ -540,7 +542,7 @@ pub fn apply_display_info(m: &mut Model, text: &str) -> Result<usize> {
             continue;
         };
         if let Some(p) = m.parts.iter_mut().find(|p| p.info.id == id) {
-            p.info.name = name;
+            std::sync::Arc::make_mut(p).info.name = name;
             applied += 1;
         }
     }

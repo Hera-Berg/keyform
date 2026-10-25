@@ -3,6 +3,8 @@
 //!
 //! spec: 20-model/object-model.md
 
+use std::sync::Arc;
+
 pub mod forms;
 pub mod grid;
 pub mod physics;
@@ -32,22 +34,25 @@ pub type DeformerIndex = usize;
 pub type MeshIndex = usize;
 pub type GlueIndex = usize;
 
+/// The model. Object lists hold shared objects: cloning a model is cheap
+/// and an edit copies only the objects it changes (`Arc::make_mut`), which
+/// makes undo snapshots inexpensive (spec: 50-ui/undo.md).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
     pub guid: Guid,
     pub name: String,
     pub canvas: Canvas,
-    pub parameters: Vec<Parameter>,
-    pub parameter_groups: Vec<ParameterGroup>,
+    pub parameters: Vec<Arc<Parameter>>,
+    pub parameter_groups: Vec<Arc<ParameterGroup>>,
     /// Parameters and groups at the top of the Parameter palette, in order.
     pub root_parameter_entries: Vec<ParamEntry>,
-    pub parts: Vec<Part>,
+    pub parts: Vec<Arc<Part>>,
     /// Top of the part tree (`__RootPart__`).
     pub root_part: Option<PartIndex>,
-    pub deformers: Vec<Deformer>,
-    pub art_meshes: Vec<ArtMesh>,
-    pub glues: Vec<Glue>,
-    pub textures: Vec<Texture>,
+    pub deformers: Vec<Arc<Deformer>>,
+    pub art_meshes: Vec<Arc<ArtMesh>>,
+    pub glues: Vec<Arc<Glue>>,
+    pub textures: Vec<Arc<Texture>>,
     pub physics: PhysicsRig,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
@@ -58,6 +63,30 @@ pub struct Model {
 }
 
 impl Model {
+    /// True if `other` shares every object with `self` (nothing was edited
+    /// between two snapshots). Cheap: compares pointers, not contents.
+    pub fn same_objects(&self, other: &Model) -> bool {
+        fn same<T>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y))
+        }
+        same(&self.parameters, &other.parameters)
+            && same(&self.parameter_groups, &other.parameter_groups)
+            && same(&self.parts, &other.parts)
+            && same(&self.deformers, &other.deformers)
+            && same(&self.art_meshes, &other.art_meshes)
+            && same(&self.glues, &other.glues)
+            && same(&self.textures, &other.textures)
+            && self.root_part == other.root_part
+            && self.root_parameter_entries == other.root_parameter_entries
+            && self.physics == other.physics
+            && self.export == other.export
+            && self.canvas == other.canvas
+            && self.name == other.name
+            && self.eye_blink_parameters == other.eye_blink_parameters
+            && self.lip_sync_parameters == other.lip_sync_parameters
+            && self.target_version == other.target_version
+    }
+
     /// GUID to write as `targetDeformerGuid` for an object attached to
     /// `target` (the ROOT GUID when attached to the canvas).
     pub fn target_deformer_guid(&self, target: Option<DeformerIndex>) -> &str {
@@ -503,7 +532,7 @@ mod tests {
     fn root_attached_objects_use_the_root_guid() {
         let mut m = Model::default();
         assert_eq!(m.target_deformer_guid(None), ROOT_DEFORMER_GUID);
-        m.deformers.push(Deformer {
+        m.deformers.push(Arc::new(Deformer {
             info: ObjectInfo {
                 guid: "abc".into(),
                 ..ObjectInfo::new("Warp")
@@ -514,7 +543,7 @@ mod tests {
                 grid: KeyformGrid::single(RotationForm::default()),
                 blend_shapes: BlendShapes::default(),
             }),
-        });
+        }));
         assert_eq!(m.target_deformer_guid(Some(0)), "abc");
         assert_eq!(m.target_deformer_guid(Some(7)), ROOT_DEFORMER_GUID);
     }

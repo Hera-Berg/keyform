@@ -2,6 +2,8 @@
 //!
 //! spec: 30-algorithms/keyform-interpolation.md, 30-algorithms/blend-shapes.md
 
+use std::borrow::Borrow;
+
 use keyform_model::*;
 
 /// Up to two (key index, weight) pairs selected on one binding.
@@ -258,7 +260,7 @@ pub struct Interpolated<F> {
 /// Interpolates `grid` at parameter values `values`, then applies blend
 /// shapes. spec: keyform-interpolation.md §3–5, blend-shapes.md §2
 pub fn interpolate<F: Blend>(
-    params: &[Parameter],
+    params: &[impl Borrow<Parameter>],
     values: &[f32],
     grid: &KeyformGrid<F>,
     blend: &BlendShapes<F>,
@@ -267,7 +269,7 @@ pub fn interpolate<F: Blend>(
     let mut outside = false;
     let mut sels = Vec::with_capacity(grid.bindings.len());
     for b in &grid.bindings {
-        let p = params.get(b.parameter)?;
+        let p: &Parameter = params.get(b.parameter)?.borrow();
         let v = values.get(b.parameter).copied().unwrap_or(p.default);
         outside |= is_outside(p, &b.keys, v);
         sels.push(select_keys(p, &b.keys, v));
@@ -314,12 +316,15 @@ pub fn interpolate<F: Blend>(
 
 /// The grid keyform at the key nearest each bound parameter's default.
 /// spec: blend-shapes.md §1
-pub fn base_keyform<'g, F>(params: &[Parameter], grid: &'g KeyformGrid<F>) -> Option<&'g F> {
+pub fn base_keyform<'g, F>(
+    params: &[impl Borrow<Parameter>],
+    grid: &'g KeyformGrid<F>,
+) -> Option<&'g F> {
     let idx: Vec<usize> = grid
         .bindings
         .iter()
         .map(|b| {
-            let d = params.get(b.parameter).map_or(0.0, |p| p.default);
+            let d = params.get(b.parameter).map_or(0.0, |p| p.borrow().default);
             let mut best = 0;
             for (i, k) in b.keys.iter().enumerate() {
                 if (k - d).abs() < (b.keys[best] - d).abs() {
@@ -333,7 +338,7 @@ pub fn base_keyform<'g, F>(params: &[Parameter], grid: &'g KeyformGrid<F>) -> Op
 }
 
 fn apply_blend_shapes<F: Blend>(
-    params: &[Parameter],
+    params: &[impl Borrow<Parameter>],
     values: &[f32],
     grid: &KeyformGrid<F>,
     blend: &BlendShapes<F>,
@@ -350,11 +355,13 @@ fn apply_blend_shapes<F: Blend>(
         values
             .get(p)
             .copied()
-            .or_else(|| params.get(p).map(|q| q.default))
+            .or_else(|| params.get(p).map(|q| q.borrow().default))
             .unwrap_or(0.0)
     };
     for p in bs_params {
-        let Some(param) = params.get(p) else { continue };
+        let Some(param) = params.get(p).map(Borrow::<Parameter>::borrow) else {
+            continue;
+        };
         // 1. Shape curve: entries plus (0, base), sorted by key.
         let mut curve: Vec<(f32, &F)> = blend
             .shapes
@@ -395,7 +402,7 @@ fn apply_blend_shapes<F: Blend>(
 }
 
 fn constraint_weight<F>(
-    _params: &[Parameter],
+    _params: &[impl Borrow<Parameter>],
     value_of: &dyn Fn(ParamIndex) -> f32,
     blend: &BlendShapes<F>,
     p: ParamIndex,

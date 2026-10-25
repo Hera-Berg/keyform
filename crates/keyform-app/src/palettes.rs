@@ -83,25 +83,31 @@ fn parent_link_tree(m: &Model) -> Model {
         ..Model::default()
     };
     for p in &mut t.parts {
-        p.children.clear();
+        std::sync::Arc::make_mut(p).children.clear();
     }
     let root = m.root_part;
     let parent = |pp: Option<usize>| pp.or(root).filter(|&p| p < m.parts.len());
     for (i, p) in m.parts.iter().enumerate() {
         if Some(i) != root {
             if let Some(q) = parent(p.info.parent_part).filter(|&q| q != i) {
-                t.parts[q].children.push(PartChild::Part(i));
+                std::sync::Arc::make_mut(&mut t.parts[q])
+                    .children
+                    .push(PartChild::Part(i));
             }
         }
     }
     for (i, a) in m.art_meshes.iter().enumerate() {
         if let Some(q) = parent(a.info.parent_part) {
-            t.parts[q].children.push(PartChild::ArtMesh(i));
+            std::sync::Arc::make_mut(&mut t.parts[q])
+                .children
+                .push(PartChild::ArtMesh(i));
         }
     }
     for (i, d) in m.deformers.iter().enumerate() {
         if let Some(q) = parent(d.info.parent_part) {
-            t.parts[q].children.push(PartChild::Deformer(i));
+            std::sync::Arc::make_mut(&mut t.parts[q])
+                .children
+                .push(PartChild::Deformer(i));
         }
     }
     t

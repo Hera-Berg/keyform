@@ -69,16 +69,18 @@ fn scene() -> Model {
         },
         ..Model::default()
     };
-    m.textures.push(Texture {
+    m.textures.push(std::sync::Arc::new(Texture {
         guid: String::new(),
         name: "t".into(),
         width: 64,
         height: 64,
         png: Some(texture_png()),
         locked: true,
-    });
+    }));
     // Background row strips for every blend test cell.
-    m.art_meshes.push(quad("bg", 0.0, 0.0, 512.0, 100.0, false));
+    m.art_meshes.push(std::sync::Arc::new(quad(
+        "bg", 0.0, 0.0, 512.0, 100.0, false,
+    )));
     let modes = ColorComposition::NAMES;
     let alphas = [
         AlphaComposition::Over,
@@ -92,7 +94,7 @@ fn scene() -> Model {
         let mut q = quad(name, cx, cy, 60.0, 500.0, false);
         q.color_composition = *cc;
         q.alpha_composition = alphas[i % alphas.len()];
-        m.art_meshes.push(q);
+        m.art_meshes.push(std::sync::Arc::new(q));
         // A second overlapping mesh of the same mode: stresses dst reads.
         let mut q2 = quad(
             &format!("{name}2"),
@@ -103,35 +105,42 @@ fn scene() -> Model {
             false,
         );
         q2.color_composition = *cc;
-        m.art_meshes.push(q2);
+        m.art_meshes.push(std::sync::Arc::new(q2));
     }
     // Clipping: a mask source and two clipped meshes (normal / inverted).
     let src = m.art_meshes.len();
-    m.art_meshes
-        .push(quad("mask", 30.0, 270.0, 120.0, 400.0, false));
+    m.art_meshes.push(std::sync::Arc::new(quad(
+        "mask", 30.0, 270.0, 120.0, 400.0, false,
+    )));
     let mut c1 = quad("clipped", 10.0, 250.0, 100.0, 600.0, false);
     c1.clip = vec![src];
-    m.art_meshes.push(c1);
+    m.art_meshes.push(std::sync::Arc::new(c1));
     let mut c2 = quad("inverted", 90.0, 300.0, 100.0, 610.0, false);
     c2.clip = vec![src];
     c2.invert_clip = true;
-    m.art_meshes.push(c2);
+    m.art_meshes.push(std::sync::Arc::new(c2));
     // Culling: a mirrored quad with culling on is hidden; off, it is drawn.
     let mut culled = quad("culled", 250.0, 300.0, 80.0, 700.0, true);
     culled.culling = true;
-    m.art_meshes.push(culled);
-    m.art_meshes
-        .push(quad("double_sided", 350.0, 300.0, 80.0, 700.0, true));
+    m.art_meshes.push(std::sync::Arc::new(culled));
+    m.art_meshes.push(std::sync::Arc::new(quad(
+        "double_sided",
+        350.0,
+        300.0,
+        80.0,
+        700.0,
+        true,
+    )));
 
     let mut root = Part::new("__RootPart__");
     root.children = (0..m.art_meshes.len())
         .rev()
         .map(PartChild::ArtMesh)
         .collect();
-    m.parts.push(root);
+    m.parts.push(std::sync::Arc::new(root));
     m.root_part = Some(0);
     for a in &mut m.art_meshes {
-        a.info.parent_part = Some(0);
+        std::sync::Arc::make_mut(a).info.parent_part = Some(0);
     }
     m
 }
@@ -214,7 +223,7 @@ fn gpu_matches_cpu_on_all_compositions() {
                 .art_meshes
                 .iter_mut()
                 .filter(|a| a.info.id == "culled")
-                .for_each(|a| a.info.visible = false);
+                .for_each(|a| std::sync::Arc::make_mut(a).info.visible = false);
             let fr = Evaluator::new(&hidden_m).evaluate(&[]);
             let hidden = GpuRenderer::new(&hidden_m)
                 .unwrap()
@@ -234,7 +243,7 @@ fn gpu_matches_cpu_on_all_compositions() {
             m2.art_meshes
                 .iter_mut()
                 .filter(|a| a.info.id == "culled")
-                .for_each(f);
+                .for_each(|a| f(std::sync::Arc::make_mut(a)));
             let fr = Evaluator::new(&m2).evaluate(&[]);
             GpuRenderer::new(&m2)
                 .unwrap()

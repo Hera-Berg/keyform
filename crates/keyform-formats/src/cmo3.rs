@@ -208,7 +208,7 @@ impl<'a, 'd> Loader<'a, 'd> {
         }
 
         for p in &part_objs {
-            m.parts.push(self.load_part(p, &m)?);
+            m.parts.push(std::sync::Arc::new(self.load_part(p, &m)?));
         }
         m.root_part = match root.field("rootPart")? {
             Some(rp) => rp
@@ -217,13 +217,15 @@ impl<'a, 'd> Loader<'a, 'd> {
             None => None,
         };
         for d in &deformer_objs {
-            m.deformers.push(self.load_deformer(d, &m)?);
+            m.deformers
+                .push(std::sync::Arc::new(self.load_deformer(d, &m)?));
         }
         for d in &meshes {
-            m.art_meshes.push(self.load_art_mesh(d, &m)?);
+            m.art_meshes
+                .push(std::sync::Arc::new(self.load_art_mesh(d, &m)?));
         }
         for a in &glues {
-            m.glues.push(self.load_glue(a, &m)?);
+            m.glues.push(std::sync::Arc::new(self.load_glue(a, &m)?));
         }
         self.check_deformer_cycles(&mut m);
 
@@ -389,14 +391,14 @@ impl<'a, 'd> Loader<'a, 'd> {
                 self.idx.texture_images.insert(img.identity(), ti);
             }
             self.idx.textures_by_guid.insert(guid.clone(), ti);
-            m.textures.push(Texture {
+            m.textures.push(std::sync::Arc::new(Texture {
                 guid,
                 name: atlas.string("name")?.unwrap_or_default(),
                 width: atlas.i32("width")?.unwrap_or(0).max(0) as u32,
                 height: atlas.i32("height")?.unwrap_or(0).max(0) as u32,
                 png,
                 locked: atlas.bool("lockCachedAtlasImage")?.unwrap_or(false),
-            });
+            }));
         }
         Ok(())
     }
@@ -436,7 +438,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 _ => ParameterKind::Normal,
             };
             self.idx.params.insert(guid.clone(), m.parameters.len());
-            m.parameters.push(Parameter {
+            m.parameters.push(std::sync::Arc::new(Parameter {
                 guid,
                 name: p.string("name")?.unwrap_or_else(|| id.clone()),
                 id,
@@ -450,7 +452,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 snap_epsilon,
                 combined: p.bool("combined")?.unwrap_or(false),
                 group: None,
-            });
+            }));
         }
 
         // Groups: folders of the Parameter palette.
@@ -472,24 +474,28 @@ impl<'a, 'd> Loader<'a, 'd> {
             self.idx
                 .groups
                 .insert(guid.clone(), m.parameter_groups.len());
-            m.parameter_groups.push(ParameterGroup {
+            m.parameter_groups.push(std::sync::Arc::new(ParameterGroup {
                 guid,
                 id: gr.id("id")?.unwrap_or_default().to_owned(),
                 name: gr.string("name")?.unwrap_or_default(),
                 parent: None,
                 children: Vec::new(),
-            });
+            }));
             group_objs.push(*gr);
         }
         for (gi, gr) in group_objs.iter().enumerate() {
             let children = self.param_entries(gr)?;
             for c in &children {
                 match *c {
-                    ParamEntry::Parameter(p) => m.parameters[p].group = Some(gi),
-                    ParamEntry::Group(g) => m.parameter_groups[g].parent = Some(gi),
+                    ParamEntry::Parameter(p) => {
+                        std::sync::Arc::make_mut(&mut m.parameters[p]).group = Some(gi)
+                    }
+                    ParamEntry::Group(g) => {
+                        std::sync::Arc::make_mut(&mut m.parameter_groups[g]).parent = Some(gi)
+                    }
                 }
             }
-            m.parameter_groups[gi].children = children;
+            std::sync::Arc::make_mut(&mut m.parameter_groups[gi]).children = children;
         }
         m.root_parameter_entries = match root_group {
             Some(r) => self.param_entries(&r)?,
@@ -999,7 +1005,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                         "{}: target deformer cycle broken",
                         m.deformers[start].info.id
                     ));
-                    m.deformers[start].target = None;
+                    std::sync::Arc::make_mut(&mut m.deformers[start]).target = None;
                     break;
                 }
                 cur = m.deformers[d].target;
