@@ -10,12 +10,14 @@ const USAGE: &str = "usage:
   kf info <file.cmo3>             summary of a model project
   kf roundtrip <in.cmo3> <out>    load and save a project unchanged
   kf xml <in.cmo3> <out.xml>      extract the project's main.xml
+  kf set <in.cmo3> <out.cmo3> KIND:ID.FIELD=VALUE ...
+                                   edit fields and save (see edit.rs)
   kf moc3info <file.moc3>          summary of a runtime model
   kf export <in.cmo3> <out.moc3|out-dir> [version]
                                    export for runtime: a .moc3 path writes only the
                                    moc3, a folder gets the full file set
   kf diffmoc <a.moc3> <b.moc3>     compare two moc3 files section by section
-  kf render <model> <out.png> [--size N] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
+  kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
                                    render a .cmo3/.moc3 at parameter values
   kf gpudiff <model> <diff.png> [render options]
                                    compare the CPU and GPU renderers
@@ -34,6 +36,9 @@ fn main() -> ExitCode {
     {
         ["info", path] => info(Path::new(path)),
         ["roundtrip", input, output] => roundtrip(Path::new(input), Path::new(output)),
+        ["set", input, output, edits @ ..] => {
+            edit::set_cmd(Path::new(input), Path::new(output), edits)
+        }
         ["xml", input, output] => {
             load(Path::new(input)).and_then(|d| Ok(std::fs::write(output, d.xml.write())?))
         }
@@ -73,6 +78,7 @@ fn main() -> ExitCode {
 }
 
 mod compare;
+mod edit;
 mod render;
 
 type R = Result<(), Box<dyn std::error::Error>>;

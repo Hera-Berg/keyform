@@ -47,7 +47,9 @@ renderer on a synthetic scene (skipped without a GPU adapter).
     cargo run --release -p keyform-app -- [model.cmo3 | model.model3.json | model.moc3]
 
 Open (or drop) a model, drive parameters, play motions and expressions with
-physics and pose. Projects (`.cmo3`) can be edited (Inspector name/ID/
+physics and pose (Animation menu: expression, eye blink, physics, pose,
+breath, cursor tracking by dragging over the view, idle motion, old fading
+and old playback methods). Projects (`.cmo3`) can be edited (Inspector name/ID/
 visibility/lock, Parts palette eye) with undo/redo (Ctrl+Z, Ctrl+Y) and
 saved in place (Ctrl+S, Save as Ctrl+Shift+S): only changed fields are
 rewritten. For runtime models, Save writes the viewer settings
@@ -61,13 +63,20 @@ sessions. Debug options:
     kf info model.cmo3
     kf roundtrip in.cmo3 out.cmo3
     kf xml model.cmo3 main.xml                   # extract the project document
+    kf set in.cmo3 out.cmo3 part:PartArmB.visible=false param:ParamAngleX.max=40 …
     kf export model.cmo3 out-dir [version]       # moc3 + textures + cdi3 + model3.json
     kf export model.cmo3 model.moc3 [version]    # moc3 only
-    kf render model.cmo3|.moc3|.model3.json out.png [--size N] [--ss N] [--bg] [--gpu] [ParamId=value …]
+    kf render model.cmo3|.moc3|.model3.json out.png [--size N | --scale S] [--ss N] [--bg] [--gpu] [ParamId=value …]
     kf gpudiff model.cmo3 diff.png [render options]   # CPU vs GPU renderer
     kf sweep model.cmo3 sheet.png ParamAngleX 5 [--size N]
     kf compare a.cmo3 b.moc3 [samples]           # evaluate both, report geometry differences
     kf diffmoc a.moc3 b.moc3                     # section-by-section moc3 diff
+
+## Black-box testing
+
+`tools/blackbox/` drives the reference editor and viewer under Wine on a
+private headless display, for comparisons such as reference image exports
+vs `kf render --scale`. See its README.
 
 ## Assets
 

@@ -8,6 +8,9 @@ use keyform_render::{CpuRenderer, RenderOptions, RgbaImage, View};
 
 struct Args {
     size: u32,
+    /// Fixed scale (output = ⌊canvas × scale⌋, like the reference's image
+    /// export) instead of fitting into `size`.
+    scale: Option<f32>,
     ss: u32,
     background: bool,
     gpu: bool,
@@ -18,6 +21,7 @@ struct Args {
 fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut a = Args {
         size: 1024,
+        scale: None,
         ss: 2,
         background: false,
         gpu: false,
@@ -28,6 +32,7 @@ fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
     while let Some(&t) = it.next() {
         match t {
             "--size" => a.size = it.next().ok_or("--size N")?.parse()?,
+            "--scale" => a.scale = Some(it.next().ok_or("--scale S")?.parse()?),
             "--ss" => a.ss = it.next().ok_or("--ss N")?.parse()?,
             "--bg" => a.background = true,
             "--gpu" => a.gpu = true,
@@ -59,7 +64,23 @@ fn values(m: &Model, set: &[(String, f32)]) -> Result<Vec<f32>, Box<dyn std::err
 
 fn options(m: &Model, a: &Args) -> RenderOptions {
     RenderOptions {
-        view: View::fit_canvas(m, a.size),
+        view: match a.scale {
+            Some(s) => {
+                let (cw, ch) = (m.canvas.width as f32, m.canvas.height as f32);
+                let (w, h) = ((cw * s).floor().max(1.0), (ch * s).floor().max(1.0));
+                // Like the reference's image export: ⌊canvas × scale⌋ pixels.
+                // TODO(Q-0012): centring when rounded down is provisional
+                // (it matched reference exports best).
+                View {
+                    width: w as u32,
+                    height: h as u32,
+                    scale: s,
+                    origin: [cw / 2.0 - w / (2.0 * s), ch / 2.0 - h / (2.0 * s)],
+                    ..View::fit_canvas(m, a.size)
+                }
+            }
+            None => View::fit_canvas(m, a.size),
+        },
         background: a.background.then_some([1.0, 1.0, 1.0, 1.0]),
         supersample: a.ss,
     }
