@@ -164,6 +164,49 @@ pub fn translate(
     Ok(true)
 }
 
+/// Changes a rotation deformer's keyform angle by `delta` degrees; with
+/// `snap`, the result is rounded to a multiple of `snap` degrees
+/// (canvas-and-tools.md §3: Shift snaps, default 45°).
+pub fn rotate(
+    m: &mut Model,
+    o: ObjectRef,
+    cell: usize,
+    delta: f32,
+    snap: Option<f32>,
+) -> Result<bool, FormError> {
+    let ObjectRef::Deformer(i) = o else {
+        return Ok(false);
+    };
+    let d = Arc::make_mut(m.deformers.get_mut(i).ok_or(FormError::Missing)?);
+    let DeformerKind::Rotation(r) = &mut d.kind else {
+        return Ok(false);
+    };
+    let f = r.grid.keyforms.get_mut(cell).ok_or(FormError::Missing)?;
+    let mut a = f.angle + delta;
+    if let Some(s) = snap.filter(|s| *s > 0.0) {
+        a = (a / s).round() * s;
+    }
+    f.angle = a;
+    Ok(true)
+}
+
+/// Multiplies a rotation deformer's keyform scale by `factor` (> 0).
+pub fn scale(m: &mut Model, o: ObjectRef, cell: usize, factor: f32) -> Result<bool, FormError> {
+    let ObjectRef::Deformer(i) = o else {
+        return Ok(false);
+    };
+    if !(factor.is_finite() && factor > 0.0) {
+        return Ok(false);
+    }
+    let d = Arc::make_mut(m.deformers.get_mut(i).ok_or(FormError::Missing)?);
+    let DeformerKind::Rotation(r) = &mut d.kind else {
+        return Ok(false);
+    };
+    let f = r.grid.keyforms.get_mut(cell).ok_or(FormError::Missing)?;
+    f.scale *= factor;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

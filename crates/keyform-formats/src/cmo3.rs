@@ -952,6 +952,8 @@ impl<'a, 'd> Loader<'a, 'd> {
                     })
                 })?;
                 DeformerKind::Rotation(RotationDeformer {
+                    handle_length: o.f32("handleLengthOnCanvas")?.unwrap_or(100.0),
+                    circle_radius: o.f32("circleRadiusOnCanvas")?.unwrap_or(30.0),
                     base_angle: o.f32("baseAngle")?.unwrap_or(0.0),
                     grid,
                     blend_shapes,

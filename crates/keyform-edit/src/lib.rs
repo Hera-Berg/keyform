@@ -7,7 +7,7 @@ pub mod history;
 pub mod keys;
 
 pub use checks::{mask_issues, IssueList, MaskIssues, OpenBinding};
-pub use forms::{current_cell, parent_deformer, translate, FormError};
+pub use forms::{current_cell, parent_deformer, rotate, scale, translate, FormError};
 pub use history::{History, StepKind};
 pub use keys::{add_key, delete_all_keys, keys_of, remove_key, KeyError, ObjectRef};
 

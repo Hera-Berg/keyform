@@ -391,6 +391,8 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                     });
                 }
                 DeformerKind::Rotation(RotationDeformer {
+                    handle_length: 100.0,
+                    circle_radius: 30.0,
                     base_angle: at(what, r.f32s("rotations.base_angle"), si)?,
                     grid: KeyformGrid {
                         bindings,

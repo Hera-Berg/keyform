@@ -546,6 +546,10 @@ pub struct RotationDeformer {
     pub base_angle: f32,
     pub grid: KeyformGrid<RotationForm>,
     pub blend_shapes: BlendShapes<RotationForm>,
+    /// Canvas lengths of the on-canvas handle and circle (display only;
+    /// `handleLengthOnCanvas`, `circleRadiusOnCanvas`).
+    pub handle_length: f32,
+    pub circle_radius: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -653,6 +657,8 @@ mod tests {
             },
             target: None,
             kind: DeformerKind::Rotation(RotationDeformer {
+                handle_length: 100.0,
+                circle_radius: 30.0,
                 base_angle: 0.0,
                 grid: KeyformGrid::single(RotationForm::default()),
                 blend_shapes: BlendShapes::default(),

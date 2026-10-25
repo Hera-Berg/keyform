@@ -809,6 +809,8 @@ fn write_deformer(
             };
             write_info(&mut f, "CDeformerId", &o.info, &n.info)?;
             f.f32("baseAngle", or.base_angle, nr.base_angle);
+            f.f32("handleLengthOnCanvas", or.handle_length, nr.handle_length);
+            f.f32("circleRadiusOnCanvas", or.circle_radius, nr.circle_radius);
         }
         _ => return unsupported(format!("deformer {id}: deformer type")),
     }

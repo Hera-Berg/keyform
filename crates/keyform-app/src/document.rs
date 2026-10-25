@@ -13,7 +13,7 @@ use keyform_eval::{EvalOptions, Evaluator, Frame, Overrides};
 use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::moc3::{moc3_to_model, Moc3Raw};
 use keyform_formats::runtime_json::{Model3, Model3Group, MotionRef};
-use keyform_model::{Model, Texture};
+use keyform_model::{DeformerKind, Model, Texture};
 use keyform_physics::PhysicsSim;
 
 use crate::log::Log;
@@ -49,16 +49,47 @@ pub enum Mode {
 
 /// An object being dragged on the canvas: edits are previewed live on top of
 /// `base` and committed as one undo step at the end.
+struct MoveTarget {
+    object: Selection,
+    cell: usize,
+    /// The parent deformer's map at drag start.
+    parent: Option<keyform_eval::DeformerMap>,
+    /// Points to move; all if `None`.
+    points: Option<Vec<usize>>,
+}
+
+enum DragKind {
+    Move(Vec<MoveTarget>),
+    /// Rotation-deformer handle: angle about `centre` (canvas).
+    Rotate {
+        target: Selection,
+        cell: usize,
+        centre: [f32; 2],
+        start: [f32; 2],
+    },
+    /// Rotation-deformer circle: scale about `centre`.
+    Scale {
+        target: Selection,
+        cell: usize,
+        centre: [f32; 2],
+        start: [f32; 2],
+    },
+}
+
 struct Drag {
     base: Model,
-    /// (object, keyform cell, parent map, points to move — all if None)
-    targets: Vec<(
-        Selection,
-        usize,
-        Option<keyform_eval::DeformerMap>,
-        Option<Vec<usize>>,
-    )>,
+    kind: DragKind,
 }
+
+/// Which part of a rotation deformer's on-canvas widget was grabbed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handle {
+    Rotate,
+    Scale,
+}
+
+/// Angle increment of Shift-rotation (Environment ▸ Modeling default).
+const ROTATE_SNAP: f32 = 45.0;
 
 /// Binding more parameters than this to one object shows a warning
 /// (palettes.md §3).
@@ -759,32 +790,132 @@ impl Document {
                     .map(|p| p.1)
                     .collect()
             });
-            targets.push((o, cell, parent, which));
+            targets.push(MoveTarget {
+                object: o,
+                cell,
+                parent,
+                points: which,
+            });
         }
         if targets.is_empty() {
             return Ok(());
         }
         self.drag = Some(Drag {
             base: self.model.clone(),
-            targets,
+            kind: DragKind::Move(targets),
         });
         Ok(())
     }
 
-    /// Shows the dragged object moved by `total` canvas pixels.
-    pub fn drag_update(&mut self, total: [f32; 2]) {
+    /// A rotation deformer's widget in canvas space: origin, handle tip and
+    /// circle radius. spec: canvas-and-tools.md §3
+    pub fn rotation_widget(&self, o: Selection) -> Option<([f32; 2], [f32; 2], f32)> {
+        let Selection::Deformer(d) = o else {
+            return None;
+        };
+        let DeformerKind::Rotation(r) = &self.model.deformers.get(d)?.kind else {
+            return None;
+        };
+        let Some(keyform_eval::DeformerMap::Rotation(map)) =
+            self.frame.as_ref()?.deformers.get(d)?.map.clone()
+        else {
+            return None;
+        };
+        let (s, c) = map.angle.to_radians().sin_cos();
+        let o = map.origin;
+        Some((
+            o,
+            [o[0] + s * r.handle_length, o[1] - c * r.handle_length],
+            r.circle_radius,
+        ))
+    }
+
+    /// Starts rotating or scaling a rotation deformer from canvas point `at`.
+    pub fn drag_begin_handle(
+        &mut self,
+        o: Selection,
+        handle: Handle,
+        at: [f32; 2],
+    ) -> Result<(), String> {
+        if !self.editable() || self.mode != Mode::Modeling {
+            return Err("Editing is available in the Modeling workspace of a project.".into());
+        }
+        let (centre, _, _) = self.rotation_widget(o).ok_or("not a rotation deformer")?;
+        let cell =
+            keyform_edit::current_cell(&self.model, o, &self.values).map_err(|e| e.to_string())?;
+        let kind = match handle {
+            Handle::Rotate => DragKind::Rotate {
+                target: o,
+                cell,
+                centre,
+                start: at,
+            },
+            Handle::Scale => DragKind::Scale {
+                target: o,
+                cell,
+                centre,
+                start: at,
+            },
+        };
+        self.drag = Some(Drag {
+            base: self.model.clone(),
+            kind,
+        });
+        Ok(())
+    }
+
+    /// Shows the drag at `total` canvas pixels from its start; `shift`
+    /// snaps rotations.
+    pub fn drag_update(&mut self, total: [f32; 2], shift: bool) {
         let Some(d) = &self.drag else { return };
         let mut m = d.base.clone();
-        for (o, cell, parent, which) in &d.targets {
-            if let Err(e) =
-                keyform_edit::translate(&mut m, *o, *cell, parent.as_ref(), total, which.as_deref())
-            {
-                self.notice = Some(e.to_string());
-                return;
+        let r = match &d.kind {
+            DragKind::Move(targets) => targets.iter().try_for_each(|t| {
+                keyform_edit::translate(
+                    &mut m,
+                    t.object,
+                    t.cell,
+                    t.parent.as_ref(),
+                    total,
+                    t.points.as_deref(),
+                )
+                .map(|_| ())
+            }),
+            DragKind::Rotate {
+                target,
+                cell,
+                centre,
+                start,
+            } => {
+                let cur = [start[0] + total[0], start[1] + total[1]];
+                let ang = |p: [f32; 2]| (p[1] - centre[1]).atan2(p[0] - centre[0]);
+                let mut delta = (ang(cur) - ang(*start)).to_degrees();
+                delta = (delta + 180.0).rem_euclid(360.0) - 180.0;
+                keyform_edit::rotate(&mut m, *target, *cell, delta, shift.then_some(ROTATE_SNAP))
+                    .map(|_| ())
             }
+            DragKind::Scale {
+                target,
+                cell,
+                centre,
+                start,
+            } => {
+                let cur = [start[0] + total[0], start[1] + total[1]];
+                let dist = |p: [f32; 2]| (p[0] - centre[0]).hypot(p[1] - centre[1]);
+                let d0 = dist(*start);
+                if d0 <= 1e-3 {
+                    return;
+                }
+                keyform_edit::scale(&mut m, *target, *cell, dist(cur) / d0).map(|_| ())
+            }
+        };
+        match r {
+            Ok(()) => {
+                self.model = m;
+                self.model_changed();
+            }
+            Err(e) => self.notice = Some(e.to_string()),
         }
-        self.model = m;
-        self.model_changed();
     }
 
     /// Ends a drag: one undo step "Move" if anything moved.
@@ -795,8 +926,13 @@ impl Document {
             self.model_changed();
             return;
         }
+        let name = match d.kind {
+            DragKind::Move(_) => "Move",
+            DragKind::Rotate { .. } => "Rotate",
+            DragKind::Scale { .. } => "Scale",
+        };
         self.history
-            .commit("Move", StepKind::Real, self.edit_state(), false);
+            .commit(name, StepKind::Real, self.edit_state(), false);
         self.mask_issues = keyform_edit::mask_issues(&self.model);
     }
 
@@ -1625,8 +1761,8 @@ mod tests {
         let before = doc.frame.as_ref().unwrap().meshes[h].positions.clone();
         doc.select(Some(hit));
         doc.drag_begin(false).unwrap();
-        doc.drag_update([5.0, 0.0]);
-        doc.drag_update([10.0, -4.0]);
+        doc.drag_update([5.0, 0.0], false);
+        doc.drag_update([10.0, -4.0], false);
         doc.drag_end();
         assert_eq!(doc.history.undo_name(), Some("Move"));
         doc.tick(0.0, &PlaybackOptions::default(), &mut log);
@@ -1789,7 +1925,7 @@ mod tests {
             points: vec![hit],
         });
         doc.drag_begin(true).unwrap();
-        doc.drag_update([0.0, 7.0]);
+        doc.drag_update([0.0, 7.0], false);
         doc.drag_end();
         doc.tick(0.0, &o, &mut log);
         let after = doc.object_points(sel);
@@ -1809,5 +1945,66 @@ mod tests {
         ];
         assert!(doc.objects_in(&quad).contains(&sel));
         assert!(doc.points_in(&quad).iter().any(|x| x.0 == sel));
+    }
+
+    /// Rotation deformer widget: the handle rotates, the circle scales.
+    #[test]
+    fn rotation_handles_rotate_and_scale() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = root.join("hiyori_pro_t11.cmo3");
+        if !path.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        let o = PlaybackOptions::default();
+        doc.tick(0.0, &o, &mut log);
+        let d = (0..doc.model.deformers.len())
+            .find(|&d| {
+                matches!(doc.model.deformers[d].kind, DeformerKind::Rotation(_))
+                    && keyform_edit::current_cell(&doc.model, Selection::Deformer(d), &doc.values)
+                        .is_ok()
+            })
+            .unwrap();
+        let sel = Selection::Deformer(d);
+        let cell = keyform_edit::current_cell(&doc.model, sel, &doc.values).unwrap();
+        let angle = |doc: &Document| match &doc.model.deformers[d].kind {
+            DeformerKind::Rotation(r) => (r.grid.keyforms[cell].angle, r.grid.keyforms[cell].scale),
+            _ => unreachable!(),
+        };
+        let (a0, s0) = angle(&doc);
+        let (centre, tip, radius) = doc.rotation_widget(sel).unwrap();
+        // Quarter turn clockwise on screen (y down): +90°.
+        let v = [tip[0] - centre[0], tip[1] - centre[1]];
+        let turned = [centre[0] - v[1], centre[1] + v[0]];
+        doc.drag_begin_handle(sel, Handle::Rotate, tip).unwrap();
+        doc.drag_update([turned[0] - tip[0], turned[1] - tip[1]], false);
+        doc.drag_end();
+        assert!(
+            (angle(&doc).0 - (a0 + 90.0)).abs() < 1e-3,
+            "{:?}",
+            angle(&doc)
+        );
+        assert_eq!(doc.history.undo_name(), Some("Rotate"));
+        // Shift snaps to 45°.
+        doc.tick(0.0, &o, &mut log);
+        let (centre, tip, _) = doc.rotation_widget(sel).unwrap();
+        let v = [tip[0] - centre[0], tip[1] - centre[1]];
+        let (s, c) = 40f32.to_radians().sin_cos();
+        let t = [
+            centre[0] + c * v[0] - s * v[1],
+            centre[1] + s * v[0] + c * v[1],
+        ];
+        doc.drag_begin_handle(sel, Handle::Rotate, tip).unwrap();
+        doc.drag_update([t[0] - tip[0], t[1] - tip[1]], true);
+        doc.drag_end();
+        assert_eq!(angle(&doc).0.rem_euclid(45.0), 0.0, "{:?}", angle(&doc));
+        // Dragging the circle out to twice its radius doubles the scale.
+        let start = [centre[0] + radius, centre[1]];
+        doc.drag_begin_handle(sel, Handle::Scale, start).unwrap();
+        doc.drag_update([radius, 0.0], false);
+        doc.drag_end();
+        assert!((angle(&doc).1 - 2.0 * s0).abs() < 1e-4);
+        assert_eq!(doc.history.undo_name(), Some("Scale"));
     }
 }

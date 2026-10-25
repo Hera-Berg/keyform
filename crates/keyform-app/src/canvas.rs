@@ -274,6 +274,27 @@ fn arrow_tool(
         let radius = POINT_PICK / doc.view.zoom.max(1e-6);
         let mut set = doc.selection.clone();
         let mut drag_points = false;
+        // Rotation deformer widget of the primary selection: handle tip
+        // rotates, circle edge scales (the origin is a point).
+        let widget = doc
+            .primary()
+            .and_then(|o| Some((o, doc.rotation_widget(o)?)));
+        if let (Some((o, (centre, tip, r))), true) = (widget, response.drag_started_by(primary)) {
+            let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+            let handle = if dist(q, tip) <= radius {
+                Some(crate::document::Handle::Rotate)
+            } else if dist(q, centre) > radius && (dist(q, centre) - r).abs() <= radius {
+                Some(crate::document::Handle::Scale)
+            } else {
+                None
+            };
+            if let Some(h) = handle {
+                if let Err(e) = doc.drag_begin_handle(o, h, q) {
+                    doc.notice = Some(e);
+                }
+                return;
+            }
+        }
         if let Some(pt) = doc.point_hit(q, radius) {
             // A point of a selected object.
             if shift {
@@ -356,7 +377,7 @@ fn arrow_tool(
         if response.dragged_by(primary) {
             if let (Some(a), Some(b)) = (press, ui.input(|i| i.pointer.interact_pos())) {
                 let (ca, cb) = (to_canvas(a), to_canvas(b));
-                doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]]);
+                doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]], shift);
             }
         } else {
             doc.drag_end();
@@ -415,15 +436,15 @@ fn draw_selection(
                         }
                     }
                 }
-                Some(keyform_eval::DeformerMap::Rotation(r)) => {
-                    let o = to_screen(r.origin);
-                    let (s, c) = r.angle.to_radians().sin_cos();
-                    // Handle pointing along the deformed local "up" (−y).
-                    let len = 40.0;
-                    let tip = o + egui::vec2(s * len, -c * len);
-                    painter.circle_stroke(o, 6.0, stroke);
-                    painter.line_segment([o, tip], stroke);
-                    painter.circle_filled(tip, 3.0, tokens.accent);
+                Some(keyform_eval::DeformerMap::Rotation(_)) => {
+                    if let Some((origin, tip, radius)) = doc.rotation_widget(sel) {
+                        let (o, t) = (to_screen(origin), to_screen(tip));
+                        let edge = to_screen([origin[0] + radius, origin[1]]);
+                        painter.circle_stroke(o, (edge - o).length(), stroke);
+                        painter.line_segment([o, t], stroke);
+                        painter.circle_filled(t, 4.0, tokens.accent);
+                        painter.circle_filled(o, 3.0, tokens.accent);
+                    }
                 }
                 None => {}
             },
