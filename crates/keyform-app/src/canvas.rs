@@ -419,6 +419,49 @@ fn draw_selection(
                 }
             }
             Selection::Deformer(d) => match frame.deformers.get(d).and_then(|s| s.map.as_ref()) {
+                Some(keyform_eval::DeformerMap::Warp(_)) if doc.uses_net(sel) => {
+                    // Bezier net (levels 2–3): patch edges, anchors and handles.
+                    if let Some(net) = doc.canvas_net(d) {
+                        let thin = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.5));
+                        for cj in 0..net.rows {
+                            for ci in 0..net.cols {
+                                let edge = |f: &dyn Fn(f32) -> (f32, f32)| {
+                                    let pts: Vec<Pos2> = (0..=16)
+                                        .map(|k| {
+                                            let (s, t) = f(k as f32 / 16.0);
+                                            to_screen(net.eval(ci, cj, s, t))
+                                        })
+                                        .collect();
+                                    painter.add(egui::Shape::line(pts, stroke));
+                                };
+                                edge(&|u| (u, 0.0));
+                                edge(&|u| (0.0, u));
+                                if ci + 1 == net.cols {
+                                    edge(&|u| (1.0, u));
+                                }
+                                if cj + 1 == net.rows {
+                                    edge(&|u| (u, 1.0));
+                                }
+                            }
+                        }
+                        for (k, dir) in net.points() {
+                            let p = to_screen(net.point(k, dir));
+                            match dir {
+                                None => {
+                                    painter.rect_filled(
+                                        Rect::from_center_size(p, egui::vec2(6.0, 6.0)),
+                                        0.0,
+                                        tokens.accent,
+                                    );
+                                }
+                                Some(_) => {
+                                    painter.line_segment([to_screen(net.point(k, None)), p], thin);
+                                    painter.circle_filled(p, 2.5, tokens.accent);
+                                }
+                            }
+                        }
+                    }
+                }
                 Some(keyform_eval::DeformerMap::Warp(w)) => {
                     let p = |i: usize, j: usize| {
                         let k = 2 * (j * (w.cols + 1) + i);

@@ -927,7 +927,17 @@ impl<'a, 'd> Loader<'a, 'd> {
                         screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
                     })
                 })?;
+                let mut bezier_nets = Vec::new();
+                for ext in o.list("_extensions")? {
+                    if ext.tag() == "CWarpDeformerBezierExtension" {
+                        let level = ext.i32("editLevel")?.unwrap_or(2).clamp(1, 3) as u8;
+                        let c = ext.i32("bezierCol")?.unwrap_or(1).clamp(1, 1000) as u32;
+                        let r = ext.i32("bezierRow")?.unwrap_or(1).clamp(1, 1000) as u32;
+                        bezier_nets.push((level, c, r));
+                    }
+                }
                 DeformerKind::Warp(WarpDeformer {
+                    bezier_nets,
                     cols: cols as u32,
                     rows: rows as u32,
                     quad: o.bool("isQuadTransform")?.unwrap_or(false),

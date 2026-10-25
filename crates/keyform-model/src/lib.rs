@@ -532,9 +532,24 @@ pub struct WarpDeformer {
     pub quad: bool,
     pub grid: KeyformGrid<WarpForm>,
     pub blend_shapes: BlendShapes<WarpForm>,
+    /// Bezier net division per edit level (`CWarpDeformerBezierExtension`):
+    /// (level, cols, rows). spec: 35-editing/warp-deformer-editing.md
+    pub bezier_nets: Vec<(u8, u32, u32)>,
 }
 
+/// Nets of a new warp deformer: 2×2 at level 2, 1×1 at level 3.
+pub const DEFAULT_BEZIER_NETS: [(u8, u32, u32); 2] = [(2, 2, 2), (3, 1, 1)];
+
 impl WarpDeformer {
+    /// The net division used at `level` (2 or 3).
+    pub fn net_division(&self, level: u8) -> (u32, u32) {
+        self.bezier_nets
+            .iter()
+            .chain(DEFAULT_BEZIER_NETS.iter())
+            .find(|n| n.0 == level)
+            .map_or((1, 1), |n| (n.1.max(1), n.2.max(1)))
+    }
+
     pub fn point_count(&self) -> usize {
         (self.cols as usize + 1) * (self.rows as usize + 1)
     }

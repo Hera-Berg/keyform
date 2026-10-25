@@ -56,6 +56,8 @@ struct MoveTarget {
     parent: Option<keyform_eval::DeformerMap>,
     /// Points to move; all if `None`.
     points: Option<Vec<usize>>,
+    /// Warp net level when the points are Bezier net points.
+    net_level: Option<u8>,
 }
 
 enum DragKind {
@@ -176,6 +178,7 @@ pub fn in_quad(c: &[[f32; 2]; 4], q: [f32; 2]) -> bool {
 pub struct EditState {
     pub model: Model,
     pub selection: SelectionSet,
+    pub edit_level: u8,
 }
 
 pub struct MotionEntry {
@@ -270,6 +273,9 @@ pub struct Document {
     pub palette_from_children: bool,
     pub history: History<EditState>,
     pub mode: Mode,
+    /// Edit level 1 (refine), 2 (normal) or 3 (rough): which helpers are
+    /// shown and edited (main-window.md §1).
+    pub edit_level: u8,
     drag: Option<Drag>,
     /// A message for the log from a canvas tool (taken by the app).
     pub notice: Option<String>,
@@ -564,9 +570,11 @@ impl Document {
             history: History::new(EditState {
                 model: model.clone(),
                 selection: SelectionSet::default(),
+                edit_level: 2,
             }),
             saved_revision: 0,
             drag: None,
+            edit_level: 2,
             notice: None,
             mask_issues: keyform_edit::mask_issues(&model),
             mode: if palette_from_children {
@@ -593,6 +601,7 @@ impl Document {
         EditState {
             model: self.model.clone(),
             selection: self.selection.clone(),
+            edit_level: self.edit_level,
         }
     }
 
@@ -790,11 +799,13 @@ impl Document {
                     .map(|p| p.1)
                     .collect()
             });
+            let net_level = (points && self.uses_net(o)).then_some(self.edit_level);
             targets.push(MoveTarget {
                 object: o,
                 cell,
                 parent,
                 points: which,
+                net_level,
             });
         }
         if targets.is_empty() {
@@ -871,14 +882,25 @@ impl Document {
         let mut m = d.base.clone();
         let r = match &d.kind {
             DragKind::Move(targets) => targets.iter().try_for_each(|t| {
-                keyform_edit::translate(
-                    &mut m,
-                    t.object,
-                    t.cell,
-                    t.parent.as_ref(),
-                    total,
-                    t.points.as_deref(),
-                )
+                match (t.net_level, t.points.as_deref()) {
+                    (Some(level), Some(which)) => keyform_edit::translate_net(
+                        &mut m,
+                        t.object,
+                        t.cell,
+                        t.parent.as_ref(),
+                        total,
+                        which,
+                        level,
+                    ),
+                    _ => keyform_edit::translate(
+                        &mut m,
+                        t.object,
+                        t.cell,
+                        t.parent.as_ref(),
+                        total,
+                        t.points.as_deref(),
+                    ),
+                }
                 .map(|_| ())
             }),
             DragKind::Rotate {
@@ -983,9 +1005,66 @@ impl Document {
             .commit("Select", StepKind::SelectionOnly, self.edit_state(), false);
     }
 
+    /// Sets the edit level (recorded in undo history, main-window.md §1).
+    pub fn set_edit_level(&mut self, level: u8) {
+        let level = level.clamp(1, 3);
+        if level == self.edit_level {
+            return;
+        }
+        self.edit_level = level;
+        // Point indices mean different things per level.
+        self.selection.points.clear();
+        self.history.commit(
+            "Edit Level",
+            StepKind::SelectionOnly,
+            self.edit_state(),
+            false,
+        );
+    }
+
+    /// Whether `o` is edited through its Bezier net at the current level.
+    pub fn uses_net(&self, o: Selection) -> bool {
+        matches!(o, Selection::Deformer(d)
+            if self.edit_level >= 2
+                && matches!(self.model.deformers.get(d).map(|x| &x.kind), Some(DeformerKind::Warp(_))))
+    }
+
+    /// The Bezier net of warp `d` at the current level, in canvas space
+    /// (built from the deformed grid, for display and picking).
+    pub fn canvas_net(&self, d: usize) -> Option<keyform_edit::warp_net::Net> {
+        use keyform_edit::warp_net::{Grid, Net};
+        let DeformerKind::Warp(w) = &self.model.deformers.get(d)?.kind else {
+            return None;
+        };
+        let Some(keyform_eval::DeformerMap::Warp(map)) =
+            self.frame.as_ref()?.deformers.get(d)?.map.as_ref()
+        else {
+            return None;
+        };
+        let (nc, nr) = w.net_division(self.edit_level);
+        let g = Grid {
+            cols: map.cols,
+            rows: map.rows,
+            points: &map.points,
+        };
+        Some(Net::from_grid(&g, nc as usize, nr as usize))
+    }
+
     /// Canvas positions of an object's editable points: mesh vertices, warp
-    /// grid points, the rotation origin.
+    /// grid points (level 1) or Bezier net points (levels 2–3), the
+    /// rotation origin.
     pub fn object_points(&self, o: Selection) -> Vec<[f32; 2]> {
+        if let (true, Selection::Deformer(d)) = (self.uses_net(o), o) {
+            return self
+                .canvas_net(d)
+                .map(|n| {
+                    n.points()
+                        .into_iter()
+                        .map(|(k, dir)| n.point(k, dir))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
         let Some(f) = self.frame.as_ref() else {
             return Vec::new();
         };
@@ -1079,6 +1158,7 @@ impl Document {
         sel.objects.retain(|s| self.selection_valid(*s));
         sel.points.retain(|(s, _)| self.selection_valid(*s));
         self.selection = sel;
+        self.edit_level = state.edit_level;
         self.model_changed();
     }
 
@@ -2006,5 +2086,86 @@ mod tests {
         doc.drag_end();
         assert!((angle(&doc).1 - 2.0 * s0).abs() < 1e-4);
         assert_eq!(doc.history.undo_name(), Some("Scale"));
+    }
+
+    /// Edit level 2: moving a Bezier net anchor reshapes the warp grid.
+    #[test]
+    fn warp_net_anchor_drag() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = root.join("hiyori_pro_t11.cmo3");
+        if !path.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        let o = PlaybackOptions::default();
+        doc.tick(0.0, &o, &mut log);
+        let d = (0..doc.model.deformers.len())
+            .find(|&d| match &doc.model.deformers[d].kind {
+                DeformerKind::Warp(w) => {
+                    w.cols >= 2
+                        && w.rows >= 2
+                        && keyform_edit::current_cell(
+                            &doc.model,
+                            Selection::Deformer(d),
+                            &doc.values,
+                        )
+                        .is_ok()
+                }
+                _ => false,
+            })
+            .unwrap();
+        let sel = Selection::Deformer(d);
+        doc.select(Some(sel));
+        doc.set_edit_level(1);
+        doc.set_edit_level(2);
+        assert_eq!(doc.history.undo_name(), Some("Edit Level"));
+        let net = doc.canvas_net(d).unwrap();
+        // The centre anchor of the 2×2 net.
+        let centre = (net.cols + 1) * (net.rows / 2) + net.cols / 2;
+        let grid_before = doc.object_points(sel);
+        assert_eq!(grid_before.len(), net.points().len());
+        doc.set_selection(SelectionSet {
+            objects: vec![sel],
+            points: vec![(sel, centre)],
+        });
+        doc.drag_begin(true).unwrap();
+        doc.drag_update([12.0, 0.0], false);
+        doc.drag_end();
+        doc.tick(0.0, &o, &mut log);
+        let DeformerKind::Warp(w) = &doc.model.deformers[d].kind else {
+            unreachable!()
+        };
+        let Some(keyform_eval::DeformerMap::Warp(map)) =
+            doc.frame.as_ref().unwrap().deformers[d].map.clone()
+        else {
+            unreachable!()
+        };
+        // Grid corners stay, the middle point moves most of the 12 px.
+        let base = Document::open(&path, &mut log).unwrap();
+        let mut b = base;
+        b.tick(0.0, &o, &mut log);
+        let Some(keyform_eval::DeformerMap::Warp(map0)) =
+            b.frame.as_ref().unwrap().deformers[d].map.clone()
+        else {
+            unreachable!()
+        };
+        let at = |m: &keyform_eval::WarpMap, i: usize, j: usize| {
+            let k = 2 * (j * (m.cols + 1) + i);
+            [m.points[k], m.points[k + 1]]
+        };
+        let (c, r) = (w.cols as usize, w.rows as usize);
+        assert!((at(&map, 0, 0)[0] - at(&map0, 0, 0)[0]).abs() < 1e-2);
+        assert!((at(&map, c, r)[0] - at(&map0, c, r)[0]).abs() < 1e-2);
+        let mid = at(&map, c / 2, r / 2)[0] - at(&map0, c / 2, r / 2)[0];
+        assert!(mid > 6.0 && mid < 12.5, "middle moved {mid}");
+        doc.undo();
+        doc.tick(0.0, &o, &mut log);
+        let Some(keyform_eval::DeformerMap::Warp(back)) =
+            doc.frame.as_ref().unwrap().deformers[d].map.clone()
+        else {
+            unreachable!()
+        };
+        assert_eq!(back.points, map0.points);
     }
 }

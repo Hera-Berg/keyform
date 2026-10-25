@@ -716,8 +716,25 @@ impl KeyformApp {
             }
             ui.separator();
             ui.weak("Edit Level:");
-            for l in ["1", "2", "3"] {
-                ui.add_enabled(false, egui::Button::new(l));
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            let modeling = doc.as_ref().is_some_and(|d| d.mode == Mode::Modeling);
+            let current = doc.as_ref().map_or(2, |d| d.edit_level);
+            let mut chosen = None;
+            for (l, tip) in [
+                (1u8, "Edit Level 1 (refine)"),
+                (2, "Edit Level 2 (normal)"),
+                (3, "Edit Level 3 (rough)"),
+            ] {
+                let b = egui::Button::selectable(current == l && modeling, l.to_string());
+                if ui.add_enabled(modeling, b).on_hover_text(tip).clicked() {
+                    chosen = Some(l);
+                }
+            }
+            if let (Some(l), Some(d)) = (chosen, doc) {
+                d.set_edit_level(l);
             }
             ui.separator();
             if let Some(i) = self.active {
@@ -914,6 +931,20 @@ impl KeyformApp {
             self.save_as_active();
         } else if save {
             self.save_active();
+        }
+        // Edit level keys 1, 2, 3 (main-window.md §1).
+        if !ctx.egui_wants_keyboard_input() {
+            let level = ctx.input_mut(|i| {
+                [(Key::Num1, 1u8), (Key::Num2, 2), (Key::Num3, 3)]
+                    .into_iter()
+                    .find(|(k, _)| i.consume_key(M::NONE, *k))
+                    .map(|(_, l)| l)
+            });
+            if let (Some(l), Some(d)) = (level, self.active_doc()) {
+                if d.mode == Mode::Modeling {
+                    d.set_edit_level(l);
+                }
+            }
         }
         // Text fields keep Ctrl+Z / Ctrl+Y for their own editing.
         if !ctx.egui_wants_keyboard_input() {

@@ -778,7 +778,7 @@ fn write_deformer(
     let id = &o.info.id;
     match (&o.kind, &n.kind) {
         (DeformerKind::Warp(ow), DeformerKind::Warp(nw)) => {
-            if (ow.cols, ow.rows) != (nw.cols, nw.rows) {
+            if (ow.cols, ow.rows) != (nw.cols, nw.rows) || ow.bezier_nets != nw.bezier_nets {
                 return unsupported(format!("deformer {id}: warp grid size"));
             }
             write_forms(
