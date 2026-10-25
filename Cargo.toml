@@ -9,6 +9,7 @@ members = [
     "crates/keyform-physics",
     "crates/keyform-render",
     "crates/keyform-cli",
+    "crates/keyform-app",
     
     
 ]

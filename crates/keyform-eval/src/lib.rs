@@ -80,6 +80,24 @@ impl Default for EvalOptions {
     }
 }
 
+/// Runtime values that replace evaluated ones (viewer playback).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overrides {
+    /// Per part (model index): opacity replacing the interpolated one.
+    pub part_opacity: Vec<Option<f32>>,
+    /// Multiplies every drawable's opacity (motion `Model/Opacity`).
+    pub model_opacity: f32,
+}
+
+impl Default for Overrides {
+    fn default() -> Self {
+        Self {
+            part_opacity: Vec::new(),
+            model_opacity: 1.0,
+        }
+    }
+}
+
 /// Precomputed per-model data for repeated evaluation.
 pub struct Evaluator<'m> {
     model: &'m Model,
@@ -153,6 +171,12 @@ impl<'m> Evaluator<'m> {
     }
 
     pub fn evaluate_with(&self, values: &[f32], opts: EvalOptions) -> Frame {
+        self.evaluate_full(values, opts, &Overrides::default())
+    }
+
+    /// Evaluates with runtime overrides (motion PartOpacity curves, pose,
+    /// model opacity). spec: 60-animation/motion3-json.md §3 steps 4–5
+    pub fn evaluate_full(&self, values: &[f32], opts: EvalOptions, ov: &Overrides) -> Frame {
         let m = self.model;
         let params = &m.parameters;
         // Clamp non-repeating parameters (keyform-interpolation.md notation).
@@ -175,6 +199,11 @@ impl<'m> Evaluator<'m> {
                 }
             })
             .collect();
+        for (part, o) in parts.iter_mut().zip(&ov.part_opacity) {
+            if let Some(o) = o {
+                part.form.opacity = o.clamp(0.0, 1.0);
+            }
+        }
         let own_outside: Vec<bool> = parts.iter().map(|p| p.outside).collect();
         for (i, p) in m.parts.iter().enumerate() {
             let anc: Vec<PartIndex> = self.ancestors(p.info.parent_part).collect();
@@ -347,7 +376,11 @@ impl<'m> Evaluator<'m> {
                     positions,
                     draw_order: f.draw_order,
                     form_opacity: f.opacity,
-                    opacity: f.opacity.clamp(0.0, 1.0) * vis * d_op * part_op,
+                    opacity: f.opacity.clamp(0.0, 1.0)
+                        * vis
+                        * d_op
+                        * part_op
+                        * ov.model_opacity.clamp(0.0, 1.0),
                     multiply: [
                         (mo[0] * d_mul[0]).clamp(0.0, 1.0),
                         (mo[1] * d_mul[1]).clamp(0.0, 1.0),

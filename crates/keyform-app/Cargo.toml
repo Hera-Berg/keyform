@@ -1,0 +1,26 @@
+[package]
+name = "keyform-app"
+description = "Keyform editor application (egui + egui_dock)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "keyform"
+path = "src/main.rs"
+
+[dependencies]
+keyform-model.workspace = true
+keyform-eval.workspace = true
+keyform-formats.workspace = true
+keyform-render.workspace = true
+keyform-anim.workspace = true
+keyform-physics.workspace = true
+eframe = { version = "0.36", features = ["persistence"] }
+egui_dock = { version = "0.21", features = ["serde"] }
+rfd = "0.17"
+serde = { workspace = true }
+wgpu = "30"
+
+[lints]
+workspace = true
