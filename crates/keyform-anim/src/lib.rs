@@ -11,7 +11,9 @@ pub mod pose;
 
 pub use expression::{ExpBlend, ExpParam, Expression};
 pub use motion::{Curve, Motion, Segment, Target};
-pub use player::{ExpressionPlayer, MotionPlayer, Targets};
+pub use player::{
+    Breath, ExpressionPlayer, EyeBlink, MotionOutputs, MotionPlayer, ParamRange, Params,
+};
 pub use pose::{Pose, PoseNode, PoseState};
 
 #[derive(Debug, thiserror::Error)]

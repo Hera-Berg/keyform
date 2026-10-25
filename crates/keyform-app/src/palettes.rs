@@ -393,7 +393,9 @@ fn param_row(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, p: usize, f
                 });
             });
             let (lo, hi) = (param.min.min(param.max), param.min.max(param.max));
-            let mut v = doc.values[p];
+            // Shows the live value until the user takes the parameter by hand
+            // (viewer.md §3.1 step 8); double-click releases it.
+            let mut v = if doc.manual[p] { doc.values[p] } else { live };
             let width = ui.available_width();
             ui.spacing_mut().slider_width = width;
             let r = ui.add(
@@ -402,10 +404,10 @@ fn param_row(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, p: usize, f
                     .clamping(egui::SliderClamping::Always),
             );
             if r.changed() {
-                doc.values[p] = v;
+                doc.set_manual(p, v);
             }
             if r.double_clicked() {
-                doc.values[p] = param.default;
+                doc.release_manual(p);
             }
             // Default marker and key marks under the slider (§3).
             let rect = r.rect;

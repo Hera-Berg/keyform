@@ -4,6 +4,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::json::{f32_of, num};
+use crate::player::Params;
 use crate::AnimError;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,66 +81,76 @@ impl Pose {
     }
 }
 
-/// Runtime pose switching: in each group one part is shown; it fades in
-/// over the fade time and the others fade out complementarily.
-/// TODO(Q-0009): exact runtime fade rule.
+/// Runtime pose switching. The visible entry of each group is chosen by the
+/// part-ID parameters that motion `PartOpacity` curves write; part opacities
+/// persist between frames. spec: 70-advanced/viewer.md §3.4
 #[derive(Clone, Debug, Default)]
 pub struct PoseState {
-    /// Current opacity per (group, node).
+    /// Current opacity per (group, entry).
     opacity: Vec<Vec<f32>>,
-    visible: Vec<usize>,
 }
 
 impl PoseState {
-    pub fn new(pose: &Pose) -> Self {
-        Self {
-            opacity: pose
-                .groups
-                .iter()
-                .map(|g| {
-                    (0..g.len())
-                        .map(|i| if i == 0 { 1.0 } else { 0.0 })
-                        .collect()
-                })
-                .collect(),
-            visible: vec![0; pose.groups.len()],
-        }
+    /// Reset: the first entry of each group is shown and its part-ID
+    /// parameter set to 1; the others get opacity 0 and parameter 0.
+    pub fn reset(pose: &Pose, p: &mut Params) -> Self {
+        let opacity = pose
+            .groups
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        let v = if i == 0 { 1.0 } else { 0.0 };
+                        p.set(&n.id, v, 1.0);
+                        v
+                    })
+                    .collect()
+            })
+            .collect();
+        Self { opacity }
     }
 
-    /// Advances by `dt` seconds. `requested(id)` is the part opacity requested
-    /// this frame (by a motion), if any; the first node requesting > 0.001
-    /// becomes the visible one. Returns (part id, opacity) for every node and link.
-    pub fn update(
-        &mut self,
-        pose: &Pose,
-        dt: f32,
-        requested: &dyn Fn(&str) -> Option<f32>,
-    ) -> Vec<(String, f32)> {
-        let fade = pose.fade_in.unwrap_or(0.5).max(0.0);
-        let mut out = Vec::new();
-        for (gi, g) in pose.groups.iter().enumerate() {
-            if self.opacity.get(gi).is_none_or(|o| o.len() != g.len()) {
-                *self = Self::new(pose);
-            }
-            if let Some(i) = g
+    /// Advances by `dt` seconds (negative = 0). Returns (part ID, opacity)
+    /// for every entry and link part.
+    pub fn update(&mut self, pose: &Pose, dt: f32, p: &mut Params) -> Vec<(String, f32)> {
+        if self.opacity.len() != pose.groups.len()
+            || self
+                .opacity
                 .iter()
-                .position(|n| requested(&n.id).is_some_and(|o| o > 0.001))
-            {
-                self.visible[gi] = i;
-            }
-            let vis = self.visible[gi];
-            let ops = &mut self.opacity[gi];
-            ops[vis] = if fade > 0.0 {
-                (ops[vis] + dt / fade).min(1.0)
-            } else {
-                1.0
+                .zip(&pose.groups)
+                .any(|(o, g)| o.len() != g.len())
+        {
+            *self = Self::reset(pose, p);
+        }
+        let dt = dt.max(0.0);
+        let fade = pose.fade_in.filter(|f| *f >= 0.0).unwrap_or(0.5);
+        let mut out = Vec::new();
+        for (g, ops) in pose.groups.iter().zip(&mut self.opacity) {
+            // 1–2. Visible entry and its new opacity.
+            let (vis, v) = match g.iter().position(|n| p.get(&n.id) > 0.001) {
+                Some(i) => (
+                    i,
+                    if fade == 0.0 {
+                        1.0
+                    } else {
+                        (ops[i] + dt / fade).min(1.0)
+                    },
+                ),
+                None => (0, 1.0),
             };
-            let rest = 1.0 - ops[vis];
+            // 3. The others only lose opacity, down to a ceiling.
+            ops[vis] = v;
+            let mut b = 1.0 - v;
+            if (1.0 - b) * (1.0 - v) > 0.15 {
+                b = 1.0 - 0.15 / (1.0 - v);
+            }
             for (i, o) in ops.iter_mut().enumerate() {
                 if i != vis {
-                    *o = o.min(rest);
+                    *o = o.min(b);
                 }
             }
+            // 4. Links follow their entry.
             for (n, &o) in g.iter().zip(ops.iter()) {
                 out.push((n.id.clone(), o));
                 out.extend(n.links.iter().map(|l| (l.clone(), o)));
@@ -154,24 +165,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn switching_fades() {
+    fn selection_by_parameter_and_ceiling() {
+        use crate::player::ParamRange;
+        use std::collections::HashMap;
         let pose = Pose::parse(
             r#"{"Type":"Live2D Pose","Groups":[[{"Id":"A","Link":["A2"]},{"Id":"B","Link":[]}]]}"#,
         )
         .unwrap();
-        let mut st = PoseState::new(&pose);
-        let none = |_: &str| None;
-        let o = st.update(&pose, 0.1, &none);
+        let mut values: Vec<f32> = Vec::new();
+        let ranges: Vec<ParamRange> = Vec::new();
+        let index: HashMap<String, usize> = HashMap::new();
+        let mut virtuals: HashMap<String, f32> = HashMap::new();
+        let mut p = Params {
+            values: &mut values,
+            ranges: &ranges,
+            index: &index,
+            virtuals: &mut virtuals,
+        };
+        let mut st = PoseState::reset(&pose, &mut p);
+        assert_eq!(p.get("A"), 1.0);
+        let o = st.update(&pose, 0.1, &mut p);
         assert_eq!(
             o,
             vec![("A".into(), 1.0), ("A2".into(), 1.0), ("B".into(), 0.0)]
         );
-        let want_b = |id: &str| (id == "B").then_some(1.0);
-        let o = st.update(&pose, 0.25, &want_b);
-        assert_eq!(o[2], ("B".into(), 0.5));
-        assert_eq!(o[0], ("A".into(), 0.5));
-        let o = st.update(&pose, 1.0, &want_b);
+        // A motion selects B: it fades in linearly; A stays under the ceiling.
+        p.set("A", 0.0, 1.0);
+        p.set("B", 1.0, 1.0);
+        let o = st.update(&pose, 0.25, &mut p);
+        assert_eq!(o[2].1, 0.5);
+        // v = 0.5: (1 − b)(1 − v) = 0.25 > 0.15 → b = 1 − 0.15/0.5 = 0.7.
+        assert!((o[0].1 - 0.7).abs() < 1e-6, "{o:?}");
+        let o = st.update(&pose, 1.0, &mut p);
         assert_eq!((o[0].1, o[2].1), (0.0, 1.0));
+        // Nothing selected: the first entry shows instantly.
+        p.set("B", 0.0, 1.0);
+        let o = st.update(&pose, 0.01, &mut p);
+        assert_eq!(o[0].1, 1.0);
         assert_eq!(
             Pose::parse(&crate::json::to_string(&pose.to_json())).unwrap(),
             pose

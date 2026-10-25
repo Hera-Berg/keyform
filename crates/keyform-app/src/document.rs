@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use keyform_anim::{Expression, ExpressionPlayer, Motion, MotionPlayer, Pose, PoseState, Targets};
+use keyform_anim::{
+    Breath, Expression, ExpressionPlayer, EyeBlink, Motion, MotionOutputs, MotionPlayer,
+    ParamRange, Params, Pose, PoseState,
+};
 use keyform_eval::{EvalOptions, Evaluator, Frame, Overrides};
 use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::moc3::{moc3_to_model, Moc3Raw};
@@ -81,7 +84,20 @@ pub struct Document {
     pub motions: Vec<MotionEntry>,
     pub expressions: Vec<ExpressionEntry>,
     pub pose: Option<Pose>,
-    pose_state: PoseState,
+    /// Created (reset) when the pose is first applied (viewer.md §3.4).
+    pose_state: Option<PoseState>,
+    /// Real parameter values saved after the motion update (viewer.md §3.1).
+    saved: Vec<f32>,
+    /// Values the user set by hand (Parameter palette); applied each frame.
+    pub manual: Vec<bool>,
+    /// Virtual parameters (part-ID parameters written by PartOpacity curves).
+    pub virtuals: HashMap<String, f32>,
+    ranges: Vec<ParamRange>,
+    motion_out: MotionOutputs,
+    pub breath_enabled: bool,
+    breath: Breath,
+    pub eye_blink_enabled: bool,
+    eye_blink: EyeBlink,
     pub motion_player: MotionPlayer,
     pub expression_player: ExpressionPlayer,
     pub looping: bool,
@@ -300,7 +316,17 @@ impl Document {
             .map(|(i, p)| (p.info.id.clone(), i))
             .collect();
         let sim = PhysicsSim::new(&model.physics);
-        let pose_state = pose.as_ref().map(PoseState::new).unwrap_or_default();
+        let saved_init = values.clone();
+        let n_params = values.len();
+        let ranges: Vec<ParamRange> = model
+            .parameters
+            .iter()
+            .map(|p| ParamRange {
+                min: p.min,
+                max: p.max,
+                repeat: p.repeat,
+            })
+            .collect();
         log.info(format!(
             "opened {name}: {} parameters, {} parts, {} art meshes, {} physics settings, {} motions, {} expressions",
             model.parameters.len(),
@@ -324,7 +350,16 @@ impl Document {
             motions,
             expressions,
             pose,
-            pose_state,
+            pose_state: None,
+            saved: saved_init,
+            manual: vec![false; n_params],
+            virtuals: HashMap::new(),
+            ranges,
+            motion_out: MotionOutputs::default(),
+            breath_enabled: false,
+            breath: Breath::default(),
+            eye_blink_enabled: false,
+            eye_blink: EyeBlink::default(),
             motion_player: MotionPlayer::default(),
             expression_player: ExpressionPlayer::default(),
             looping: true,
@@ -344,21 +379,49 @@ impl Document {
         })
     }
 
+    /// Back to defaults: parameters, playback state, physics, pose.
     pub fn reset_parameters(&mut self) {
         self.values = self.model.parameters.iter().map(|p| p.default).collect();
+        self.saved.clone_from(&self.values);
+        self.manual.iter_mut().for_each(|m| *m = false);
+        self.virtuals.clear();
+        self.pose_state = None;
+        self.motion_out = MotionOutputs::default();
         self.sim.reset(&self.model.physics);
+    }
+
+    /// Sets a parameter by hand (slider); it then overrides playback (§3.1 step 8).
+    pub fn set_manual(&mut self, p: usize, v: f32) {
+        if p < self.values.len() {
+            self.values[p] = v;
+            self.manual[p] = true;
+        }
+    }
+
+    /// Releases a hand-set parameter back to playback.
+    pub fn release_manual(&mut self, p: usize) {
+        if let Some(m) = self.manual.get_mut(p) {
+            *m = false;
+        }
+        if let (Some(v), Some(d)) = (self.saved.get_mut(p), self.model.parameters.get(p)) {
+            *v = d.default;
+        }
+    }
+
+    /// Re-applies the pose after editing (viewer.md §3.4 reset).
+    pub fn pose_changed(&mut self) {
+        self.pose_state = None;
     }
 
     pub fn play_motion(&mut self, i: usize) {
         if let Some(m) = self.motions.get(i).and_then(|m| m.motion.clone()) {
-            self.motion_player.start(m, self.time, self.looping);
+            self.motion_player.start(m, self.looping);
         }
     }
 
     pub fn play_expression(&mut self, i: usize) {
         if let Some(e) = self.expressions.get(i) {
-            self.expression_player
-                .start(Arc::new(e.expression.clone()), self.time);
+            self.expression_player.start(Arc::new(e.expression.clone()));
         }
     }
 
@@ -500,58 +563,73 @@ impl Document {
 
     /// Whether anything animates (the UI then repaints continuously).
     pub fn is_animating(&self) -> bool {
-        self.motion_player.is_playing() || self.physics_enabled || self.pose.is_some()
+        self.motion_player.is_playing()
+            || self.physics_enabled
+            || self.pose.is_some()
+            || self.breath_enabled
+            || self.eye_blink_enabled
     }
 
-    /// Advances playback by `dt` seconds and evaluates the model.
-    /// Order: user values → motions → expressions → physics → pose → evaluation
-    /// (spec: 70-advanced/physics.md, "after animation, before evaluation").
+    /// Advances playback by `dt` seconds and evaluates the model, in the
+    /// frame order of spec 70-advanced/viewer.md §3.1.
     pub fn tick(&mut self, dt: f32, log: &mut Log) {
         self.time += f64::from(dt);
-        self.live.clone_from(&self.values);
-        let mut part_opacity: HashMap<String, f32> = HashMap::new();
-        let mut model_opacity = 1.0f32;
-        let events = {
-            let mut t = Targets {
-                params: &mut self.live,
-                param_index: &self.param_index,
-                part_opacity: &mut part_opacity,
-                eye_blink: &self.model.eye_blink_parameters,
-                lip_sync: &self.model.lip_sync_parameters,
-                model_opacity: &mut model_opacity,
-            };
-            self.motion_player.update(self.time, &mut t)
+        // 1. Restore the values saved after the previous motion update.
+        self.live.clone_from(&self.saved);
+        let mut p = Params {
+            values: &mut self.live,
+            ranges: &self.ranges,
+            index: &self.param_index,
+            virtuals: &mut self.virtuals,
         };
-        for e in events {
+        // 2. Motion queue.
+        let upd = self.motion_player.update(
+            dt,
+            &mut p,
+            &self.model.eye_blink_parameters,
+            &self.model.lip_sync_parameters,
+            &mut self.motion_out,
+        );
+        for e in upd.events {
             log.info(format!("motion event: {e}"));
         }
-        self.expression_player
-            .update(self.time, &mut self.live, &self.param_index);
-        if self.physics_enabled {
-            self.sim.step(
-                &self.model.physics,
-                &self.model.parameters,
-                &mut self.live,
-                dt,
-            );
+        // 3. Save.
+        self.saved.copy_from_slice(p.values);
+        // 4. Eye blink only when no motion was updated.
+        if self.eye_blink_enabled && !upd.updated {
+            self.eye_blink
+                .update(dt, &mut p, &self.model.eye_blink_parameters);
         }
+        // 5. Expressions.
+        self.expression_player.update(dt, &mut p);
+        // 7. Breath.
+        if self.breath_enabled {
+            self.breath.update(dt, &mut p);
+        }
+        // 8. Parameters adjusted by hand.
+        for (i, &m) in self.manual.iter().enumerate() {
+            if m {
+                p.set_index(i, self.values[i], 1.0);
+            }
+        }
+        // 9. Physics.
+        if self.physics_enabled {
+            self.sim
+                .step(&self.model.physics, &self.model.parameters, p.values, dt);
+        }
+        // 10. Pose.
         let mut ov = Overrides {
             part_opacity: vec![None; self.model.parts.len()],
-            model_opacity,
+            model_opacity: self.motion_out.model_opacity,
         };
         if let Some(pose) = &self.pose {
-            for (id, o) in self
+            let st = self
                 .pose_state
-                .update(pose, dt, &|id| part_opacity.get(id).copied())
-            {
+                .get_or_insert_with(|| PoseState::reset(pose, &mut p));
+            for (id, o) in st.update(pose, dt, &mut p) {
                 if let Some(&pi) = self.part_index.get(&id) {
                     ov.part_opacity[pi] = Some(o);
                 }
-            }
-        }
-        for (id, o) in &part_opacity {
-            if let Some(&pi) = self.part_index.get(id) {
-                ov.part_opacity[pi].get_or_insert(*o);
             }
         }
         let ev = Evaluator::new(&self.model);

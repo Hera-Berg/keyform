@@ -1,6 +1,7 @@
-//! Runtime playback: motions with fades and special curves, expressions.
+//! Runtime playback: parameter access with virtual parameters, the motion
+//! queue, the expression manager, breath and eye blink.
 //!
-//! spec: 60-animation/motion3-json.md §3, 70-advanced/viewer.md §2
+//! spec: 70-advanced/viewer.md §3, 60-animation/motion3-json.md §3
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use crate::expression::{ExpBlend, Expression};
 use crate::motion::{Motion, Target};
 
-/// ½ − ½·cos(π·x), clamped to [0, 1] outside (0, 1). spec §3 step 3
+/// ½ − ½·cos(π·x), clamped to [0, 1] outside (0, 1). motion3-json.md §3
 pub fn ease(x: f32) -> f32 {
     if x <= 0.0 {
         0.0
@@ -19,254 +20,457 @@ pub fn ease(x: f32) -> f32 {
     }
 }
 
-/// What playback writes to. Parameter and part lookups are by ID.
-pub struct Targets<'a> {
-    pub params: &'a mut [f32],
-    pub param_index: &'a HashMap<String, usize>,
-    /// Part opacities set by `PartOpacity` curves this frame (by part ID).
-    pub part_opacity: &'a mut HashMap<String, f32>,
-    pub eye_blink: &'a [usize],
-    pub lip_sync: &'a [usize],
-    pub model_opacity: &'a mut f32,
+/// Range of a real parameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamRange {
+    pub min: f32,
+    pub max: f32,
+    pub repeat: bool,
 }
 
-struct Playing {
+impl ParamRange {
+    /// Clamps, or wraps into [min, max) for a repeat parameter (§3).
+    pub fn fit(&self, v: f32) -> f32 {
+        let (lo, hi) = (self.min.min(self.max), self.min.max(self.max));
+        if self.repeat && hi > lo {
+            lo + (v - lo).rem_euclid(hi - lo)
+        } else {
+            v.clamp(lo, hi)
+        }
+    }
+}
+
+/// Parameter access for playback: real parameters by index or ID, and
+/// virtual parameters (unknown IDs, created at 0, unclamped, not drawn).
+/// spec: viewer.md §3 "Virtual parameters"
+pub struct Params<'a> {
+    pub values: &'a mut [f32],
+    pub ranges: &'a [ParamRange],
+    pub index: &'a HashMap<String, usize>,
+    pub virtuals: &'a mut HashMap<String, f32>,
+}
+
+impl Params<'_> {
+    pub fn get(&mut self, id: &str) -> f32 {
+        match self.index.get(id) {
+            Some(&i) => self.values.get(i).copied().unwrap_or(0.0),
+            None => *self.virtuals.entry(id.to_owned()).or_insert(0.0),
+        }
+    }
+
+    /// Sets `id` toward `target` with weight `w` (§3 "Setting a parameter").
+    pub fn set(&mut self, id: &str, target: f32, w: f32) {
+        match self.index.get(id).copied() {
+            Some(i) => self.set_index(i, target, w),
+            None => {
+                let p = self.virtuals.entry(id.to_owned()).or_insert(0.0);
+                *p = if w == 1.0 {
+                    target
+                } else {
+                    *p * (1.0 - w) + target * w
+                };
+            }
+        }
+    }
+
+    pub fn set_index(&mut self, i: usize, target: f32, w: f32) {
+        let Some(r) = self.ranges.get(i) else { return };
+        let target = r.fit(target);
+        if let Some(p) = self.values.get_mut(i) {
+            *p = if w == 1.0 {
+                target
+            } else {
+                *p * (1.0 - w) + target * w
+            };
+        }
+    }
+
+    /// "Add v with weight w": p + v·w, clamped.
+    pub fn add(&mut self, id: &str, v: f32, w: f32) {
+        let p = self.get(id);
+        self.set(id, p + v * w, 1.0);
+    }
+}
+
+/// Model-level outputs of motions.
+#[derive(Clone, Copy, Debug)]
+pub struct MotionOutputs {
+    /// Set by `Model/Opacity` curves.
+    pub model_opacity: f32,
+}
+
+impl Default for MotionOutputs {
+    fn default() -> Self {
+        Self { model_opacity: 1.0 }
+    }
+}
+
+struct Entry {
     motion: Arc<Motion>,
-    start: f64,
-    /// Time at which the motion ends (fade-out completes).
-    end: Option<f64>,
     looped: bool,
+    /// Set on the first update.
+    start: Option<f64>,
+    fade_in_start: f64,
+    /// −1 = none.
+    end: f64,
+    pending_fade_out: Option<f32>,
     last_t: f32,
+    finished: bool,
 }
 
-/// Plays motions; starting a new one fades out the current ones.
+/// Default fade time when absent or negative (motion3-json.md §3, viewer.md §3.2).
+fn fade_or_default(f: Option<f32>) -> f32 {
+    f.filter(|f| *f >= 0.0).unwrap_or(1.0)
+}
+
+/// The motion queue. spec: viewer.md §3.2
 #[derive(Default)]
 pub struct MotionPlayer {
-    playing: Vec<Playing>,
+    queue: Vec<Entry>,
+    clock: f64,
+}
+
+pub struct MotionUpdate {
+    /// User-data events crossed this frame.
+    pub events: Vec<String>,
+    /// Whether any motion was updated (eye blink runs only if not, §3.1).
+    pub updated: bool,
 }
 
 impl MotionPlayer {
     pub fn is_playing(&self) -> bool {
-        !self.playing.is_empty()
+        !self.queue.is_empty()
     }
 
     pub fn stop(&mut self) {
-        self.playing.clear();
+        self.queue.clear();
     }
 
-    /// Starts `motion` at time `now` (seconds).
-    pub fn start(&mut self, motion: Arc<Motion>, now: f64, looped: bool) {
-        for p in &mut self.playing {
-            let fo = f64::from(p.motion.fade_out.unwrap_or(0.0));
-            let end = now + fo;
-            p.end = Some(p.end.map_or(end, |e| e.min(end)));
+    /// Queues `motion`; existing entries get a pending fade-out (§3.2).
+    pub fn start(&mut self, motion: Arc<Motion>, looped: bool) {
+        for e in &mut self.queue {
+            e.pending_fade_out = Some(fade_or_default(e.motion.fade_out));
         }
-        self.playing.push(Playing {
+        self.queue.push(Entry {
             motion,
-            start: now,
-            end: None,
             looped,
+            start: None,
+            fade_in_start: 0.0,
+            end: -1.0,
+            pending_fade_out: None,
             last_t: -1.0,
+            finished: false,
         });
     }
 
-    /// Applies all playing motions at time `now`. Returns user-data events
-    /// crossed since the previous update.
-    pub fn update(&mut self, now: f64, t: &mut Targets) -> Vec<String> {
+    /// Advances the queue clock by `dt` and applies every entry, oldest first.
+    pub fn update(
+        &mut self,
+        dt: f32,
+        p: &mut Params,
+        eye_blink: &[usize],
+        lip_sync: &[usize],
+        out: &mut MotionOutputs,
+    ) -> MotionUpdate {
+        self.clock += f64::from(dt.max(0.0));
+        let t_now = self.clock;
         let mut events = Vec::new();
-        for p in &mut self.playing {
-            let m = &p.motion;
-            let elapsed = (now - p.start).max(0.0) as f32;
-            let local = if p.looped && m.duration > 0.0 {
+        let updated = !self.queue.is_empty();
+        for e in &mut self.queue {
+            // 1. First update.
+            let start = *e.start.get_or_insert_with(|| {
+                e.fade_in_start = t_now;
+                e.end = if e.looped {
+                    -1.0
+                } else {
+                    t_now + f64::from(e.motion.duration)
+                };
+                t_now
+            });
+            // 2. Curves.
+            let m = &e.motion;
+            let elapsed = (t_now - start) as f32;
+            let local = if e.looped && m.duration > 0.0 {
                 elapsed % m.duration
             } else {
                 elapsed.min(m.duration)
             };
-            if !p.looped && p.end.is_none() && elapsed >= m.duration {
-                p.end = Some(p.start + f64::from(m.duration));
-            }
-            let fi = m
-                .fade_in
-                .filter(|f| *f > 0.0)
-                .map_or(1.0, |f| ease(elapsed / f));
-            let fo = match (m.fade_out.filter(|f| *f > 0.0), p.end) {
-                (Some(f), Some(end)) => ease(((end - now) as f32) / f),
-                _ => 1.0,
+            let fade_in = fade_or_default(m.fade_in);
+            let fade_out = fade_or_default(m.fade_out);
+            let weights = |fi_time: f32, fo_time: f32| -> f32 {
+                let fi = if fi_time > 0.0 {
+                    ease(((t_now - e.fade_in_start) as f32) / fi_time)
+                } else {
+                    1.0
+                };
+                let fo = if fo_time > 0.0 && e.end > 0.0 {
+                    ease(((e.end - t_now) as f32) / fo_time)
+                } else {
+                    1.0
+                };
+                fi * fo
             };
-            let weight = fi * fo;
+            let weight = weights(fade_in, fade_out);
             apply_motion(
                 m,
                 local,
-                elapsed,
-                p.end.map(|e| (e - now) as f32),
                 weight,
-                t,
+                &|c: &crate::motion::Curve| {
+                    weights(c.fade_in.unwrap_or(fade_in), c.fade_out.unwrap_or(fade_out))
+                },
+                p,
+                eye_blink,
+                lip_sync,
+                out,
             );
-            // §3 step 6: events fire when their time is crossed.
-            let wrapped = local < p.last_t;
+            // User data crossed since the previous update (motion3-json.md §3 step 6).
+            let wrapped = local < e.last_t;
             for (time, value) in &m.user_data {
                 let crossed = if wrapped {
-                    *time > p.last_t || *time <= local
+                    *time > e.last_t || *time <= local
                 } else {
-                    *time > p.last_t && *time <= local
+                    *time > e.last_t && *time <= local
                 };
                 if crossed {
                     events.push(value.clone());
                 }
             }
-            p.last_t = local;
+            e.last_t = local;
+            // 3. Finished?
+            if e.end > 0.0 && e.end < t_now {
+                e.finished = true;
+            }
+            // 4. Pending fade-out.
+            if let Some(fo) = e.pending_fade_out.take() {
+                let end = t_now + f64::from(fo);
+                if !(e.end > 0.0 && e.end <= end) {
+                    e.end = end;
+                }
+            }
         }
-        self.playing.retain(|p| p.end.is_none_or(|e| now < e));
-        events
+        self.queue.retain(|e| !e.finished);
+        MotionUpdate { events, updated }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_motion(
     m: &Motion,
     local: f32,
-    elapsed: f32,
-    remaining: Option<f32>,
     weight: f32,
-    t: &mut Targets,
+    curve_weight: &dyn Fn(&crate::motion::Curve) -> f32,
+    p: &mut Params,
+    eye_blink: &[usize],
+    lip_sync: &[usize],
+    out: &mut MotionOutputs,
 ) {
     let restricted = m.beziers_restricted;
-    let curve_value = |target: Target, id: &str| {
+    let value = |target: Target, id: &str| {
         m.curves
             .iter()
             .find(|c| c.target == target && c.id == id)
             .map(|c| c.eval(local, restricted))
     };
-    let eye = curve_value(Target::Model, "EyeBlink");
-    let lip = curve_value(Target::Model, "LipSync");
-    if let Some(o) = curve_value(Target::Model, "Opacity") {
-        *t.model_opacity = o;
+    let eye = value(Target::Model, "EyeBlink");
+    let lip = value(Target::Model, "LipSync");
+    if let Some(o) = value(Target::Model, "Opacity") {
+        out.model_opacity = o;
     }
     let mut with_curve = Vec::new();
     for c in m.curves.iter().filter(|c| c.target == Target::Parameter) {
-        let Some(&pi) = t.param_index.get(&c.id) else {
-            continue;
-        };
-        let Some(cur) = t.params.get(pi).copied() else {
-            continue;
-        };
         let mut v = c.eval(local, restricted);
-        // §3 step 4: special curves modify grouped parameters with own curves.
-        if let Some(e) = eye.filter(|_| t.eye_blink.contains(&pi)) {
-            v *= e;
+        let real = p.index.get(&c.id).copied();
+        // Special curves modify grouped parameters that have their own curve.
+        if let Some(i) = real {
+            if let Some(e) = eye.filter(|_| eye_blink.contains(&i)) {
+                v *= e;
+            }
+            if let Some(l) = lip.filter(|_| lip_sync.contains(&i)) {
+                v += l;
+            }
+            with_curve.push(i);
         }
-        if let Some(l) = lip.filter(|_| t.lip_sync.contains(&pi)) {
-            v += l;
-        }
-        let w = if c.fade_in.is_some() || c.fade_out.is_some() {
-            let fi = c
-                .fade_in
-                .filter(|f| *f > 0.0)
-                .map_or(1.0, |f| ease(elapsed / f));
-            let fo = match (c.fade_out.filter(|f| *f > 0.0), remaining) {
-                (Some(f), Some(r)) => ease(r / f),
-                _ => 1.0,
-            };
-            fi * fo
-        } else {
-            weight
-        };
-        t.params[pi] = cur + (v - cur) * w;
-        with_curve.push(pi);
+        let has_own = c.fade_in.is_some() || c.fade_out.is_some();
+        p.set(&c.id, v, if has_own { curve_weight(c) } else { weight });
     }
-    for (value, group) in [(eye, t.eye_blink), (lip, t.lip_sync)] {
-        let Some(v) = value else { continue };
-        for &pi in group {
-            if with_curve.contains(&pi) {
-                continue;
-            }
-            if let Some(p) = t.params.get_mut(pi) {
-                *p += (v - *p) * weight;
-            }
+    for (v, group) in [(eye, eye_blink), (lip, lip_sync)] {
+        let Some(v) = v else { continue };
+        for &i in group.iter().filter(|i| !with_curve.contains(i)) {
+            p.set_index(i, v, weight);
         }
     }
+    // PartOpacity curves set the part-ID parameter, unweighted (§3 step 5).
     for c in m.curves.iter().filter(|c| c.target == Target::PartOpacity) {
-        // §3 step 5: part opacities are set directly, without fade weighting.
-        t.part_opacity
-            .insert(c.id.clone(), c.eval(local, restricted));
+        p.set(&c.id, c.eval(local, restricted), 1.0);
     }
 }
 
-struct ExpPlaying {
+struct ExpEntry {
     exp: Arc<Expression>,
-    start: f64,
-    end: Option<f64>,
+    start: Option<f64>,
+    fade_in_start: f64,
+    end: f64,
+    pending_fade_out: Option<f32>,
 }
 
-/// Expression blending: value = (base + Σadd)·Πmultiply, then blended toward
-/// overwrite values, each weighted by the expression's fade weight.
-/// TODO(Q-0009): exact weighting of Multiply and Overwrite during fades.
+/// The expression manager. spec: viewer.md §3.3
 #[derive(Default)]
 pub struct ExpressionPlayer {
-    playing: Vec<ExpPlaying>,
+    queue: Vec<ExpEntry>,
+    clock: f64,
+    /// Tracked parameter IDs with their (add, mul, ow) state, in first-seen order.
+    tracked: Vec<(String, [f32; 3])>,
 }
 
-/// Default expression fade time (s) when the file leaves it unset.
-/// TODO(Q-0009)
+/// exp3 fade default when absent (viewer.md §3.3).
 pub const DEFAULT_EXPRESSION_FADE: f32 = 1.0;
 
 impl ExpressionPlayer {
-    pub fn start(&mut self, exp: Arc<Expression>, now: f64) {
-        for p in &mut self.playing {
-            let fo = f64::from(p.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE));
-            p.end.get_or_insert(now + fo);
+    pub fn start(&mut self, exp: Arc<Expression>) {
+        for e in &mut self.queue {
+            e.pending_fade_out = Some(e.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE));
         }
-        self.playing.push(ExpPlaying {
+        for p in &exp.params {
+            if !self.tracked.iter().any(|(id, _)| *id == p.id) {
+                self.tracked.push((p.id.clone(), [0.0, 1.0, 0.0]));
+            }
+        }
+        self.queue.push(ExpEntry {
             exp,
-            start: now,
-            end: None,
+            start: None,
+            fade_in_start: 0.0,
+            end: -1.0,
+            pending_fade_out: None,
         });
     }
 
-    pub fn stop(&mut self, now: f64) {
-        for p in &mut self.playing {
-            let fo = f64::from(p.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE));
-            p.end.get_or_insert(now + fo);
+    /// Returns to the neutral face by queueing an empty expression, which
+    /// fades in over the default time and then replaces the others.
+    pub fn reset(&mut self) {
+        if !self.queue.is_empty() {
+            self.start(Arc::new(Expression::default()));
         }
     }
 
-    pub fn update(&mut self, now: f64, params: &mut [f32], param_index: &HashMap<String, usize>) {
-        let mut add: HashMap<usize, f32> = HashMap::new();
-        let mut mul: HashMap<usize, f32> = HashMap::new();
-        let mut over: Vec<(usize, f32, f32)> = Vec::new();
-        for p in &self.playing {
-            let fi = ease(
-                ((now - p.start) as f32)
-                    / p.exp.fade_in.unwrap_or(DEFAULT_EXPRESSION_FADE).max(1e-6),
-            );
-            let fo = p.end.map_or(1.0, |e| {
-                ease(
-                    ((e - now) as f32)
-                        / p.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE).max(1e-6),
-                )
+    pub fn update(&mut self, dt: f32, p: &mut Params) {
+        if self.queue.is_empty() {
+            return;
+        }
+        self.clock += f64::from(dt.max(0.0));
+        let t_now = self.clock;
+        // Current values: the same for every entry this frame.
+        let current: Vec<f32> = self.tracked.iter().map(|(id, _)| p.get(id)).collect();
+        let mut sum_fi = 0.0f32;
+        let n = self.queue.len();
+        let mut newest_w = 0.0;
+        for (i, e) in self.queue.iter_mut().enumerate() {
+            let start = *e.start.get_or_insert_with(|| {
+                e.fade_in_start = t_now;
+                t_now
             });
+            let _ = start;
+            let fi_time = e.exp.fade_in.unwrap_or(DEFAULT_EXPRESSION_FADE);
+            let fo_time = e.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE);
+            let fi = if fi_time > 0.0 {
+                ease(((t_now - e.fade_in_start) as f32) / fi_time)
+            } else {
+                1.0
+            };
+            let fo = if fo_time > 0.0 && e.end >= 0.0 {
+                ease(((e.end - t_now) as f32) / fo_time)
+            } else {
+                1.0
+            };
             let w = fi * fo;
-            for e in &p.exp.params {
-                let Some(&pi) = param_index.get(&e.id) else {
-                    continue;
+            for (k, (id, st)) in self.tracked.iter_mut().enumerate() {
+                let c = current[k];
+                let (a, m, o) = match e.exp.params.iter().find(|x| x.id == *id) {
+                    Some(x) => match x.blend {
+                        ExpBlend::Add => (x.value, 1.0, c),
+                        ExpBlend::Multiply => (0.0, x.value, c),
+                        ExpBlend::Overwrite => (0.0, 1.0, x.value),
+                    },
+                    None => (0.0, 1.0, c),
                 };
-                match e.blend {
-                    ExpBlend::Add => *add.entry(pi).or_insert(0.0) += e.value * w,
-                    ExpBlend::Multiply => {
-                        *mul.entry(pi).or_insert(1.0) *= 1.0 + (e.value - 1.0) * w
-                    }
-                    ExpBlend::Overwrite => over.push((pi, e.value, w)),
+                if i == 0 {
+                    *st = [a, m, o];
+                } else {
+                    st[0] += (a - st[0]) * w;
+                    st[1] += (m - st[1]) * w;
+                    // Overwrite restarts from c at every entry (reference quirk).
+                    st[2] = c + (o - c) * w;
                 }
             }
-        }
-        for (pi, v) in params.iter_mut().enumerate() {
-            *v = (*v + add.get(&pi).copied().unwrap_or(0.0)) * mul.get(&pi).copied().unwrap_or(1.0);
-        }
-        for (pi, value, w) in over {
-            if let Some(v) = params.get_mut(pi) {
-                *v += (value - *v) * w;
+            sum_fi += fi;
+            if let Some(f) = e.pending_fade_out.take() {
+                let end = t_now + f64::from(f);
+                if !(e.end > 0.0 && e.end <= end) {
+                    e.end = end;
+                }
+            }
+            if i + 1 == n {
+                newest_w = w;
             }
         }
-        self.playing.retain(|p| p.end.is_none_or(|e| now < e));
+        // 2. The newest entry fully faded in replaces the older ones.
+        if n > 1 && newest_w >= 1.0 {
+            self.queue.drain(..n - 1);
+        }
+        // 3–4.
+        let weight = sum_fi.min(1.0);
+        for (id, st) in &mut self.tracked {
+            p.set(id, (st[2] + st[0]) * st[1], weight);
+            st[0] = 0.0;
+            st[1] = 1.0;
+        }
+    }
+}
+
+/// Breath: ParamBreath += 0.5 + 0.5·sin(2π·T/3.2345), weight 1 (§3.1 step 7).
+#[derive(Default)]
+pub struct Breath {
+    clock: f64,
+}
+
+impl Breath {
+    pub fn update(&mut self, dt: f32, p: &mut Params) {
+        self.clock += f64::from(dt.max(0.0));
+        let v = 0.5 + 0.5 * (std::f64::consts::TAU * self.clock / 3.2345).sin();
+        if p.index.contains_key("ParamBreath") {
+            p.add("ParamBreath", v as f32, 1.0);
+        }
+    }
+}
+
+/// Automatic eye blink for the viewer preview: periodic close/open of the
+/// EyeBlink parameters. TODO(Q-0010): the reference timing and curve.
+#[derive(Default)]
+pub struct EyeBlink {
+    clock: f32,
+}
+
+impl EyeBlink {
+    /// Seconds between blinks, closing, closed and opening durations.
+    const INTERVAL: f32 = 4.0;
+    const CLOSING: f32 = 0.1;
+    const CLOSED: f32 = 0.05;
+    const OPENING: f32 = 0.15;
+
+    pub fn update(&mut self, dt: f32, p: &mut Params, eye_blink: &[usize]) {
+        self.clock = (self.clock + dt.max(0.0)) % Self::INTERVAL;
+        let t = self.clock - (Self::INTERVAL - Self::CLOSING - Self::CLOSED - Self::OPENING);
+        let open = if t < 0.0 {
+            1.0
+        } else if t < Self::CLOSING {
+            1.0 - t / Self::CLOSING
+        } else if t < Self::CLOSING + Self::CLOSED {
+            0.0
+        } else {
+            ((t - Self::CLOSING - Self::CLOSED) / Self::OPENING).min(1.0)
+        };
+        for &i in eye_blink {
+            p.set_index(i, open, 1.0);
+        }
     }
 }
 
@@ -275,86 +479,148 @@ mod tests {
     use super::*;
     use crate::expression::ExpParam;
 
-    fn targets_fixture() -> (Vec<f32>, HashMap<String, usize>) {
-        (
-            vec![0.0, 1.0, 1.0],
-            HashMap::from([("A".into(), 0), ("EyeL".into(), 1), ("EyeR".into(), 2)]),
-        )
+    struct Fixture {
+        values: Vec<f32>,
+        ranges: Vec<ParamRange>,
+        index: HashMap<String, usize>,
+        virtuals: HashMap<String, f32>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let r = ParamRange {
+                min: -10.0,
+                max: 10.0,
+                repeat: false,
+            };
+            Self {
+                values: vec![0.0, 1.0, 1.0],
+                ranges: vec![
+                    r,
+                    ParamRange {
+                        min: 0.0,
+                        max: 1.0,
+                        repeat: false,
+                    },
+                    ParamRange {
+                        min: 0.0,
+                        max: 1.0,
+                        repeat: false,
+                    },
+                ],
+                index: HashMap::from([("A".into(), 0), ("EyeL".into(), 1), ("EyeR".into(), 2)]),
+                virtuals: HashMap::new(),
+            }
+        }
+        fn params(&mut self) -> Params<'_> {
+            Params {
+                values: &mut self.values,
+                ranges: &self.ranges,
+                index: &self.index,
+                virtuals: &mut self.virtuals,
+            }
+        }
     }
 
     #[test]
-    fn motion_fades_and_eye_blink() {
+    fn repeat_wraps_and_virtuals_are_created() {
+        let r = ParamRange {
+            min: -180.0,
+            max: 180.0,
+            repeat: true,
+        };
+        assert_eq!(r.fit(190.0), -170.0);
+        let mut f = Fixture::new();
+        let mut p = f.params();
+        assert_eq!(p.get("PartArm"), 0.0);
+        p.set("PartArm", 1.0, 1.0);
+        p.set("A", 99.0, 1.0);
+        assert_eq!(f.virtuals["PartArm"], 1.0);
+        assert_eq!(f.values[0], 10.0);
+    }
+
+    #[test]
+    fn motion_queue_fades_and_eye_blink() {
         let m = Motion::parse(
-            r#"{"Meta":{"Duration":1,"Fps":30,"FadeInTime":0.5,"Loop":true},"Curves":[
+            r#"{"Meta":{"Duration":1,"Fps":30,"FadeInTime":0.5,"FadeOutTime":0},"Curves":[
             {"Target":"Parameter","Id":"A","Segments":[0,10,0,1,10]},
             {"Target":"Parameter","Id":"EyeL","Segments":[0,0.8,0,1,0.8]},
-            {"Target":"Model","Id":"EyeBlink","Segments":[0,0.5,0,1,0.5]}]}"#,
+            {"Target":"Model","Id":"EyeBlink","Segments":[0,0.5,0,1,0.5]},
+            {"Target":"PartOpacity","Id":"PartArm","Segments":[0,1,0,1,1]}]}"#,
         )
         .unwrap();
-        let (mut params, idx) = targets_fixture();
-        let mut parts = HashMap::new();
-        let mut op = 1.0;
+        let mut f = Fixture::new();
+        let mut out = MotionOutputs::default();
         let mut pl = MotionPlayer::default();
-        pl.start(Arc::new(m), 0.0, false);
-        let mut t = Targets {
-            params: &mut params,
-            param_index: &idx,
-            part_opacity: &mut parts,
-            eye_blink: &[1, 2],
-            lip_sync: &[],
-            model_opacity: &mut op,
-        };
-        pl.update(0.25, &mut t);
-        // Half of the fade-in: ease(0.5) = 0.5.
-        assert!((t.params[0] - 5.0).abs() < 1e-4, "{:?}", t.params);
-        pl.update(0.75, &mut t);
-        assert!((t.params[0] - 7.5).abs() < 1e-3 || t.params[0] > 5.0);
-        // EyeL has its own curve: 0.8 × 0.5 = 0.4 (fully faded in at t=0.75? ease(1.5)=1).
-        let (mut p2, _) = targets_fixture();
-        let mut t2 = Targets {
-            params: &mut p2,
-            param_index: &idx,
-            part_opacity: &mut parts,
-            eye_blink: &[1, 2],
-            lip_sync: &[],
-            model_opacity: &mut op,
-        };
-        pl.update(0.6, &mut t2);
-        assert!((t2.params[1] - 0.4).abs() < 1e-4, "{:?}", t2.params);
-        // EyeR has no curve: set to E = 0.5.
-        assert!((t2.params[2] - 0.5).abs() < 1e-4);
-        // Non-looping motion ends after its duration.
-        pl.update(1.5, &mut t2);
+        pl.start(Arc::new(m), false);
+        // First update at clock 0 sets the start; then 0.25 s in: ease(0.5) = 0.5.
+        pl.update(0.0, &mut f.params(), &[1, 2], &[], &mut out);
+        f.values = vec![0.0, 1.0, 1.0];
+        let u = pl.update(0.25, &mut f.params(), &[1, 2], &[], &mut out);
+        assert!(u.updated);
+        assert!((f.values[0] - 5.0).abs() < 1e-4, "{:?}", f.values);
+        // Fully faded in: EyeL has its own curve: 0.8 × 0.5; EyeR is set to E.
+        f.values = vec![0.0, 1.0, 1.0];
+        pl.update(0.35, &mut f.params(), &[1, 2], &[], &mut out);
+        assert!((f.values[1] - 0.4).abs() < 1e-4, "{:?}", f.values);
+        assert!((f.values[2] - 0.5).abs() < 1e-4);
+        assert_eq!(f.virtuals["PartArm"], 1.0);
+        // Ends after its duration.
+        pl.update(1.0, &mut f.params(), &[1, 2], &[], &mut out);
         assert!(!pl.is_playing());
     }
 
     #[test]
-    fn expressions_add_multiply_overwrite() {
-        let exp = Expression {
-            fade_in: Some(0.0001),
-            fade_out: Some(0.0001),
-            params: vec![
-                ExpParam {
+    fn expression_manager_blend() {
+        let exp = |v: f32, blend| {
+            Arc::new(Expression {
+                fade_in: Some(0.0),
+                fade_out: Some(0.0),
+                params: vec![ExpParam {
                     id: "A".into(),
-                    value: 2.0,
-                    blend: ExpBlend::Add,
-                },
-                ExpParam {
-                    id: "EyeL".into(),
-                    value: 0.5,
-                    blend: ExpBlend::Multiply,
-                },
-                ExpParam {
-                    id: "EyeR".into(),
-                    value: 0.25,
-                    blend: ExpBlend::Overwrite,
-                },
-            ],
+                    value: v,
+                    blend,
+                }],
+            })
         };
-        let (mut params, idx) = targets_fixture();
+        let mut f = Fixture::new();
         let mut ep = ExpressionPlayer::default();
-        ep.start(Arc::new(exp), 0.0);
-        ep.update(1.0, &mut params, &idx);
-        assert_eq!(params, vec![2.0, 0.5, 0.25]);
+        // A lone Add expression with zero fade: A = (c + V) · 1.
+        ep.start(exp(2.0, ExpBlend::Add));
+        ep.update(0.1, &mut f.params());
+        assert_eq!(f.values[0], 2.0);
+        // Multiply on top: the newest entry (weight 1) replaces the older one.
+        f.values[0] = 3.0;
+        ep.start(exp(0.5, ExpBlend::Multiply));
+        ep.update(0.1, &mut f.params());
+        // Entry 0 (Add 2): (2, 1, 3); entry 1 (Mul 0.5, w=1): add→0, mul→0.5, ow→3 → (3+0)·0.5.
+        assert_eq!(f.values[0], 1.5);
+        assert_eq!(ep.queue.len(), 1);
+        // Overwrite.
+        f.values[0] = 3.0;
+        ep.start(exp(-4.0, ExpBlend::Overwrite));
+        ep.update(0.1, &mut f.params());
+        assert_eq!(f.values[0], -4.0);
+    }
+
+    #[test]
+    fn expression_fades_in_with_default_time() {
+        let e = Arc::new(Expression {
+            fade_in: None,
+            fade_out: None,
+            params: vec![ExpParam {
+                id: "A".into(),
+                value: 4.0,
+                blend: ExpBlend::Add,
+            }],
+        });
+        let mut f = Fixture::new();
+        let mut ep = ExpressionPlayer::default();
+        ep.start(e);
+        ep.update(0.0, &mut f.params());
+        assert_eq!(f.values[0], 0.0); // W = ease(0) = 0
+        f.values[0] = 0.0;
+        ep.update(0.5, &mut f.params());
+        assert!((f.values[0] - 2.0).abs() < 1e-4); // W = ease(0.5) = 0.5 → 0·0.5 + 4·0.5
     }
 }

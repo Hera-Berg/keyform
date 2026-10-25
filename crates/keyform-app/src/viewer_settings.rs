@@ -232,8 +232,7 @@ fn expressions_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState,
                 doc.play_expression(i);
             }
             if !doc.expressions.is_empty() && ui.button("Reset expression").clicked() {
-                let now = doc.time;
-                doc.expression_player.stop(now);
+                doc.expression_player.reset();
             }
             if editable {
                 ui.horizontal(|ui| {
@@ -403,6 +402,15 @@ fn expression_editor(ui: &mut egui::Ui, doc: &mut Document, i: usize, st: &mut S
 }
 
 fn pose_ui(ui: &mut egui::Ui, doc: &mut Document) {
+    let before = doc.pose.clone();
+    pose_editor(ui, doc);
+    if doc.pose != before {
+        // Re-applied after editing: reset (viewer.md §3.4).
+        doc.pose_changed();
+    }
+}
+
+fn pose_editor(ui: &mut egui::Ui, doc: &mut Document) {
     egui::CollapsingHeader::new("Pose").show(ui, |ui| {
         let part_ids: Vec<String> = doc
             .model

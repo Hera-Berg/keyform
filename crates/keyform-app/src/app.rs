@@ -441,6 +441,9 @@ impl KeyformApp {
             if let Some(i) = self.active {
                 let doc = &mut self.slots[i].doc;
                 ui.checkbox(&mut doc.physics_enabled, "Physics");
+                ui.checkbox(&mut doc.breath_enabled, "Breath");
+                ui.checkbox(&mut doc.eye_blink_enabled, "Eye blink")
+                    .on_hover_text("Automatic eye blink while no motion plays");
                 if ui.button("Reset parameters").clicked() {
                     doc.reset_parameters();
                 }
