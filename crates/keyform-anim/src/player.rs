@@ -1,5 +1,6 @@
 //! Runtime playback: parameter access with virtual parameters, the motion
-//! queue, the expression manager, breath and eye blink.
+//! queue, the expression manager (and the old fading method), breath and
+//! automatic eye blink.
 //!
 //! spec: 70-advanced/viewer.md §3, 60-animation/motion3-json.md §3
 
@@ -90,6 +91,12 @@ impl Params<'_> {
         let p = self.get(id);
         self.set(id, p + v * w, 1.0);
     }
+
+    /// "Multiply by v with weight w": p·(1 + (v − 1)·w), clamped.
+    pub fn mul(&mut self, id: &str, v: f32, w: f32) {
+        let p = self.get(id);
+        self.set(id, p * (1.0 + (v - 1.0) * w), 1.0);
+    }
 }
 
 /// Model-level outputs of motions.
@@ -128,6 +135,9 @@ fn fade_or_default(f: Option<f32>) -> f32 {
 pub struct MotionPlayer {
     queue: Vec<Entry>,
     clock: f64,
+    /// Animation ▸ "Use old playback methods": evaluate every Bezier
+    /// segment in the restricted form (viewer.md §3.7).
+    pub force_restricted_beziers: bool,
 }
 
 pub struct MotionUpdate {
@@ -214,6 +224,7 @@ impl MotionPlayer {
             apply_motion(
                 m,
                 local,
+                m.beziers_restricted || self.force_restricted_beziers,
                 weight,
                 &|c: &crate::motion::Curve| {
                     weights(c.fade_in.unwrap_or(fade_in), c.fade_out.unwrap_or(fade_out))
@@ -257,6 +268,7 @@ impl MotionPlayer {
 fn apply_motion(
     m: &Motion,
     local: f32,
+    restricted: bool,
     weight: f32,
     curve_weight: &dyn Fn(&crate::motion::Curve) -> f32,
     p: &mut Params,
@@ -264,7 +276,6 @@ fn apply_motion(
     lip_sync: &[usize],
     out: &mut MotionOutputs,
 ) {
-    let restricted = m.beziers_restricted;
     let value = |target: Target, id: &str| {
         m.curves
             .iter()
@@ -320,6 +331,9 @@ pub struct ExpressionPlayer {
     clock: f64,
     /// Tracked parameter IDs with their (add, mul, ow) state, in first-seen order.
     tracked: Vec<(String, [f32; 3])>,
+    /// Animation ▸ "Use Old Fading Method": a plain queue applying each
+    /// expression in turn instead of the composite blend (§3.3, §3.7).
+    pub old_fading: bool,
 }
 
 /// exp3 fade default when absent (viewer.md §3.3).
@@ -357,6 +371,10 @@ impl ExpressionPlayer {
             return;
         }
         self.clock += f64::from(dt.max(0.0));
+        if self.old_fading {
+            self.update_old(p);
+            return;
+        }
         let t_now = self.clock;
         // Current values: the same for every entry this frame.
         let current: Vec<f32> = self.tracked.iter().map(|(id, _)| p.get(id)).collect();
@@ -426,6 +444,48 @@ impl ExpressionPlayer {
     }
 }
 
+impl ExpressionPlayer {
+    /// The old fading method: an ordinary queue (§3.2 rules); each entry, in
+    /// queue order, applies its parameters in file order with weight
+    /// ease(fade-in)·ease(fade-out). spec: viewer.md §3.3
+    fn update_old(&mut self, p: &mut Params) {
+        let t_now = self.clock;
+        for e in &mut self.queue {
+            e.start.get_or_insert_with(|| {
+                e.fade_in_start = t_now;
+                t_now
+            });
+            let fi_time = e.exp.fade_in.unwrap_or(DEFAULT_EXPRESSION_FADE);
+            let fo_time = e.exp.fade_out.unwrap_or(DEFAULT_EXPRESSION_FADE);
+            let fi = if fi_time > 0.0 {
+                ease(((t_now - e.fade_in_start) as f32) / fi_time)
+            } else {
+                1.0
+            };
+            let fo = if fo_time > 0.0 && e.end >= 0.0 {
+                ease(((e.end - t_now) as f32) / fo_time)
+            } else {
+                1.0
+            };
+            let w = fi * fo;
+            for x in &e.exp.params {
+                match x.blend {
+                    ExpBlend::Add => p.add(&x.id, x.value, w),
+                    ExpBlend::Multiply => p.mul(&x.id, x.value, w),
+                    ExpBlend::Overwrite => p.set(&x.id, x.value, w),
+                }
+            }
+            if let Some(f) = e.pending_fade_out.take() {
+                let end = t_now + f64::from(f);
+                if !(e.end > 0.0 && e.end <= end) {
+                    e.end = end;
+                }
+            }
+        }
+        self.queue.retain(|e| !(e.end > 0.0 && e.end < t_now));
+    }
+}
+
 /// Breath: ParamBreath += 0.5 + 0.5·sin(2π·T/3.2345), weight 1 (§3.1 step 7).
 #[derive(Default)]
 pub struct Breath {
@@ -442,34 +502,126 @@ impl Breath {
     }
 }
 
-/// Automatic eye blink for the viewer preview: periodic close/open of the
-/// EyeBlink parameters. TODO(Q-0010): the reference timing and curve.
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BlinkState {
+    #[default]
+    First,
+    Interval,
+    Closing,
+    Closed,
+    Opening,
+}
+
+/// Small deterministic generator for the blink interval (xorshift64*).
+#[derive(Clone, Debug)]
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn from_time() -> Self {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| d.as_nanos() as u64);
+        Self::new(t ^ 0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// Uniform in [0, 1).
+    pub fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Automatic eye blink. Its clock advances only on frames where it runs
+/// (§3.1 step 4). spec: viewer.md §3.5
+#[derive(Clone, Debug)]
 pub struct EyeBlink {
-    clock: f32,
+    clock: f64,
+    state: BlinkState,
+    state_start: f64,
+    next_blink: f64,
+    rng: Rng,
+}
+
+impl Default for EyeBlink {
+    fn default() -> Self {
+        Self::with_rng(Rng::from_time())
+    }
 }
 
 impl EyeBlink {
-    /// Seconds between blinks, closing, closed and opening durations.
-    const INTERVAL: f32 = 4.0;
-    const CLOSING: f32 = 0.1;
-    const CLOSED: f32 = 0.05;
-    const OPENING: f32 = 0.15;
+    const CLOSING: f64 = 0.1;
+    const CLOSED: f64 = 0.05;
+    const OPENING: f64 = 0.15;
+    /// Nominal interval 4 s; the gap is r·(2·4 − 1), uniform over 0–7 s.
+    const INTERVAL: f64 = 4.0;
 
+    pub fn with_rng(rng: Rng) -> Self {
+        Self {
+            clock: 0.0,
+            state: BlinkState::First,
+            state_start: 0.0,
+            next_blink: 0.0,
+            rng,
+        }
+    }
+
+    fn schedule(&mut self) {
+        self.next_blink = self.clock + self.rng.next_f64() * (2.0 * Self::INTERVAL - 1.0);
+    }
+
+    /// Advances the blink and writes E (0 = closed, 1 = open) to every
+    /// eye-blink parameter with weight 1.
     pub fn update(&mut self, dt: f32, p: &mut Params, eye_blink: &[usize]) {
-        self.clock = (self.clock + dt.max(0.0)) % Self::INTERVAL;
-        let t = self.clock - (Self::INTERVAL - Self::CLOSING - Self::CLOSED - Self::OPENING);
-        let open = if t < 0.0 {
-            1.0
-        } else if t < Self::CLOSING {
-            1.0 - t / Self::CLOSING
-        } else if t < Self::CLOSING + Self::CLOSED {
-            0.0
-        } else {
-            ((t - Self::CLOSING - Self::CLOSED) / Self::OPENING).min(1.0)
+        self.clock += f64::from(dt.max(0.0));
+        let now = self.clock;
+        if self.state == BlinkState::First {
+            self.schedule();
+            self.state = BlinkState::Interval;
+        }
+        let e = match self.state {
+            BlinkState::First | BlinkState::Interval => {
+                if self.next_blink < now {
+                    self.state = BlinkState::Closing;
+                    self.state_start = now;
+                }
+                1.0
+            }
+            BlinkState::Closing => {
+                let mut u = (now - self.state_start) / Self::CLOSING;
+                if u >= 1.0 {
+                    u = 1.0;
+                    self.state = BlinkState::Closed;
+                    self.state_start = now;
+                }
+                1.0 - u
+            }
+            BlinkState::Closed => {
+                if (now - self.state_start) / Self::CLOSED >= 1.0 {
+                    self.state = BlinkState::Opening;
+                    self.state_start = now;
+                }
+                0.0
+            }
+            BlinkState::Opening => {
+                let mut u = (now - self.state_start) / Self::OPENING;
+                if u >= 1.0 {
+                    u = 1.0;
+                    self.schedule();
+                    self.state = BlinkState::Interval;
+                }
+                u
+            }
         };
         for &i in eye_blink {
-            p.set_index(i, open, 1.0);
+            p.set_index(i, e as f32, 1.0);
         }
     }
 }
@@ -622,5 +774,109 @@ mod tests {
         f.values[0] = 0.0;
         ep.update(0.5, &mut f.params());
         assert!((f.values[0] - 2.0).abs() < 1e-4); // W = ease(0.5) = 0.5 → 0·0.5 + 4·0.5
+    }
+
+    #[test]
+    fn eye_blink_cycle() {
+        let mut f = Fixture::new();
+        let mut b = EyeBlink::with_rng(Rng::new(7));
+        // First update schedules within 0–7 s and writes "open".
+        b.update(0.0, &mut f.params(), &[1, 2]);
+        assert!(b.next_blink >= 0.0 && b.next_blink < 7.0);
+        assert_eq!(f.values[1], 1.0);
+        let gap = b.next_blink;
+        // Run past the scheduled time: closing starts on the first frame after it.
+        let mut seen = Vec::new();
+        let dt = 0.01;
+        for _ in 0..((gap + 0.5) / 0.01) as usize {
+            b.update(dt, &mut f.params(), &[1, 2]);
+            seen.push(f.values[1]);
+        }
+        let min = seen.iter().copied().fold(f32::MAX, f32::min);
+        assert_eq!(min, 0.0, "the eyes close fully");
+        assert_eq!(*seen.last().unwrap(), 1.0, "and open again");
+        assert_eq!(f.values[1], f.values[2]);
+        // Closing → closed → opening takes 0.1 + 0.05 + 0.15 s (± a frame each).
+        let shut = seen.iter().filter(|v| **v < 1.0).count() as f64 * f64::from(dt);
+        assert!((0.28..=0.34).contains(&shut), "{shut}");
+        // The clock only moves when updated: no blink without updates.
+        let clock = b.clock;
+        assert!((clock - seen.len() as f64 * f64::from(dt)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn old_fading_method_applies_in_order() {
+        let mut f = Fixture::new();
+        let mut ep = ExpressionPlayer {
+            old_fading: true,
+            ..ExpressionPlayer::default()
+        };
+        ep.start(Arc::new(Expression {
+            fade_in: Some(0.0),
+            fade_out: Some(0.0),
+            params: vec![
+                ExpParam {
+                    id: "A".into(),
+                    value: 2.0,
+                    blend: ExpBlend::Add,
+                },
+                ExpParam {
+                    id: "A".into(),
+                    value: 3.0,
+                    blend: ExpBlend::Multiply,
+                },
+            ],
+        }));
+        f.values[0] = 1.0;
+        ep.update(0.1, &mut f.params());
+        // (1 + 2) · 3, in file order.
+        assert_eq!(f.values[0], 9.0);
+        // Half faded in with the default 1 s: add 2·0.5 then ×(1 + 2·0.5).
+        let mut ep = ExpressionPlayer {
+            old_fading: true,
+            ..ExpressionPlayer::default()
+        };
+        ep.start(Arc::new(Expression {
+            fade_in: None,
+            fade_out: None,
+            params: vec![ExpParam {
+                id: "A".into(),
+                value: 4.0,
+                blend: ExpBlend::Overwrite,
+            }],
+        }));
+        f.values[0] = 0.0;
+        ep.update(0.0, &mut f.params());
+        f.values[0] = 0.0;
+        ep.update(0.5, &mut f.params());
+        assert!((f.values[0] - 2.0).abs() < 1e-5, "{}", f.values[0]);
+    }
+
+    #[test]
+    fn old_playback_forces_restricted_beziers() {
+        // An unrestricted bezier whose handles reach past the segment.
+        let m = Arc::new(
+            Motion::parse(
+                r#"{"Meta":{"Duration":1,"Fps":30,"FadeInTime":0,"FadeOutTime":0,"AreBeziersRestricted":false},"Curves":[
+            {"Target":"Parameter","Id":"A","Segments":[0,0,1,0.9,10,0.95,-10,1,0]}]}"#,
+            )
+            .unwrap(),
+        );
+        let run = |force: bool| {
+            let mut f = Fixture::new();
+            let mut pl = MotionPlayer {
+                force_restricted_beziers: force,
+                ..MotionPlayer::default()
+            };
+            pl.start(m.clone(), false);
+            let mut out = MotionOutputs::default();
+            pl.update(0.0, &mut f.params(), &[], &[], &mut out);
+            pl.update(0.3, &mut f.params(), &[], &[], &mut out);
+            f.values[0]
+        };
+        let curve = &m.curves[0];
+        assert_eq!(run(false), curve.eval(0.3, false));
+        assert_eq!(run(true), curve.eval(0.3, true));
+        assert_ne!(run(false), run(true));
     }
 }

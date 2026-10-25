@@ -549,7 +549,7 @@ fn physics_ui(ui: &mut egui::Ui, doc: &mut Document) {
         .default_open(true)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut doc.physics_enabled, "Enable physics");
+                ui.weak("On/off: Animation ▸ Apply Physics");
                 if ui.button("Reset").clicked() {
                     doc.sim.reset(&doc.model.physics);
                 }

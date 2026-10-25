@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use keyform_anim::{
     Breath, Expression, ExpressionPlayer, EyeBlink, Motion, MotionOutputs, MotionPlayer,
-    ParamRange, Params, Pose, PoseState,
+    ParamRange, Params, Pose, PoseState, Rng, Tracking,
 };
 use keyform_edit::{History, StepKind};
 use keyform_eval::{EvalOptions, Evaluator, Frame, Overrides};
@@ -25,6 +25,46 @@ pub enum Selection {
     Deformer(usize),
     ArtMesh(usize),
     Glue(usize),
+}
+
+/// Animation menu toggles, persisted per user. spec: 70-advanced/viewer.md §3.7
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PlaybackOptions {
+    pub expression: bool,
+    pub eye_blink: bool,
+    pub physics: bool,
+    pub pose: bool,
+    /// Motion-sync lip sync (§3.1 step 11). TODO(Q-0013): stored only.
+    pub motion_sync: bool,
+    /// Start a random motion whenever the queue is empty (§3.1 step 2).
+    pub idle_motion: bool,
+    pub track_cursor: bool,
+    pub breath: bool,
+    /// "Parameter repeat". TODO(Q-0013): behaviour not specified; stored only.
+    pub parameter_repeat: bool,
+    /// Restricted Bezier evaluation for every motion.
+    pub old_playback: bool,
+    /// Expressions through the old fading method (§3.3).
+    pub old_fading: bool,
+}
+
+impl Default for PlaybackOptions {
+    fn default() -> Self {
+        Self {
+            expression: true,
+            eye_blink: true,
+            physics: true,
+            pose: true,
+            motion_sync: true,
+            idle_motion: false,
+            track_cursor: true,
+            breath: true,
+            parameter_repeat: false,
+            old_playback: false,
+            old_fading: false,
+        }
+    }
 }
 
 /// The undoable state of a document (spec: 50-ui/undo.md §2). The edit
@@ -86,7 +126,6 @@ pub struct Document {
     pub live: Vec<f32>,
     pub param_index: HashMap<String, usize>,
     pub part_index: HashMap<String, usize>,
-    pub physics_enabled: bool,
     pub sim: PhysicsSim,
     pub motions: Vec<MotionEntry>,
     pub expressions: Vec<ExpressionEntry>,
@@ -101,9 +140,12 @@ pub struct Document {
     pub virtuals: HashMap<String, f32>,
     ranges: Vec<ParamRange>,
     motion_out: MotionOutputs,
-    pub breath_enabled: bool,
     breath: Breath,
-    pub eye_blink_enabled: bool,
+    /// Cursor tracking state (viewer.md §3.6).
+    pub tracking: Tracking,
+    /// Index of the last motion started by idle playback.
+    idle_last: Option<usize>,
+    idle_rng: Rng,
     eye_blink: EyeBlink,
     pub motion_player: MotionPlayer,
     pub expression_player: ExpressionPlayer,
@@ -355,7 +397,6 @@ impl Document {
             values,
             param_index,
             part_index,
-            physics_enabled: !model.physics.settings.is_empty(),
             sim,
             motions,
             expressions,
@@ -366,9 +407,14 @@ impl Document {
             virtuals: HashMap::new(),
             ranges,
             motion_out: MotionOutputs::default(),
-            breath_enabled: false,
             breath: Breath::default(),
-            eye_blink_enabled: false,
+            tracking: Tracking::new(model.parameters.iter().map(|p| p.id.as_str())),
+            idle_last: None,
+            idle_rng: Rng::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64),
+            ),
             eye_blink: EyeBlink::default(),
             motion_player: MotionPlayer::default(),
             expression_player: ExpressionPlayer::default(),
@@ -506,6 +552,7 @@ impl Document {
             self.saved.clone_from(&self.values);
             self.live.clone_from(&self.values);
             self.manual = vec![false; n];
+            self.tracking = Tracking::new(m.parameters.iter().map(|p| p.id.as_str()));
         }
         for (i, p) in m.parameters.iter().enumerate() {
             self.values[i] = p.clamp(self.values[i]);
@@ -715,18 +762,42 @@ impl Document {
     }
 
     /// Whether anything animates (the UI then repaints continuously).
-    pub fn is_animating(&self) -> bool {
+    pub fn is_animating(&self, o: &PlaybackOptions) -> bool {
         self.motion_player.is_playing()
-            || self.physics_enabled
-            || self.pose.is_some()
-            || self.breath_enabled
-            || self.eye_blink_enabled
+            || o.physics && !self.model.physics.settings.is_empty()
+            || o.pose && self.pose.is_some()
+            || o.breath
+            || o.eye_blink && !self.model.eye_blink_parameters.is_empty()
+            || o.track_cursor
+            || o.idle_motion && !self.motions.is_empty()
+    }
+
+    /// Idle playback: a random motion, never the previous one twice in a
+    /// row (the next index is used instead). spec: viewer.md §3.1 step 2
+    fn start_idle_motion(&mut self) {
+        let n = self.motions.len();
+        if n == 0 {
+            return;
+        }
+        let mut i = ((self.idle_rng.next_f64() * n as f64) as usize).min(n - 1);
+        if Some(i) == self.idle_last {
+            i = (i + 1) % n;
+        }
+        self.idle_last = Some(i);
+        if let Some(m) = self.motions[i].motion.clone() {
+            self.motion_player.start(m, false);
+        }
     }
 
     /// Advances playback by `dt` seconds and evaluates the model, in the
     /// frame order of spec 70-advanced/viewer.md §3.1.
-    pub fn tick(&mut self, dt: f32, log: &mut Log) {
+    pub fn tick(&mut self, dt: f32, o: &PlaybackOptions, log: &mut Log) {
         self.time += f64::from(dt);
+        self.motion_player.force_restricted_beziers = o.old_playback;
+        self.expression_player.old_fading = o.old_fading;
+        if o.idle_motion && !self.motion_player.is_playing() {
+            self.start_idle_motion();
+        }
         // 1. Restore the values saved after the previous motion update.
         self.live.clone_from(&self.saved);
         let mut p = Params {
@@ -749,14 +820,20 @@ impl Document {
         // 3. Save.
         self.saved.copy_from_slice(p.values);
         // 4. Eye blink only when no motion was updated.
-        if self.eye_blink_enabled && !upd.updated {
+        if o.eye_blink && !upd.updated {
             self.eye_blink
                 .update(dt, &mut p, &self.model.eye_blink_parameters);
         }
         // 5. Expressions.
-        self.expression_player.update(dt, &mut p);
+        if o.expression {
+            self.expression_player.update(dt, &mut p);
+        }
+        // 6. Cursor tracking.
+        if o.track_cursor {
+            self.tracking.update(dt, &mut p);
+        }
         // 7. Breath.
-        if self.breath_enabled {
+        if o.breath {
             self.breath.update(dt, &mut p);
         }
         // 8. Parameters adjusted by hand.
@@ -766,7 +843,7 @@ impl Document {
             }
         }
         // 9. Physics.
-        if self.physics_enabled {
+        if o.physics {
             self.sim
                 .step(&self.model.physics, &self.model.parameters, p.values, dt);
         }
@@ -775,7 +852,7 @@ impl Document {
             part_opacity: vec![None; self.model.parts.len()],
             model_opacity: self.motion_out.model_opacity,
         };
-        if let Some(pose) = &self.pose {
+        if let Some(pose) = self.pose.as_ref().filter(|_| o.pose) {
             let st = self
                 .pose_state
                 .get_or_insert_with(|| PoseState::reset(pose, &mut p));

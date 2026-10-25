@@ -8,13 +8,15 @@ pub mod json;
 pub mod motion;
 pub mod player;
 pub mod pose;
+pub mod tracking;
 
 pub use expression::{ExpBlend, ExpParam, Expression};
 pub use motion::{Curve, Motion, Segment, Target};
 pub use player::{
-    Breath, ExpressionPlayer, EyeBlink, MotionOutputs, MotionPlayer, ParamRange, Params,
+    Breath, ExpressionPlayer, EyeBlink, MotionOutputs, MotionPlayer, ParamRange, Params, Rng,
 };
 pub use pose::{Pose, PoseNode, PoseState};
+pub use tracking::{TrackKind, TrackPoint, Tracking};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnimError {

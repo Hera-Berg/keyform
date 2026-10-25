@@ -9,7 +9,7 @@ use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 
 use crate::canvas::{self, CanvasStatus, ViewGpu};
-use crate::document::Document;
+use crate::document::{Document, PlaybackOptions};
 use crate::log::Log;
 use crate::palettes;
 use crate::theme::{self, Tokens};
@@ -114,9 +114,12 @@ pub struct KeyformApp {
     /// Set when every document was dealt with: let the window close.
     allow_quit: bool,
     window_title: String,
+    /// Animation menu toggles (viewer.md §3.7), shared by all documents.
+    playback: PlaybackOptions,
 }
 
 const RECENT_KEY: &str = "keyform.recent_files";
+const PLAYBACK_KEY: &str = "keyform.playback";
 /// Dock layout of the last session (main-window.md §4: layouts persist).
 const LAYOUT_KEY: &str = "keyform.dock_layout";
 
@@ -162,7 +165,12 @@ impl KeyformApp {
             .and_then(|s| eframe::get_value::<DockState<Tab>>(s, LAYOUT_KEY))
             .filter(usable_layout)
             .unwrap_or_else(|| default_layout(Vec::new()));
+        let playback = cc
+            .storage
+            .and_then(|s| eframe::get_value::<PlaybackOptions>(s, PLAYBACK_KEY))
+            .unwrap_or_default();
         let mut app = Self {
+            playback,
             dock,
             slots: Vec::new(),
             active: None,
@@ -538,6 +546,7 @@ impl KeyformApp {
                     }
                 }
             });
+            ui.menu_button("Animation", |ui| self.animation_menu(ui));
             ui.menu_button("Window", |ui| {
                 for (tab, name) in Tab::PALETTES {
                     let mut shown = self.dock.find_tab(&tab).is_some();
@@ -563,6 +572,51 @@ impl KeyformApp {
         });
     }
 
+    /// Playback toggles. spec: 70-advanced/viewer.md §3.7
+    fn animation_menu(&mut self, ui: &mut egui::Ui) {
+        let o = &mut self.playback;
+        ui.checkbox(&mut o.expression, "Apply Expression");
+        ui.checkbox(&mut o.eye_blink, "Automatic Eye-Blinking");
+        ui.checkbox(&mut o.physics, "Apply Physics");
+        ui.checkbox(&mut o.pose, "Enable Pose Switching");
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut o.motion_sync, "Motion-sync"),
+        )
+        .on_disabled_hover_text("Motion-sync lip sync is not implemented yet");
+        ui.checkbox(&mut o.idle_motion, "Idle Motion");
+        ui.checkbox(&mut o.track_cursor, "Track cursor")
+            .on_hover_text("Drag over the view: left button = primary, right = secondary target");
+        ui.checkbox(&mut o.breath, "Breath");
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut o.parameter_repeat, "Parameter repeat"),
+        )
+        .on_disabled_hover_text("Not implemented yet");
+        ui.separator();
+        if ui
+            .checkbox(&mut o.old_playback, "Use old playback methods")
+            .changed()
+            && o.old_playback
+        {
+            self.log.info(
+                "The motion degradation observed in the SDK is simulated when the motion \
+                 includes curves with significantly adjusted Bezier handles.",
+            );
+        }
+        let o = &mut self.playback;
+        if ui
+            .checkbox(&mut o.old_fading, "Use Old Fading Method")
+            .changed()
+            && o.old_fading
+        {
+            self.log.warn(
+                "The old fading method may result in unnatural expressions depending on the \
+                 parameter settings.",
+            );
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("workspace")
@@ -580,13 +634,8 @@ impl KeyformApp {
             }
             ui.separator();
             if let Some(i) = self.active {
-                let doc = &mut self.slots[i].doc;
-                ui.checkbox(&mut doc.physics_enabled, "Physics");
-                ui.checkbox(&mut doc.breath_enabled, "Breath");
-                ui.checkbox(&mut doc.eye_blink_enabled, "Eye blink")
-                    .on_hover_text("Automatic eye blink while no motion plays");
                 if ui.button("Reset parameters").clicked() {
-                    doc.reset_parameters();
+                    self.slots[i].doc.reset_parameters();
                 }
             }
         });
@@ -981,8 +1030,8 @@ impl eframe::App for KeyformApp {
         self.last_time = Some(now);
         let mut animating = false;
         for s in &mut self.slots {
-            s.doc.tick(dt, &mut self.log);
-            animating |= s.doc.is_animating();
+            s.doc.tick(dt, &self.playback, &mut self.log);
+            animating |= s.doc.is_animating(&self.playback);
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
@@ -1051,6 +1100,7 @@ impl eframe::App for KeyformApp {
             .collect();
         storage.set_string(RECENT_KEY, recent.join("\n"));
         eframe::set_value(storage, LAYOUT_KEY, &storable_layout(&self.dock));
+        eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
     }
 }
 

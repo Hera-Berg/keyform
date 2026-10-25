@@ -57,6 +57,36 @@ pub fn fit(doc: &mut Document, rect: Rect) {
     doc.view.fit_pending = false;
 }
 
+/// Cursor tracking input: while a button is held over the view, its target
+/// follows the pointer (left = primary, right = secondary); release → (0, 0).
+/// Space/R drags navigate instead. spec: 70-advanced/viewer.md §3.6
+fn track_cursor(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect: Rect) {
+    let (space, rkey, primary, secondary, pos) = ui.input(|i| {
+        (
+            i.key_down(egui::Key::Space),
+            i.key_down(egui::Key::R),
+            i.pointer.primary_down(),
+            i.pointer.secondary_down(),
+            i.pointer.interact_pos(),
+        )
+    });
+    let held = response.is_pointer_button_down_on() && !space && !rkey;
+    let target = pos.map(|p| {
+        let u = (p.x - rect.min.x) / rect.width();
+        let v = (p.y - rect.min.y) / rect.height();
+        keyform_anim::tracking::target_from_view(u, v)
+    });
+    let t = &mut doc.tracking;
+    match target {
+        Some(xy) if held && primary => t.primary.set_target(xy),
+        _ => t.primary.set_target([0.0, 0.0]),
+    }
+    match target {
+        Some(xy) if held && secondary => t.secondary.set_target(xy),
+        _ => t.secondary.set_target([0.0, 0.0]),
+    }
+}
+
 pub fn canvas_ui(
     ui: &mut egui::Ui,
     doc: &mut Document,
@@ -75,6 +105,7 @@ pub fn canvas_ui(
         fit(doc, rect);
     }
     navigate(ui, &response, doc, gpu, rect, ppp);
+    track_cursor(ui, &response, doc, rect);
 
     let view = view_of(doc, rect, ppp);
     let to_screen = |p: [f32; 2]| -> Pos2 {
