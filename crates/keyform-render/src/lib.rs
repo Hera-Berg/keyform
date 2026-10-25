@@ -32,6 +32,10 @@ pub struct View {
     pub height: u32,
     pub origin: [f32; 2],
     pub scale: f32,
+    /// View rotation in degrees about the output centre (clockwise on screen).
+    pub rotation: f32,
+    /// Mirror the view horizontally (View ▸ reflect).
+    pub mirror: bool,
 }
 
 impl View {
@@ -44,7 +48,41 @@ impl View {
             height: (h * scale).round().max(1.0) as u32,
             origin: [0.0, 0.0],
             scale,
+            rotation: 0.0,
+            mirror: false,
         }
+    }
+
+    /// Canvas pixels → output pixels (before supersampling).
+    pub fn to_px(&self, p: [f32; 2]) -> [f32; 2] {
+        let mut x = (p[0] - self.origin[0]) * self.scale;
+        let y = (p[1] - self.origin[1]) * self.scale;
+        let (cx, cy) = (self.width as f32 / 2.0, self.height as f32 / 2.0);
+        if self.mirror {
+            x = 2.0 * cx - x;
+        }
+        if self.rotation == 0.0 {
+            return [x, y];
+        }
+        let (s, c) = self.rotation.to_radians().sin_cos();
+        let (dx, dy) = (x - cx, y - cy);
+        [cx + c * dx - s * dy, cy + s * dx + c * dy]
+    }
+
+    /// Output pixels → canvas pixels (inverse of [`Self::to_px`]).
+    pub fn to_canvas(&self, q: [f32; 2]) -> [f32; 2] {
+        let (cx, cy) = (self.width as f32 / 2.0, self.height as f32 / 2.0);
+        let (s, c) = self.rotation.to_radians().sin_cos();
+        let (dx, dy) = (q[0] - cx, q[1] - cy);
+        let mut x = cx + c * dx + s * dy;
+        let y = cy - s * dx + c * dy;
+        if self.mirror {
+            x = 2.0 * cx - x;
+        }
+        [
+            x / self.scale + self.origin[0],
+            y / self.scale + self.origin[1],
+        ]
     }
 }
 
@@ -118,9 +156,11 @@ impl<'m> CpuRenderer<'m> {
             h,
             px: vec![opts.background.unwrap_or([0.0; 4]); w * h],
         };
-        let scale = v.scale * ss as f32;
-        let to_px =
-            |p: &[f32]| -> V2 { [(p[0] - v.origin[0]) * scale, (p[1] - v.origin[1]) * scale] };
+        let ssf = ss as f32;
+        let to_px = |p: &[f32]| -> V2 {
+            let q = v.to_px([p[0], p[1]]);
+            [q[0] * ssf, q[1] * ssf]
+        };
 
         let m = self.model;
         let mut mask_cache: HashMap<(Vec<MeshIndex>, bool), Vec<f32>> = HashMap::new();
@@ -167,8 +207,12 @@ impl<'m> CpuRenderer<'m> {
                 else {
                     continue;
                 };
-                // spec: blending.md §4 — front face has positive signed area in y-down canvas space.
-                let area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
+                // spec: blending.md §4 — front face has positive signed area in
+                // y-down canvas space, so a mirrored or rotated view keeps the
+                // same triangles visible.
+                let cp = |i: usize| [ms.positions[2 * i], ms.positions[2 * i + 1]];
+                let (c0, c1, c2) = (cp(i0), cp(i1), cp(i2));
+                let area = (c1[0] - c0[0]) * (c2[1] - c0[1]) - (c1[1] - c0[1]) * (c2[0] - c0[0]);
                 if am.culling && area <= 0.0 {
                     continue;
                 }
@@ -414,6 +458,25 @@ fn raster_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_mapping_inverts() {
+        let v = View {
+            width: 300,
+            height: 200,
+            origin: [10.0, -5.0],
+            scale: 0.75,
+            rotation: 33.0,
+            mirror: true,
+        };
+        for p in [[0.0, 0.0], [123.0, 45.0], [-50.0, 400.0]] {
+            let q = v.to_canvas(v.to_px(p));
+            assert!(
+                (q[0] - p[0]).abs() < 1e-3 && (q[1] - p[1]).abs() < 1e-3,
+                "{p:?} → {q:?}"
+            );
+        }
+    }
 
     #[test]
     fn shared_edge_is_covered_once() {

@@ -36,6 +36,13 @@ struct Vertex {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Cull {
+    None,
+    Back,
+    Front,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum PipeKind {
     Normal,
     Add,
@@ -45,12 +52,11 @@ enum PipeKind {
 }
 
 /// GPU device, pipelines and uploaded textures for one model.
-pub struct GpuRenderer<'m> {
-    model: &'m Model,
+pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<(PipeKind, bool), wgpu::RenderPipeline>,
+    pipelines: HashMap<(PipeKind, Cull), wgpu::RenderPipeline>,
     sampler: wgpu::Sampler,
     textures: Vec<Option<wgpu::TextureView>>,
     /// 1×1 placeholder bound where a texture slot is unused.
@@ -59,13 +65,13 @@ pub struct GpuRenderer<'m> {
     pub warnings: Vec<String>,
 }
 
-impl<'m> GpuRenderer<'m> {
+impl GpuRenderer {
     /// Creates a headless device. Fails when no adapter is available.
-    pub fn new(model: &'m Model) -> Result<Self, RenderError> {
+    pub fn new(model: &Model) -> Result<Self, RenderError> {
         pollster::block_on(Self::new_async(model))
     }
 
-    async fn new_async(model: &'m Model) -> Result<Self, RenderError> {
+    async fn new_async(model: &Model) -> Result<Self, RenderError> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = instance
@@ -88,7 +94,18 @@ impl<'m> GpuRenderer<'m> {
             })
             .await
             .map_err(gpu_err)?;
+        let info = format!("{} ({:?})", info.name, info.backend);
+        Ok(Self::with_device(device, queue, model, info))
+    }
 
+    /// Builds pipelines on an existing device (e.g. the UI's) and uploads
+    /// `model`'s textures.
+    pub fn with_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        model: &Model,
+        adapter_info: String,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("keyform shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -148,7 +165,7 @@ impl<'m> GpuRenderer<'m> {
             PipeKind::Advanced,
             PipeKind::Mask,
         ] {
-            for cull in [false, true] {
+            for cull in [Cull::None, Cull::Back, Cull::Front] {
                 // spec: blending.md §3 (fixed-function, premultiplied).
                 let blend = match kind {
                     PipeKind::Normal | PipeKind::Mask => {
@@ -211,7 +228,11 @@ impl<'m> GpuRenderer<'m> {
                         // Front face: positive signed area in y-down canvas space,
                         // i.e. clockwise once y is flipped to NDC (blending.md §4).
                         front_face: wgpu::FrontFace::Cw,
-                        cull_mode: cull.then_some(wgpu::Face::Back),
+                        cull_mode: match cull {
+                            Cull::None => None,
+                            Cull::Back => Some(wgpu::Face::Back),
+                            Cull::Front => Some(wgpu::Face::Front),
+                        },
                         ..Default::default()
                     },
                     depth_stencil,
@@ -303,8 +324,7 @@ impl<'m> GpuRenderer<'m> {
             })
             .collect();
 
-        Ok(Self {
-            model,
+        Self {
             device,
             queue,
             layout,
@@ -312,9 +332,36 @@ impl<'m> GpuRenderer<'m> {
             sampler,
             textures,
             dummy,
-            adapter_info: format!("{} ({:?})", info.name, info.backend),
+            adapter_info,
             warnings,
-        })
+        }
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Format of render targets passed to [`Self::render_to`].
+    pub const TARGET_FORMAT: wgpu::TextureFormat = TARGET_FORMAT;
+
+    /// Usage flags a render target for [`Self::render_to`] needs.
+    pub const TARGET_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
+        .union(wgpu::TextureUsages::COPY_SRC)
+        .union(wgpu::TextureUsages::TEXTURE_BINDING);
+
+    /// Renders into `target` (format [`Self::TARGET_FORMAT`], size = view
+    /// size × supersample) and submits; no readback. The result is
+    /// premultiplied.
+    pub fn render_to(
+        &self,
+        model: &Model,
+        frame: &Frame,
+        opts: &RenderOptions,
+        target: &wgpu::Texture,
+    ) -> Result<(), RenderError> {
+        let enc = self.encode(model, frame, opts, target)?;
+        self.queue.submit([enc.finish()]);
+        Ok(())
     }
 
     fn target(
@@ -341,7 +388,13 @@ impl<'m> GpuRenderer<'m> {
         })
     }
 
-    pub fn render(&self, frame: &Frame, opts: &RenderOptions) -> Result<RgbaImage, RenderError> {
+    /// Renders headlessly and reads the image back.
+    pub fn render(
+        &self,
+        model: &Model,
+        frame: &Frame,
+        opts: &RenderOptions,
+    ) -> Result<RgbaImage, RenderError> {
         let ss = opts.supersample.clamp(1, 8);
         let v = opts.view;
         crate::check_view(&v)?;
@@ -352,22 +405,44 @@ impl<'m> GpuRenderer<'m> {
                 "{w}×{h} exceeds the GPU limit {max}"
             )));
         }
-        let scale = v.scale * ss as f32;
+        let color = self.target(w, h, Self::TARGET_USAGE, TARGET_FORMAT, "color");
+        let mut enc = self.encode(model, frame, opts, &color)?;
+        self.readback(
+            &mut enc,
+            &color,
+            w,
+            h,
+            v.width as usize,
+            v.height as usize,
+            ss as usize,
+        )
+    }
+
+    fn encode(
+        &self,
+        model: &Model,
+        frame: &Frame,
+        opts: &RenderOptions,
+        color: &wgpu::Texture,
+    ) -> Result<wgpu::CommandEncoder, RenderError> {
+        let ss = opts.supersample.clamp(1, 8);
+        let v = opts.view;
+        crate::check_view(&v)?;
+        let (w, h) = (v.width * ss, v.height * ss);
+        if color.width() != w || color.height() != h || color.format() != TARGET_FORMAT {
+            return Err(RenderError::Options(format!(
+                "target must be {w}×{h} {TARGET_FORMAT:?}"
+            )));
+        }
+        let ssf = ss as f32;
         let (fw, fh) = (w as f32, h as f32);
         let ndc = |p: &[f32]| -> [f32; 2] {
-            let x = (p[0] - v.origin[0]) * scale;
-            let y = (p[1] - v.origin[1]) * scale;
+            let q = v.to_px([p[0], p[1]]);
+            let (x, y) = (q[0] * ssf, q[1] * ssf);
             [x / fw * 2.0 - 1.0, 1.0 - y / fh * 2.0]
         };
 
         use wgpu::TextureUsages as U;
-        let color = self.target(
-            w,
-            h,
-            U::RENDER_ATTACHMENT | U::COPY_SRC | U::TEXTURE_BINDING,
-            TARGET_FORMAT,
-            "color",
-        );
         let color_view = color.create_view(&Default::default());
         let dst_copy = self.target(
             w,
@@ -380,7 +455,7 @@ impl<'m> GpuRenderer<'m> {
         let stencil = self.target(w, h, U::RENDER_ATTACHMENT, STENCIL_FORMAT, "stencil");
         let stencil_view = stencil.create_view(&Default::default());
 
-        let m = self.model;
+        let m = model;
         // Geometry buffers per mesh (for both drawing and mask building).
         let mut geo: HashMap<MeshIndex, (wgpu::Buffer, wgpu::Buffer, u32)> = HashMap::new();
         let geometry = |geo: &mut HashMap<MeshIndex, (wgpu::Buffer, wgpu::Buffer, u32)>,
@@ -443,7 +518,7 @@ impl<'m> GpuRenderer<'m> {
         struct Item {
             mesh: MeshIndex,
             kind: PipeKind,
-            cull: bool,
+            cull: Cull,
             mask: Option<usize>,
             uniform: DrawUniform,
         }
@@ -485,7 +560,13 @@ impl<'m> GpuRenderer<'m> {
             items.push(Item {
                 mesh: mi,
                 kind,
-                cull: am.culling,
+                // A mirrored view reverses on-screen winding: cull the other
+                // face so the same triangles stay visible (blending.md §4).
+                cull: match (am.culling, v.mirror) {
+                    (false, _) => Cull::None,
+                    (true, false) => Cull::Back,
+                    (true, true) => Cull::Front,
+                },
                 mask,
                 uniform: DrawUniform {
                     base: [a, a, a, a],
@@ -593,7 +674,7 @@ impl<'m> GpuRenderer<'m> {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.pipelines[&(PipeKind::Mask, false)]);
+                pass.set_pipeline(&self.pipelines[&(PipeKind::Mask, Cull::None)]);
                 for (c, g) in &groups {
                     let Some((vb, ib, n)) = geo.get(c) else {
                         continue;
@@ -722,7 +803,21 @@ impl<'m> GpuRenderer<'m> {
             start = end;
         }
 
-        // Read back (rows padded to 256 bytes).
+        Ok(enc)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn readback(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        color: &wgpu::Texture,
+        w: u32,
+        h: u32,
+        ow: usize,
+        oh: usize,
+        ss: usize,
+    ) -> Result<RgbaImage, RenderError> {
+        // Rows padded to 256 bytes.
         let row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -743,6 +838,7 @@ impl<'m> GpuRenderer<'m> {
             },
             color.size(),
         );
+        let enc = std::mem::replace(enc, self.device.create_command_encoder(&Default::default()));
         self.queue.submit([enc.finish()]);
         let slice = readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -764,12 +860,6 @@ impl<'m> GpuRenderer<'m> {
         }
         drop(data);
         readback.unmap();
-        Ok(finish_image(
-            &px,
-            w as usize,
-            v.width as usize,
-            v.height as usize,
-            ss as usize,
-        ))
+        Ok(finish_image(&px, w as usize, ow, oh, ss))
     }
 }

@@ -76,7 +76,7 @@ pub fn render_cmd(model: &Path, out: &Path, rest: &[&str]) -> super::R {
             eprintln!("warning: {w}");
         }
         eprintln!("gpu: {}", r.adapter_info);
-        r.render(&frame, &options(&m, &a))?
+        r.render(&m, &frame, &options(&m, &a))?
     } else {
         let r = CpuRenderer::new(&m);
         for w in &r.warnings {
@@ -136,7 +136,7 @@ pub fn gpudiff_cmd(model: &Path, out: &Path, rest: &[&str]) -> super::R {
     let opts = options(&m, &a);
     let cpu = CpuRenderer::new(&m).render(&frame, &opts)?;
     let g = keyform_render::gpu::GpuRenderer::new(&m)?;
-    let gpu = g.render(&frame, &opts)?;
+    let gpu = g.render(&m, &frame, &opts)?;
     let mut diff = RgbaImage::new(cpu.width, cpu.height);
     let (mut sum, mut max, mut over8) = (0u64, 0u8, 0usize);
     for (i, (p, q)) in cpu

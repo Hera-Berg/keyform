@@ -147,14 +147,21 @@ fn gpu_matches_cpu_on_all_compositions() {
         }
     };
     let frame = Evaluator::new(&m).evaluate(&[]);
-    for (ss, bg) in [(1, None), (2, Some([0.2, 0.3, 0.4, 1.0]))] {
+    for (ss, bg, rot) in [
+        (1, None, 0.0),
+        (2, Some([0.2, 0.3, 0.4, 1.0]), 0.0),
+        (1, Some([1.0; 4]), 27.0),
+    ] {
+        let mut view = View::fit_canvas(&m, 512);
+        view.rotation = rot;
+        view.mirror = rot != 0.0;
         let opts = RenderOptions {
-            view: View::fit_canvas(&m, 512),
+            view,
             background: bg,
             supersample: ss,
         };
         let cpu = CpuRenderer::new(&m).render(&frame, &opts).unwrap();
-        let gpu = g.render(&frame, &opts).unwrap();
+        let gpu = g.render(&m, &frame, &opts).unwrap();
         let pm = |c: &[u8]| [0, 1, 2].map(|i| i32::from(c[i]) * i32::from(c[3]) / 255);
         let mut bad = Vec::new();
         for (i, (p, q)) in cpu
@@ -197,6 +204,28 @@ fn gpu_matches_cpu_on_all_compositions() {
             g.adapter_info,
             &bad[..bad.len().min(5)]
         );
+        if rot != 0.0 {
+            // Culling under a mirrored view: the GPU must hide the same
+            // triangles as the CPU renderer (checked by the pixel comparison
+            // above) — and the culled quad must not appear at its position.
+            let c = view.to_px([290.0, 340.0]);
+            let mut hidden_m = scene();
+            hidden_m
+                .art_meshes
+                .iter_mut()
+                .filter(|a| a.info.id == "culled")
+                .for_each(|a| a.info.visible = false);
+            let fr = Evaluator::new(&hidden_m).evaluate(&[]);
+            let hidden = GpuRenderer::new(&hidden_m)
+                .unwrap()
+                .render(&hidden_m, &fr, &opts)
+                .unwrap();
+            let at = |img: &RgbaImage| {
+                img.data[4 * (c[1] as usize * 512 + c[0] as usize)..][..4].to_vec()
+            };
+            assert_eq!(at(&gpu), at(&hidden), "culled mesh drawn in mirrored view");
+            continue;
+        }
         // Culling: the culled (mirrored) quad must look exactly like the
         // scene without it; with culling off it must show.
         let at = |img: &RgbaImage, x: usize, y: usize| img.data[4 * (y * 512 + x)..][..4].to_vec();
@@ -207,7 +236,10 @@ fn gpu_matches_cpu_on_all_compositions() {
                 .filter(|a| a.info.id == "culled")
                 .for_each(f);
             let fr = Evaluator::new(&m2).evaluate(&[]);
-            GpuRenderer::new(&m2).unwrap().render(&fr, &opts).unwrap()
+            GpuRenderer::new(&m2)
+                .unwrap()
+                .render(&m2, &fr, &opts)
+                .unwrap()
         };
         let hidden = variant(&|a| a.info.visible = false);
         let shown = variant(&|a| a.culling = false);
