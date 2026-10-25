@@ -443,3 +443,80 @@ fn cmo3_save_after_parameter_edits() {
         eprintln!("{path:?}: deleted {victim_id}, added two parameters");
     }
 }
+
+/// Creating and deleting deformers keeps every adopted object's canvas
+/// shape (change-parent.md), at the defaults and at its keyforms.
+#[test]
+fn deformer_creation_keeps_shapes() {
+    use keyform_edit::objects::{
+        create_rotation_deformer, create_warp_deformer, delete_deformer, NewDeformer,
+    };
+    use keyform_edit::ObjectRef;
+    use keyform_eval::Evaluator;
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let mut m = doc.model.clone();
+        let defaults: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+        // A mesh under a warp deformer with at least one binding.
+        let Some(a) = (0..m.art_meshes.len()).find(|&a| {
+            let x = &m.art_meshes[a];
+            x.grid.bindings.len() == 1
+                && x.target.is_some_and(|t| {
+                    matches!(m.deformers[t].kind, keyform_model::DeformerKind::Warp(_))
+                })
+        }) else {
+            continue;
+        };
+        let b = m.art_meshes[a].grid.bindings[0].clone();
+        let sets: Vec<Vec<f32>> = std::iter::once(defaults.clone())
+            .chain(b.keys.iter().map(|&k| {
+                let mut v = defaults.clone();
+                v[b.parameter] = k;
+                v
+            }))
+            .collect();
+        let shape = |m: &keyform_model::Model| -> Vec<Vec<f32>> {
+            let ev = Evaluator::new(m);
+            sets.iter()
+                .map(|v| ev.evaluate(v).meshes[a].positions.clone())
+                .collect()
+        };
+        let before = shape(&m);
+        let close = |x: &[Vec<f32>], y: &[Vec<f32>], what: &str| {
+            for (p, q) in x.iter().zip(y) {
+                let err = p.iter().zip(q).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                assert!(err < 0.05, "{path:?} {what}: max error {err} px");
+            }
+        };
+        let parent = m.art_meshes[a].target;
+        let part = m.art_meshes[a].info.parent_part;
+        let children = [ObjectRef::ArtMesh(a)];
+        let nd = NewDeformer {
+            name: "Test Rotation".into(),
+            part,
+            parent,
+            children: &children,
+            values: &defaults,
+        };
+        let r = create_rotation_deformer(&mut m, &nd).unwrap();
+        assert_eq!(m.art_meshes[a].target, Some(r));
+        close(&before, &shape(&m), "under a new rotation deformer");
+        let nd = NewDeformer {
+            name: "Test Warp".into(),
+            part,
+            parent: Some(r),
+            children: &children,
+            values: &defaults,
+        };
+        let w = create_warp_deformer(&mut m, &nd, 5, 5, (2, 2)).unwrap();
+        assert_eq!(m.art_meshes[a].target, Some(w));
+        close(&before, &shape(&m), "under a new warp in it");
+        delete_deformer(&mut m, w, &defaults).unwrap();
+        delete_deformer(&mut m, r, &defaults).unwrap();
+        assert_eq!(m.art_meshes[a].target, parent);
+        close(&before, &shape(&m), "after deleting both");
+        assert_eq!(m.deformers.len(), doc.model.deformers.len());
+        eprintln!("{path:?}: mesh {} kept its shape", m.art_meshes[a].info.id);
+    }
+}
