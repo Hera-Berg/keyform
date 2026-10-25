@@ -1676,6 +1676,7 @@ dependencies = [
  "eframe",
  "egui_dock",
  "keyform-anim",
+ "keyform-edit",
  "keyform-eval",
  "keyform-formats",
  "keyform-model",
@@ -1695,6 +1696,13 @@ dependencies = [
  "keyform-model",
  "keyform-physics",
  "keyform-render",
+]
+
+[[package]]
+name = "keyform-edit"
+version = "0.1.0"
+dependencies = [
+ "keyform-model",
 ]
 
 [[package]]

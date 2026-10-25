@@ -76,6 +76,35 @@ impl Model {
             && same(&self.art_meshes, &other.art_meshes)
             && same(&self.glues, &other.glues)
             && same(&self.textures, &other.textures)
+            && self.guid == other.guid
+            && self.root_part == other.root_part
+            && self.root_parameter_entries == other.root_parameter_entries
+            && self.physics == other.physics
+            && self.export == other.export
+            && self.canvas == other.canvas
+            && self.name == other.name
+            && self.eye_blink_parameters == other.eye_blink_parameters
+            && self.lip_sync_parameters == other.lip_sync_parameters
+            && self.target_version == other.target_version
+    }
+
+    /// True if `other` holds the same data. Shared objects are compared by
+    /// pointer first, so this is cheap when few objects differ.
+    pub fn same_data(&self, other: &Model) -> bool {
+        fn same<T: PartialEq>(a: &[Arc<T>], b: &[Arc<T>]) -> bool {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| Arc::ptr_eq(x, y) || **x == **y)
+        }
+        same(&self.parameters, &other.parameters)
+            && same(&self.parameter_groups, &other.parameter_groups)
+            && same(&self.parts, &other.parts)
+            && same(&self.deformers, &other.deformers)
+            && same(&self.art_meshes, &other.art_meshes)
+            && same(&self.glues, &other.glues)
+            && same(&self.textures, &other.textures)
+            && self.guid == other.guid
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
             && self.physics == other.physics
@@ -317,6 +346,13 @@ impl ColorComposition {
         Self::NAMES.iter().find(|(n, _)| *n == s).map(|(_, c)| *c)
     }
 
+    pub fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(_, c)| *c == self)
+            .map_or("NORMAL", |(n, _)| n)
+    }
+
     /// moc3 color-blend code (spec: 10-formats/moc3.md §7).
     pub fn moc3_code(self) -> u8 {
         use ColorComposition::*;
@@ -370,6 +406,16 @@ impl AlphaComposition {
             "DISJOINT" => Self::Disjoint,
             _ => return None,
         })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Over => "OVER",
+            Self::Atop => "ATOP",
+            Self::Out => "OUT",
+            Self::Conjoint => "CONJOINT",
+            Self::Disjoint => "DISJOINT",
+        }
     }
 
     pub fn moc3_code(self) -> u8 {

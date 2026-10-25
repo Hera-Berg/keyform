@@ -224,3 +224,78 @@ fn model3_json_roundtrip_is_byte_exact() {
         eprintln!("{p:?}: model3.json byte-exact");
     }
 }
+
+/// Saving without edits reproduces main.xml byte for byte; edits survive a
+/// save and reload and touch nothing else; unsupported edits fail cleanly.
+#[test]
+fn cmo3_save_after_edits() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::DeformerKind;
+    use std::sync::Arc;
+    for path in sample_files("cmo3") {
+        let data = std::fs::read(&path).unwrap();
+        let mut doc = Cmo3Document::read(&data).unwrap();
+        let original = doc.xml.write();
+        let unchanged = doc.save_bytes().unwrap();
+        let back = Cmo3Document::read(&unchanged).unwrap();
+        assert_eq!(back.xml.write(), original, "{path:?}: unchanged save");
+
+        let m = &mut doc.model;
+        if let Some(p) = m.parameters.first_mut() {
+            let p = Arc::make_mut(p);
+            p.name = format!("{} edited & <renamed>", p.name);
+            p.max += 1.0;
+        }
+        if let Some(p) = m.parts.get_mut(1) {
+            let p = Arc::make_mut(p);
+            p.info.visible = !p.info.visible;
+            p.info.name = "x".repeat(70);
+        }
+        if let Some(a) = m.art_meshes.first_mut() {
+            let a = Arc::make_mut(a);
+            let f = &mut a.grid.keyforms[0];
+            f.positions[0] += 12.5;
+            f.opacity = 0.25;
+            f.multiply = [0.5, 0.25, 1.0, 1.0];
+            a.culling = !a.culling;
+        }
+        if let Some(d) = m
+            .deformers
+            .iter_mut()
+            .find(|d| matches!(d.kind, DeformerKind::Rotation(_)))
+        {
+            if let DeformerKind::Rotation(r) = &mut Arc::make_mut(d).kind {
+                r.grid.keyforms[0].angle += 10.0;
+            }
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap();
+        assert!(!doc.has_unsynced_changes());
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert_eq!(back.model, edited, "{path:?}: edits after reload");
+
+        let (a, b) = (String::from_utf8_lossy(&original), back.xml.write());
+        let b = String::from_utf8_lossy(&b);
+        // Lines of the new document not in the old one (as a multiset).
+        let mut pool = std::collections::HashMap::<&str, i64>::new();
+        for l in a.lines() {
+            *pool.entry(l).or_default() += 1;
+        }
+        let mut changed = 0;
+        for l in b.lines() {
+            match pool.get_mut(l) {
+                Some(c) if *c > 0 => *c -= 1,
+                _ => changed += 1,
+            }
+        }
+        assert!(changed <= 12, "{path:?}: {changed} lines changed");
+        eprintln!("{path:?}: edited save OK ({changed} lines changed)");
+
+        // Structural edits are refused and leave the document as it was.
+        let before = doc.xml.write();
+        doc.model.parts.pop();
+        assert!(doc.sync().is_err());
+        assert!(doc.has_unsynced_changes());
+        assert_eq!(doc.xml.write(), before);
+    }
+}

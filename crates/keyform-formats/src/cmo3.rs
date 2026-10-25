@@ -19,6 +19,32 @@ pub const CMODEL_SOURCE_VERSION: u32 = 15;
 /// target GUIDs all mean "attached to the canvas" on read.
 pub use keyform_model::{NOT_INITIALIZED_GUID as NULL_GUID, ROOT_DEFORMER_GUID};
 
+mod save;
+pub use save::write_atomic;
+
+/// Path of an element in the document: child indices from the root.
+pub type ElementPath = Vec<u32>;
+
+/// Where each object of the loaded model lives in the document.
+#[derive(Clone, Debug, Default)]
+pub struct ObjectSource {
+    /// The object's own element.
+    pub element: Option<ElementPath>,
+    /// Keyform element per grid cell (`None` for cells the file left empty).
+    pub cells: Vec<Option<ElementPath>>,
+    /// Keyform element per blend shape.
+    pub blend: Vec<Option<ElementPath>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SourceMap {
+    pub parameters: Vec<Option<ElementPath>>,
+    pub parts: Vec<ObjectSource>,
+    pub deformers: Vec<ObjectSource>,
+    pub art_meshes: Vec<ObjectSource>,
+    pub glues: Vec<ObjectSource>,
+}
+
 /// A loaded project: archive, lossless document and the typed model.
 pub struct Cmo3Document {
     pub archive: CaffArchive,
@@ -26,6 +52,26 @@ pub struct Cmo3Document {
     pub model: Model,
     /// Non-fatal inconsistencies found while loading.
     pub warnings: Vec<String>,
+    /// Element locations of the objects of `saved`.
+    pub sources: SourceMap,
+    /// The model as last loaded or saved: objects that are still the same
+    /// `Arc` need no writing.
+    pub saved: Model,
+}
+
+/// Maps every element (by address) to its path, for recording sources.
+fn element_paths(root: &crate::xml::Element) -> HashMap<*const crate::xml::Element, ElementPath> {
+    let mut map = HashMap::new();
+    let mut stack: Vec<(&crate::xml::Element, ElementPath)> = vec![(root, Vec::new())];
+    while let Some((e, path)) = stack.pop() {
+        for (i, c) in e.children.iter().enumerate() {
+            let mut p = path.clone();
+            p.push(i as u32);
+            stack.push((c, p));
+        }
+        map.insert(e as *const _, path);
+    }
+    map
 }
 
 impl Cmo3Document {
@@ -40,26 +86,33 @@ impl Cmo3Document {
         if !archive.guard_ok {
             warnings.push("archive guard bytes missing".into());
         }
-        let model = {
+        let (model, sources) = {
             let g = ObjectGraph::new(&xml)?;
+            let paths = element_paths(&xml.root);
             let mut l = Loader {
                 g: &g,
                 archive: &archive,
                 warnings: &mut warnings,
                 idx: Index::default(),
+                paths: &paths,
+                sources: SourceMap::default(),
+                pending: ObjectSource::default(),
             };
-            l.load()?
+            let m = l.load()?;
+            (m, l.sources)
         };
         Ok(Self {
             archive,
             xml,
+            saved: model.clone(),
             model,
             warnings,
+            sources,
         })
     }
 
-    /// Writes the project back (the document as loaded; edits to `model` are
-    /// not yet written back).
+    /// Serializes the document as it stands. Edits to `model` are written
+    /// into it by [`Cmo3Document::sync`] (or [`Cmo3Document::save_bytes`]).
     pub fn write(&self) -> Result<Vec<u8>> {
         let mut archive = self.archive.clone();
         let xml = self.xml.write();
@@ -104,6 +157,10 @@ struct Loader<'a, 'd> {
     archive: &'a CaffArchive,
     warnings: &'a mut Vec<String>,
     idx: Index,
+    paths: &'a HashMap<*const crate::xml::Element, ElementPath>,
+    sources: SourceMap,
+    /// Keyform element paths recorded by the last `keyforms` call.
+    pending: ObjectSource,
 }
 
 type O<'g, 'd> = Obj<'g, 'd>;
@@ -209,6 +266,8 @@ impl<'a, 'd> Loader<'a, 'd> {
 
         for p in &part_objs {
             m.parts.push(std::sync::Arc::new(self.load_part(p, &m)?));
+            let src = self.take_source(p);
+            self.sources.parts.push(src);
         }
         m.root_part = match root.field("rootPart")? {
             Some(rp) => rp
@@ -219,13 +278,19 @@ impl<'a, 'd> Loader<'a, 'd> {
         for d in &deformer_objs {
             m.deformers
                 .push(std::sync::Arc::new(self.load_deformer(d, &m)?));
+            let src = self.take_source(d);
+            self.sources.deformers.push(src);
         }
         for d in &meshes {
             m.art_meshes
                 .push(std::sync::Arc::new(self.load_art_mesh(d, &m)?));
+            let src = self.take_source(d);
+            self.sources.art_meshes.push(src);
         }
         for a in &glues {
             m.glues.push(std::sync::Arc::new(self.load_glue(a, &m)?));
+            let src = self.take_source(a);
+            self.sources.glues.push(src);
         }
         self.check_deformer_cycles(&mut m);
 
@@ -368,6 +433,17 @@ impl<'a, 'd> Loader<'a, 'd> {
         Ok(())
     }
 
+    fn path_of(&self, o: &O<'a, 'd>) -> Option<ElementPath> {
+        self.paths.get(&o.identity()).cloned()
+    }
+
+    /// The source record of the object just loaded.
+    fn take_source(&mut self, o: &O<'a, 'd>) -> ObjectSource {
+        let mut s = std::mem::take(&mut self.pending);
+        s.element = self.path_of(o);
+        s
+    }
+
     fn sources(&self, root: &O<'a, 'd>, set: &str) -> Result<Vec<O<'a, 'd>>> {
         match root.field(set)? {
             Some(s) => s.list("_sources"),
@@ -438,6 +514,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 _ => ParameterKind::Normal,
             };
             self.idx.params.insert(guid.clone(), m.parameters.len());
+            self.sources.parameters.push(self.path_of(p));
             m.parameters.push(std::sync::Arc::new(Parameter {
                 guid,
                 name: p.string("name")?.unwrap_or_else(|| id.clone()),
@@ -568,6 +645,7 @@ impl<'a, 'd> Loader<'a, 'd> {
     ) -> Result<(KeyformGrid<F>, BlendShapes<F>)> {
         let what = o.id("id")?.unwrap_or("?").to_owned();
         let mut forms: HashMap<String, F> = HashMap::new();
+        let mut form_paths: HashMap<String, ElementPath> = HashMap::new();
         let mut first = None;
         for f in o.list("keyforms")? {
             let parsed = parse(&f)?;
@@ -576,6 +654,9 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
             if let Some(g) = f.guid("guid")? {
                 forms.insert(g.to_owned(), parsed);
+                if let Some(p) = self.path_of(&f) {
+                    form_paths.insert(g.to_owned(), p);
+                }
             }
         }
         let Some(first) = first else {
@@ -635,6 +716,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             )));
         }
         let mut slots: Vec<Option<F>> = vec![None; cells];
+        let mut cell_paths: Vec<Option<ElementPath>> = vec![None; cells];
         if let Some(gs) = grid_src {
             for kog in gs.list("keyformsOnGrid")? {
                 let mut idx = vec![usize::MAX; grid.bindings.len()];
@@ -653,6 +735,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                     return invalid(format!("{what}: access key {idx:?} outside the grid"));
                 };
                 let fg = kog.guid("keyformGuid")?.unwrap_or_default();
+                cell_paths[cell] = form_paths.get(fg).cloned();
                 match forms.get(fg) {
                     Some(f) => slots[cell] = Some(f.clone()),
                     None => return invalid(format!("{what}: grid names unknown keyform {fg}")),
@@ -671,6 +754,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             .collect();
 
         let mut blend = BlendShapes::default();
+        let mut blend_paths = Vec::new();
         if let Some(set) = o.field("keyformMorphTargetSet")? {
             for mt in set.list("_morphTargets")? {
                 let pg = mt.guid("parameterGuid")?.unwrap_or_default();
@@ -693,6 +777,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                     key,
                     form: form.clone(),
                 });
+                blend_paths.push(form_paths.get(fg).cloned());
             }
             if let Some(cs) = set.field("blendWeightConstraintSet")? {
                 for c in cs.list("_constraints")? {
@@ -715,6 +800,8 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
         let _ = m;
+        self.pending.cells = cell_paths;
+        self.pending.blend = blend_paths;
         Ok((grid, blend))
     }
 

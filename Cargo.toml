@@ -7,6 +7,7 @@ members = [
     "crates/keyform-formats",
     "crates/keyform-anim",
     "crates/keyform-physics",
+    "crates/keyform-edit",
     "crates/keyform-render",
     "crates/keyform-cli",
     "crates/keyform-app",
@@ -27,6 +28,7 @@ keyform-formats = { path = "crates/keyform-formats" }
 keyform-render = { path = "crates/keyform-render" }
 keyform-anim = { path = "crates/keyform-anim" }
 keyform-physics = { path = "crates/keyform-physics" }
+keyform-edit = { path = "crates/keyform-edit" }
 thiserror = "2"
 quick-xml = "0.37"
 flate2 = "1"

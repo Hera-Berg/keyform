@@ -1,0 +1,12 @@
+[package]
+name = "keyform-edit"
+description = "Keyform editing: undo/redo history and model edit operations (no UI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+keyform-model.workspace = true
+
+[lints]
+workspace = true

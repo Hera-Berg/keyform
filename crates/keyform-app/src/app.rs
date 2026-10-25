@@ -14,7 +14,7 @@ use crate::log::Log;
 use crate::palettes;
 use crate::theme::{self, Tokens};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
     /// A document view (by document uid).
     View(u64),
@@ -106,9 +106,43 @@ pub struct KeyformApp {
     pub initial_values: Vec<(String, f32)>,
     /// Motion to start on the first document (`--play N`).
     pub initial_motion: Option<usize>,
+    /// Documents (by uid) waiting to be closed; modified ones ask to save
+    /// first (main-window.md §5).
+    closing: Vec<u64>,
+    /// Quit once `closing` is done.
+    quit_after_closing: bool,
+    /// Set when every document was dealt with: let the window close.
+    allow_quit: bool,
+    window_title: String,
 }
 
 const RECENT_KEY: &str = "keyform.recent_files";
+/// Dock layout of the last session (main-window.md §4: layouts persist).
+const LAYOUT_KEY: &str = "keyform.dock_layout";
+
+/// The layout as stored: document views become the contents placeholder.
+fn storable_layout(dock: &DockState<Tab>) -> DockState<Tab> {
+    let mut contents = false;
+    dock.filter_map_tabs(|t| match t {
+        Tab::View(_) | Tab::Welcome => {
+            (!std::mem::replace(&mut contents, true)).then_some(Tab::Welcome)
+        }
+        t => Some(*t),
+    })
+}
+
+/// A stored layout is used only if it has the contents box and no palette
+/// twice.
+fn usable_layout(dock: &DockState<Tab>) -> bool {
+    let mut seen = Vec::new();
+    for (_, t) in dock.iter_all_tabs() {
+        if matches!(t, Tab::View(_)) || seen.contains(t) {
+            return false;
+        }
+        seen.push(*t);
+    }
+    seen.contains(&Tab::Welcome)
+}
 
 impl KeyformApp {
     pub fn new(
@@ -123,8 +157,13 @@ impl KeyformApp {
             .and_then(|s| s.get_string(RECENT_KEY))
             .map(|s| s.lines().map(PathBuf::from).collect())
             .unwrap_or_default();
+        let dock = cc
+            .storage
+            .and_then(|s| eframe::get_value::<DockState<Tab>>(s, LAYOUT_KEY))
+            .filter(usable_layout)
+            .unwrap_or_else(|| default_layout(Vec::new()));
         let mut app = Self {
-            dock: default_layout(Vec::new()),
+            dock,
             slots: Vec::new(),
             active: None,
             next_uid: 1,
@@ -140,6 +179,10 @@ impl KeyformApp {
             last_time: None,
             initial_values: Vec::new(),
             initial_motion: None,
+            closing: Vec::new(),
+            quit_after_closing: false,
+            allow_quit: false,
+            window_title: String::new(),
         };
         match cjk {
             Some(f) => app.log.info(format!("CJK font: {f}")),
@@ -232,6 +275,74 @@ impl KeyformApp {
         }
     }
 
+    /// Closes a document, asking to save it first if it was modified.
+    fn request_close(&mut self, uid: u64) {
+        if !self.closing.contains(&uid) {
+            self.closing.push(uid);
+        }
+    }
+
+    /// Works through `closing`: unmodified documents close at once, the
+    /// first modified one shows the save prompt.
+    fn closing_step(&mut self, ctx: &egui::Context) {
+        while let Some(&uid) = self.closing.first() {
+            let Some(i) = self.slots.iter().position(|s| s.uid == uid) else {
+                self.closing.remove(0);
+                continue;
+            };
+            if !self.slots[i].doc.is_modified() {
+                self.closing.remove(0);
+                self.close(i);
+                continue;
+            }
+            self.activate(i);
+            let title = self.slots[i].doc.title.clone();
+            let mut choice = None;
+            let modal = egui::Modal::new(egui::Id::new("save-before-close")).show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(format!("Do you want to save file for {title} ?"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        choice = Some(Some(true));
+                    }
+                    if ui.button("No").clicked() {
+                        choice = Some(Some(false));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(None);
+                    }
+                });
+            });
+            if modal.should_close() && choice.is_none() {
+                choice = Some(None);
+            }
+            match choice {
+                Some(Some(save)) => {
+                    if save && !self.save_slot(i) {
+                        self.cancel_closing();
+                        return;
+                    }
+                    self.closing.remove(0);
+                    self.close(i);
+                }
+                Some(None) => self.cancel_closing(),
+                None => {}
+            }
+            return;
+        }
+        if self.quit_after_closing {
+            self.quit_after_closing = false;
+            self.allow_quit = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn cancel_closing(&mut self) {
+        self.closing.clear();
+        self.quit_after_closing = false;
+    }
+
     fn open_dialog(&mut self) {
         let files = rfd::FileDialog::new()
             .add_filter("Models", &["cmo3", "moc3", "json"])
@@ -291,31 +402,40 @@ impl KeyformApp {
                     )
                     .clicked()
                 {
-                    if let Some(i) = self.active {
-                        self.close(i);
+                    if let Some(uid) = self.active.and_then(|i| self.slots.get(i)).map(|s| s.uid) {
+                        self.request_close(uid);
                     }
                 }
                 if ui
                     .add_enabled(!self.slots.is_empty(), egui::Button::new("Close all"))
                     .clicked()
                 {
-                    while !self.slots.is_empty() {
-                        self.close(0);
+                    for uid in self.slots.iter().map(|s| s.uid).collect::<Vec<_>>() {
+                        self.request_close(uid);
                     }
                 }
                 ui.separator();
-                let can_save = self
-                    .active
-                    .and_then(|i| self.slots.get(i))
-                    .is_some_and(|s| s.doc.can_save_settings());
+                let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
+                let project = doc.is_some_and(|d| d.editable());
+                let (label, can_save) = match doc {
+                    Some(d) if !project => ("Save model3.json", d.can_save_settings()),
+                    Some(_) => ("Save", true),
+                    None => ("Save", false),
+                };
                 if ui
-                    .add_enabled(
-                        can_save,
-                        egui::Button::new("Save model3.json").shortcut_text("Ctrl+S"),
-                    )
+                    .add_enabled(can_save, egui::Button::new(label).shortcut_text("Ctrl+S"))
                     .clicked()
                 {
                     self.save_active();
+                }
+                if ui
+                    .add_enabled(
+                        project,
+                        egui::Button::new("Save as…").shortcut_text("Ctrl+Shift+S"),
+                    )
+                    .clicked()
+                {
+                    self.save_as_active();
                 }
                 ui.separator();
                 if ui
@@ -326,8 +446,29 @@ impl KeyformApp {
                 }
             });
             ui.menu_button("Edit", |ui| {
-                ui.add_enabled(false, egui::Button::new("Undo").shortcut_text("Ctrl+Z"));
-                ui.add_enabled(false, egui::Button::new("Redo").shortcut_text("Ctrl+Y"));
+                let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
+                let undo = doc.and_then(|d| d.history.undo_name()).map(str::to_owned);
+                let redo = doc.and_then(|d| d.history.redo_name()).map(str::to_owned);
+                let r = ui.add_enabled(
+                    undo.is_some(),
+                    egui::Button::new("Undo").shortcut_text("Ctrl+Z"),
+                );
+                if r.clicked() {
+                    self.undo_active(false);
+                }
+                if let Some(n) = undo {
+                    r.on_hover_text(n);
+                }
+                let r = ui.add_enabled(
+                    redo.is_some(),
+                    egui::Button::new("Redo").shortcut_text("Ctrl+Y"),
+                );
+                if r.clicked() {
+                    self.undo_active(true);
+                }
+                if let Some(n) = redo {
+                    r.on_hover_text(n);
+                }
                 ui.separator();
                 if ui
                     .add_enabled(
@@ -337,7 +478,7 @@ impl KeyformApp {
                     .clicked()
                 {
                     if let Some(d) = self.active_doc() {
-                        d.selection = None;
+                        d.select(None);
                     }
                 }
             });
@@ -468,24 +609,102 @@ impl KeyformApp {
         });
     }
 
-    /// The viewer binds Save to writing model3.json (shortcuts.md).
+    /// Save: a project is written back to its `.cmo3`; for a runtime model
+    /// the viewer binds Save to writing model3.json (shortcuts.md).
     fn save_active(&mut self) {
         if let Some(i) = self.active {
-            if let Some(s) = self.slots.get_mut(i) {
-                crate::viewer_settings::save(&mut s.doc, &mut self.log);
+            self.save_slot(i);
+        }
+    }
+
+    /// Saves document `i`; returns false if that failed.
+    fn save_slot(&mut self, i: usize) -> bool {
+        let Some(s) = self.slots.get_mut(i) else {
+            return false;
+        };
+        if !s.doc.editable() {
+            crate::viewer_settings::save(&mut s.doc, &mut self.log);
+            return true;
+        }
+        match s.doc.save_project(None) {
+            Ok(p) => {
+                self.log.info(format!("saved {}", p.display()));
+                true
+            }
+            Err(e) => {
+                self.log.error(format!("save failed: {e}"));
+                false
             }
         }
     }
 
+    fn save_as_active(&mut self) {
+        let Some(s) = self.active.and_then(|i| self.slots.get_mut(i)) else {
+            return;
+        };
+        if !s.doc.editable() {
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Model project (*.cmo3)", &["cmo3"])
+            .set_file_name(s.doc.title.clone());
+        if let Some(dir) = s.doc.path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(mut path) = dialog.save_file() else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("cmo3");
+        }
+        match s.doc.save_project(Some(&path)) {
+            Ok(p) => {
+                self.log.info(format!("saved {}", p.display()));
+                self.recent.retain(|r| r != &p);
+                self.recent.insert(0, p);
+                self.recent.truncate(10);
+            }
+            Err(e) => self.log.error(format!("save failed: {e}")),
+        }
+    }
+
+    fn undo_active(&mut self, redo: bool) {
+        let Some(d) = self.active_doc() else { return };
+        let name = if redo { d.redo() } else { d.undo() };
+        if let Some(n) = name {
+            self.log.status = format!("{}: {n}", if redo { "Redo" } else { "Undo" });
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let save = ctx.input_mut(|i| {
-            i.consume_shortcut(&egui::KeyboardShortcut::new(
-                egui::Modifiers::COMMAND,
-                egui::Key::S,
-            ))
+        use egui::{Key, KeyboardShortcut as K, Modifiers as M};
+        let shift_cmd = M::COMMAND | M::SHIFT;
+        // Shift variants first: consume_shortcut ignores extra Shift.
+        let (save_as, save) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&K::new(shift_cmd, Key::S)),
+                i.consume_shortcut(&K::new(M::COMMAND, Key::S)),
+            )
         });
-        if save {
+        if save_as {
+            self.save_as_active();
+        } else if save {
             self.save_active();
+        }
+        // Text fields keep Ctrl+Z / Ctrl+Y for their own editing.
+        if !ctx.egui_wants_keyboard_input() {
+            let (redo, undo) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&K::new(M::COMMAND, Key::Y))
+                        || i.consume_shortcut(&K::new(shift_cmd, Key::Z)),
+                    i.consume_shortcut(&K::new(M::COMMAND, Key::Z)),
+                )
+            });
+            if redo {
+                self.undo_active(true);
+            } else if undo {
+                self.undo_active(false);
+            }
         }
         let (open, close) = ctx.input_mut(|i| {
             (
@@ -503,8 +722,8 @@ impl KeyformApp {
             self.open_dialog();
         }
         if close {
-            if let Some(i) = self.active {
-                self.close(i);
+            if let Some(uid) = self.active.and_then(|i| self.slots.get(i)).map(|s| s.uid) {
+                self.request_close(uid);
             }
         }
         // Drag & drop (viewer.md §2: "drop a moc3 or model3.json").
@@ -587,7 +806,10 @@ impl TabViewer for Viewer<'_> {
                 .slots
                 .iter()
                 .find(|s| s.uid == uid)
-                .map_or("?".into(), |s| s.doc.title.clone())
+                .map_or("?".into(), |s| {
+                    let star = if s.doc.is_modified() { "*" } else { "" };
+                    format!("{}{star}", s.doc.title)
+                })
                 .into(),
             Tab::Welcome => "Home".into(),
             t => t.name().into(),
@@ -663,12 +885,18 @@ impl TabViewer for Viewer<'_> {
                     }
                 }
             }
-            Tab::Inspector => match self.active_doc() {
-                Some(d) => palettes::inspector_ui(ui, d),
-                None => {
-                    ui.weak("No model");
+            Tab::Inspector => {
+                let doc = self
+                    .active
+                    .and_then(|i| self.slots.get_mut(i))
+                    .map(|s| &mut s.doc);
+                match doc {
+                    Some(d) => palettes::inspector_ui(ui, d, self.log),
+                    None => {
+                        ui.weak("No model");
+                    }
                 }
-            },
+            }
             Tab::Log => {
                 let tokens = *self.tokens;
                 palettes::log_ui(ui, self.log, &tokens);
@@ -706,6 +934,14 @@ impl TabViewer for Viewer<'_> {
     fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
         if let Tab::View(uid) = *tab {
             self.closed.push(uid);
+            // A modified document's tab stays until the save prompt is answered.
+            if self
+                .slots
+                .iter()
+                .any(|s| s.uid == uid && s.doc.is_modified())
+            {
+                return OnCloseResponse::Ignore;
+            }
         }
         OnCloseResponse::Close
     }
@@ -772,9 +1008,31 @@ impl eframe::App for KeyformApp {
                 DockArea::new(&mut self.dock).show_inside(ui, &mut viewer);
             });
         for uid in closed {
-            if let Some(i) = self.slots.iter().position(|s| s.uid == uid) {
-                self.close(i);
+            self.request_close(uid);
+        }
+        // Quitting with modified documents asks about each first.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_quit
+            && self.slots.iter().any(|s| s.doc.is_modified())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            for uid in self.slots.iter().map(|s| s.uid).collect::<Vec<_>>() {
+                self.request_close(uid);
             }
+            self.quit_after_closing = true;
+        }
+        self.closing_step(&ctx);
+        let title = match self.active.and_then(|i| self.slots.get(i)) {
+            Some(s) => format!(
+                "{}{} - Keyform",
+                s.doc.title,
+                if s.doc.is_modified() { "*" } else { "" }
+            ),
+            None => "Keyform".to_owned(),
+        };
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
         }
         if open_request {
             self.open_dialog();
@@ -792,5 +1050,26 @@ impl eframe::App for KeyformApp {
             .map(|p| p.display().to_string())
             .collect();
         storage.set_string(RECENT_KEY, recent.join("\n"));
+        eframe::set_value(storage, LAYOUT_KEY, &storable_layout(&self.dock));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_layout_keeps_contents_box_once() {
+        let dock = default_layout(vec![Tab::View(1), Tab::View(2)]);
+        assert!(!usable_layout(&dock), "views are not stored");
+        let stored = storable_layout(&dock);
+        assert!(usable_layout(&stored));
+        let welcome = stored
+            .iter_all_tabs()
+            .filter(|(_, t)| **t == Tab::Welcome)
+            .count();
+        assert_eq!(welcome, 1);
+        let palettes = stored.iter_all_tabs().count() - 1;
+        assert_eq!(palettes, Tab::PALETTES.len());
     }
 }

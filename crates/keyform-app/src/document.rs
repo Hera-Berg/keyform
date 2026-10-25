@@ -8,6 +8,7 @@ use keyform_anim::{
     Breath, Expression, ExpressionPlayer, EyeBlink, Motion, MotionOutputs, MotionPlayer,
     ParamRange, Params, Pose, PoseState,
 };
+use keyform_edit::{History, StepKind};
 use keyform_eval::{EvalOptions, Evaluator, Frame, Overrides};
 use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::moc3::{moc3_to_model, Moc3Raw};
@@ -24,6 +25,14 @@ pub enum Selection {
     Deformer(usize),
     ArtMesh(usize),
     Glue(usize),
+}
+
+/// The undoable state of a document (spec: 50-ui/undo.md §2). The edit
+/// level joins it when edit levels are implemented.
+#[derive(Clone)]
+pub struct EditState {
+    pub model: Model,
+    pub selection: Option<Selection>,
 }
 
 pub struct MotionEntry {
@@ -56,9 +65,8 @@ pub struct ViewState {
     pub fit_pending: bool,
 }
 
-#[allow(dead_code)] // read by viewer-settings saving (Phase 2 milestone 5)
 pub enum Source {
-    /// A `.cmo3` project (kept for saving in later phases).
+    /// A `.cmo3` project.
     Project(Box<Cmo3Document>),
     /// A runtime model (`.moc3`, optionally described by a model3.json).
     Runtime {
@@ -70,7 +78,6 @@ pub enum Source {
 pub struct Document {
     pub path: PathBuf,
     pub title: String,
-    #[allow(dead_code)]
     pub source: Source,
     pub model: Model,
     /// Values set by the user (sliders).
@@ -110,6 +117,9 @@ pub struct Document {
     /// Parts palette order comes from part child lists (projects) or from
     /// parent links (runtime models, which store no palette order).
     pub palette_from_children: bool,
+    pub history: History<EditState>,
+    /// History revision at the last save (the unmodified state).
+    saved_revision: u64,
 }
 
 pub fn load_motion(dir: &Path, file: &str, log: &mut Log) -> Option<Arc<Motion>> {
@@ -375,8 +385,151 @@ impl Document {
             selection: None,
             hit_areas,
             palette_from_children,
+            history: History::new(EditState {
+                model: model.clone(),
+                selection: None,
+            }),
+            saved_revision: 0,
             model,
         })
+    }
+
+    /// Model edits are possible only on projects (runtime models cannot be
+    /// saved back).
+    pub fn editable(&self) -> bool {
+        matches!(self.source, Source::Project(_))
+    }
+
+    /// Changed since opening or the last save (title asterisk).
+    pub fn is_modified(&self) -> bool {
+        self.history.revision() != self.saved_revision
+    }
+
+    fn edit_state(&self) -> EditState {
+        EditState {
+            model: self.model.clone(),
+            selection: self.selection,
+        }
+    }
+
+    /// Applies `f` to the model as one undo step named `name`. A step that
+    /// changes nothing is discarded (undo.md §2). Returns whether it changed
+    /// anything.
+    pub fn edit(&mut self, name: &str, f: impl FnOnce(&mut Model)) -> bool {
+        if !self.editable() {
+            return false;
+        }
+        let before = self.model.clone();
+        f(&mut self.model);
+        let unchanged = self.model.same_data(&before);
+        if unchanged {
+            // Keep sharing objects with the history.
+            self.model = before;
+            return false;
+        }
+        self.history
+            .commit(name, StepKind::Real, self.edit_state(), false);
+        self.model_changed();
+        true
+    }
+
+    /// Changes the selection as a selection-only undo step (undo.md §3).
+    pub fn select(&mut self, sel: Option<Selection>) {
+        if sel == self.selection {
+            return;
+        }
+        self.selection = sel;
+        self.history
+            .commit("Select", StepKind::SelectionOnly, self.edit_state(), false);
+    }
+
+    /// Undoes one step; returns its name.
+    pub fn undo(&mut self) -> Option<String> {
+        let name = self.history.undo_name()?.to_owned();
+        let state = self.history.undo()?.clone();
+        self.restore(state);
+        Some(name)
+    }
+
+    /// Redoes one step; returns its name.
+    pub fn redo(&mut self) -> Option<String> {
+        let name = self.history.redo_name()?.to_owned();
+        let state = self.history.redo()?.clone();
+        self.restore(state);
+        Some(name)
+    }
+
+    fn restore(&mut self, state: EditState) {
+        self.model = state.model;
+        self.selection = state.selection.filter(|s| self.selection_valid(*s));
+        self.model_changed();
+    }
+
+    fn selection_valid(&self, s: Selection) -> bool {
+        let m = &self.model;
+        match s {
+            Selection::Part(i) => i < m.parts.len(),
+            Selection::Deformer(i) => i < m.deformers.len(),
+            Selection::ArtMesh(i) => i < m.art_meshes.len(),
+            Selection::Glue(i) => i < m.glues.len(),
+        }
+    }
+
+    /// Rebuilds what is derived from the model after an edit, undo or redo.
+    fn model_changed(&mut self) {
+        let m = &self.model;
+        self.param_index = m
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id.clone(), i))
+            .collect();
+        self.part_index = m
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.info.id.clone(), i))
+            .collect();
+        self.ranges = m
+            .parameters
+            .iter()
+            .map(|p| ParamRange {
+                min: p.min,
+                max: p.max,
+                repeat: p.repeat,
+            })
+            .collect();
+        let n = m.parameters.len();
+        if self.values.len() != n {
+            let defaults = m.parameters.iter().map(|p| p.default);
+            self.values = defaults.collect();
+            self.saved.clone_from(&self.values);
+            self.live.clone_from(&self.values);
+            self.manual = vec![false; n];
+        }
+        for (i, p) in m.parameters.iter().enumerate() {
+            self.values[i] = p.clamp(self.values[i]);
+            self.saved[i] = p.clamp(self.saved[i]);
+        }
+    }
+
+    /// Saves the project to its file, or to `to` (Save As), atomically.
+    pub fn save_project(&mut self, to: Option<&Path>) -> Result<PathBuf, String> {
+        let Source::Project(doc) = &mut self.source else {
+            return Err(format!("{}: not a model project", self.title));
+        };
+        let path = to.unwrap_or(&self.path).to_path_buf();
+        doc.model = self.model.clone();
+        doc.save_to(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.saved_revision = self.history.revision();
+        if to.is_some() {
+            self.title = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            self.path.clone_from(&path);
+        }
+        Ok(path)
     }
 
     /// Back to defaults: parameters, playback state, physics, pose.
@@ -723,5 +876,58 @@ mod tests {
         }
         // The edited model3.json reopens.
         Document::open(&path, &mut log).unwrap();
+    }
+
+    /// Edit → undo/redo → save → reopen on a sample project (scratch copy).
+    #[test]
+    fn project_edit_undo_save() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = std::env::var("KEYFORM_SAMPLES").unwrap_or_else(|_| root.display().to_string());
+        let Some(src) = std::env::split_paths(&dirs)
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "cmo3"))
+        else {
+            return;
+        };
+        let scratch = root.join("target/test-scratch/project-save");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("model.cmo3");
+        std::fs::copy(&src, &path).unwrap();
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        assert!(doc.editable() && !doc.is_modified());
+        let original = doc.model.clone();
+
+        doc.select(Some(Selection::ArtMesh(0)));
+        assert!(!doc.is_modified(), "selection is not a modification");
+        assert!(!doc.edit("Nothing", |_| {}), "empty step is discarded");
+        assert!(doc.edit("Change Name", |m| {
+            Arc::make_mut(&mut m.art_meshes[0]).info.name = "Renamed".into();
+        }));
+        assert!(doc.edit("Change Visibility", |m| {
+            let v = &mut Arc::make_mut(&mut m.parts[0]).info.visible;
+            *v = !*v;
+        }));
+        assert!(doc.is_modified());
+        let edited = doc.model.clone();
+
+        assert_eq!(doc.undo().as_deref(), Some("Change Visibility"));
+        assert_eq!(doc.undo().as_deref(), Some("Change Name"));
+        assert!(doc.model.same_data(&original));
+        assert!(!doc.is_modified());
+        assert_eq!(doc.selection, Some(Selection::ArtMesh(0)));
+        assert_eq!(doc.redo().as_deref(), Some("Change Name"));
+        assert_eq!(doc.redo().as_deref(), Some("Change Visibility"));
+        assert!(doc.model.same_data(&edited));
+
+        doc.save_project(None).unwrap();
+        assert!(!doc.is_modified());
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&edited));
+        // Undo after saving marks the document modified again.
+        doc.undo();
+        assert!(doc.is_modified());
     }
 }

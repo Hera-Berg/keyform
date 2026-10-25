@@ -9,6 +9,7 @@ use keyform_model::{DeformerKind, Model};
 const USAGE: &str = "usage:
   kf info <file.cmo3>             summary of a model project
   kf roundtrip <in.cmo3> <out>    load and save a project unchanged
+  kf xml <in.cmo3> <out.xml>      extract the project's main.xml
   kf moc3info <file.moc3>          summary of a runtime model
   kf export <in.cmo3> <out.moc3|out-dir> [version]
                                    export for runtime: a .moc3 path writes only the
@@ -33,6 +34,9 @@ fn main() -> ExitCode {
     {
         ["info", path] => info(Path::new(path)),
         ["roundtrip", input, output] => roundtrip(Path::new(input), Path::new(output)),
+        ["xml", input, output] => {
+            load(Path::new(input)).and_then(|d| Ok(std::fs::write(output, d.xml.write())?))
+        }
         ["moc3info", path] => load_any(Path::new(path)).map(|m| print_summary(&m)),
         ["export", input, output] => export(Path::new(input), Path::new(output), None),
         ["export", input, output, v] => match v.parse() {

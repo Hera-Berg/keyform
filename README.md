@@ -15,6 +15,7 @@ Live2D Cubism Editor 5.3 project files (`.cmo3`, `.can3`) and runtime exports
 | `keyform-render` | rendering: deterministic CPU reference rasterizer and the wgpu renderer (feature `gpu`, default), kept pixel-equivalent by tests |
 | `keyform-anim` | motion3 / exp3 / pose3 files and runtime playback (fades, expressions, pose) |
 | `keyform-physics` | pendulum physics simulation and physics3.json |
+| `keyform-edit` | editing core without UI: undo/redo history, ID rules |
 | `keyform-app` | the editor application (`keyform`): egui + egui_dock, GPU canvas, palettes, viewer settings |
 | `keyform-cli` | `kf` command-line tool |
 | `fuzz/` | cargo-fuzz targets (outside the workspace, nightly) |
@@ -34,7 +35,8 @@ Sample models are licensed test inputs and are **not** in this repository
     KEYFORM_SAMPLES=/path/to/samples:/path/to/runtime cargo test --release
 
 With samples present, the tests check: byte-exact `main.xml` round trip of
-every `.cmo3`/`.can3`; byte-exact raw moc3 round trip; Keyform's moc3 export
+every `.cmo3`/`.can3`; saving edits (unchanged save byte-exact, edits survive
+a reload); byte-exact raw moc3 round trip; Keyform's moc3 export
 and `cdi3.json` equal to reference exports found next to the project; texture
 cleanup bit-exact on locked reference pages; and mutation robustness of
 every parser. `tests/gpu_vs_cpu.rs` checks the GPU renderer against the CPU
@@ -44,16 +46,21 @@ renderer on a synthetic scene (skipped without a GPU adapter).
 
     cargo run --release -p keyform-app -- [model.cmo3 | model.model3.json | model.moc3]
 
-Phase 2 is a viewer: open (or drop) a model, drive parameters, play motions
-and expressions with physics and pose, and edit and save the runtime
-settings (`model3.json` motions/expressions/pose/hit areas/eye-blink and
-lip-sync groups, `*.exp3.json`, `*.pose3.json`; Ctrl+S). Debug options:
+Open (or drop) a model, drive parameters, play motions and expressions with
+physics and pose. Projects (`.cmo3`) can be edited (Inspector name/ID/
+visibility/lock, Parts palette eye) with undo/redo (Ctrl+Z, Ctrl+Y) and
+saved in place (Ctrl+S, Save as Ctrl+Shift+S): only changed fields are
+rewritten. For runtime models, Save writes the viewer settings
+(`model3.json` motions/expressions/pose/hit areas/eye-blink and lip-sync
+groups, `*.exp3.json`, `*.pose3.json`). The dock layout is kept between
+sessions. Debug options:
 `--screenshot out.png --frames N --size WxH --play MOTION ParamId=value`.
 
 ## `kf` tool
 
     kf info model.cmo3
     kf roundtrip in.cmo3 out.cmo3
+    kf xml model.cmo3 main.xml                   # extract the project document
     kf export model.cmo3 out-dir [version]       # moc3 + textures + cdi3 + model3.json
     kf export model.cmo3 model.moc3 [version]    # moc3 only
     kf render model.cmo3|.moc3|.model3.json out.png [--size N] [--ss N] [--bg] [--gpu] [ParamId=value …]

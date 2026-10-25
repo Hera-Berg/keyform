@@ -2,7 +2,7 @@
 //! §4 Inspector, §9 Log), 70-advanced/viewer.md §2 (model settings)
 
 use eframe::egui::{self, Color32, RichText, Sense};
-use keyform_model::{DeformerKind, Model, ParamEntry, PartChild};
+use keyform_model::{DeformerKind, Model, ObjectInfo, ParamEntry, PartChild};
 
 use crate::document::{Document, Selection};
 use crate::icons::{self, Icon};
@@ -13,14 +13,16 @@ fn selectable(ui: &mut egui::Ui, selected: bool, text: impl Into<egui::WidgetTex
     ui.selectable_label(selected, text).clicked()
 }
 
-fn eye(ui: &mut egui::Ui, visible: bool) {
-    icons::icon(ui, if visible { Icon::Visible } else { Icon::Hidden });
+/// The Draw (eye) column; clicking it toggles visibility when `editable`.
+fn eye(ui: &mut egui::Ui, visible: bool, editable: bool) -> bool {
+    let r = icons::icon(ui, if visible { Icon::Visible } else { Icon::Hidden });
+    editable && r.interact(Sense::click()).clicked()
 }
 
 // ---------------------------------------------------------------- Parts
 
-/// Read-only Parts palette: part tree with art meshes (and, when toggled,
-/// deformers and glue); columns eye, name, draw order.
+/// Parts palette: part tree with art meshes (and, when toggled, deformers
+/// and glue); columns eye, name, draw order. spec: palettes.md §1
 pub fn parts_ui(
     ui: &mut egui::Ui,
     doc: &mut Document,
@@ -46,6 +48,7 @@ pub fn parts_ui(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let mut sel = doc.selection;
+            let mut toggled = Vec::new();
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -58,17 +61,23 @@ pub fn parts_ui(
                 tree = parent_link_tree(&doc.model);
                 &tree
             };
-            part_children(
-                ui,
-                model,
-                root,
-                &mut sel,
-                *show_deformers,
-                &filter,
-                &draw_orders,
-                0,
-            );
-            doc.selection = sel;
+            let mut t = TreeCtx {
+                sel: &mut sel,
+                toggled: &mut toggled,
+                editable: doc.editable(),
+                deformers: *show_deformers,
+                filter: &filter,
+                draw_orders: &draw_orders,
+            };
+            part_children(ui, model, root, &mut t, 0);
+            doc.select(sel);
+            for s in toggled {
+                doc.edit("Change Visibility", |m| {
+                    if let Some(info) = info_mut(m, s) {
+                        info.visible = !info.visible;
+                    }
+                });
+            }
         });
 }
 
@@ -113,17 +122,38 @@ fn parent_link_tree(m: &Model) -> Model {
     t
 }
 
-#[allow(clippy::too_many_arguments)]
-fn part_children(
-    ui: &mut egui::Ui,
-    m: &Model,
-    part: usize,
-    sel: &mut Option<Selection>,
+/// Common fields of the selected object, for editing.
+pub fn info_mut(m: &mut Model, s: Selection) -> Option<&mut ObjectInfo> {
+    use std::sync::Arc;
+    Some(match s {
+        Selection::Part(i) => &mut Arc::make_mut(m.parts.get_mut(i)?).info,
+        Selection::Deformer(i) => &mut Arc::make_mut(m.deformers.get_mut(i)?).info,
+        Selection::ArtMesh(i) => &mut Arc::make_mut(m.art_meshes.get_mut(i)?).info,
+        Selection::Glue(i) => &mut Arc::make_mut(m.glues.get_mut(i)?).info,
+    })
+}
+
+pub fn info(m: &Model, s: Selection) -> Option<&ObjectInfo> {
+    Some(match s {
+        Selection::Part(i) => &m.parts.get(i)?.info,
+        Selection::Deformer(i) => &m.deformers.get(i)?.info,
+        Selection::ArtMesh(i) => &m.art_meshes.get(i)?.info,
+        Selection::Glue(i) => &m.glues.get(i)?.info,
+    })
+}
+
+struct TreeCtx<'a> {
+    sel: &'a mut Option<Selection>,
+    /// Objects whose eye was clicked.
+    toggled: &'a mut Vec<Selection>,
+    editable: bool,
     deformers: bool,
-    filter: &str,
-    dos: &[f32],
-    depth: usize,
-) {
+    filter: &'a str,
+    draw_orders: &'a [f32],
+}
+
+fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
+    let (deformers, filter, dos) = (t.deformers, t.filter, t.draw_orders);
     if depth > 64 {
         return;
     }
@@ -138,13 +168,15 @@ fn part_children(
                     depth < 1,
                 )
                 .show_header(ui, |ui| {
-                    eye(ui, info.visible);
+                    if eye(ui, info.visible, t.editable) {
+                        t.toggled.push(Selection::Part(p));
+                    }
                     icons::icon(ui, Icon::Part);
-                    if selectable(ui, *sel == Some(Selection::Part(p)), info.display_name()) {
-                        *sel = Some(Selection::Part(p));
+                    if selectable(ui, *t.sel == Some(Selection::Part(p)), info.display_name()) {
+                        *t.sel = Some(Selection::Part(p));
                     }
                 })
-                .body(|ui| part_children(ui, m, p, sel, deformers, filter, dos, depth + 1));
+                .body(|ui| part_children(ui, m, p, t, depth + 1));
             }
             PartChild::ArtMesh(a) if a < m.art_meshes.len() => {
                 let info = &m.art_meshes[a].info;
@@ -155,10 +187,16 @@ fn part_children(
                     continue;
                 }
                 ui.horizontal(|ui| {
-                    eye(ui, info.visible);
+                    if eye(ui, info.visible, t.editable) {
+                        t.toggled.push(Selection::ArtMesh(a));
+                    }
                     icons::icon(ui, Icon::ArtMesh);
-                    if selectable(ui, *sel == Some(Selection::ArtMesh(a)), info.display_name()) {
-                        *sel = Some(Selection::ArtMesh(a));
+                    if selectable(
+                        ui,
+                        *t.sel == Some(Selection::ArtMesh(a)),
+                        info.display_name(),
+                    ) {
+                        *t.sel = Some(Selection::ArtMesh(a));
                     }
                     if let Some(d) = dos.get(a) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -173,10 +211,10 @@ fn part_children(
                     icons::icon(ui, deformer_icon(m, d));
                     if selectable(
                         ui,
-                        *sel == Some(Selection::Deformer(d)),
+                        *t.sel == Some(Selection::Deformer(d)),
                         info.display_name(),
                     ) {
-                        *sel = Some(Selection::Deformer(d));
+                        *t.sel = Some(Selection::Deformer(d));
                     }
                 });
             }
@@ -185,10 +223,10 @@ fn part_children(
                     icons::icon(ui, Icon::Glue);
                     if selectable(
                         ui,
-                        *sel == Some(Selection::Glue(g)),
+                        *t.sel == Some(Selection::Glue(g)),
                         m.glues[g].info.display_name(),
                     ) {
-                        *sel = Some(Selection::Glue(g));
+                        *t.sel = Some(Selection::Glue(g));
                     }
                 });
             }
@@ -225,7 +263,7 @@ pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
         .show(ui, |ui| {
             deformer_children(ui, m, &children, n, &mut sel, 0);
         });
-    doc.selection = sel;
+    doc.select(sel);
 }
 
 fn deformer_children(
@@ -449,7 +487,150 @@ fn param_row(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, p: usize, f
 
 // ---------------------------------------------------------------- Inspector
 
-pub fn inspector_ui(ui: &mut egui::Ui, doc: &Document) {
+/// Single-line text field that commits on Enter or focus loss. Shows the
+/// model value whenever it isn't being edited (so undo updates it).
+fn commit_text(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &str,
+    enabled: bool,
+) -> Option<String> {
+    let id = ui.make_persistent_id(salt);
+    let editing = ui.memory(|m| m.has_focus(id));
+    let mut buf = if editing {
+        ui.data(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| value.to_owned())
+    } else {
+        value.to_owned()
+    };
+    let r = ui.add_enabled(
+        enabled,
+        egui::TextEdit::singleline(&mut buf)
+            .id(id)
+            .desired_width(f32::INFINITY),
+    );
+    if r.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(id));
+        return (buf != value).then_some(buf);
+    }
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, buf));
+    }
+    None
+}
+
+/// The message for an unusable new object ID, or `None`.
+/// spec: 50-ui/dialogs.md §2 (letters, digits, underscores; at most 63
+/// characters; no leading digit). Uniqueness is checked among objects of
+/// the same kind.
+fn id_problem(m: &Model, s: Selection, id: &str) -> Option<String> {
+    if !keyform_edit::valid_id(id) {
+        return Some("Invalid ID".into());
+    }
+    fn used<'a>(mut ids: impl Iterator<Item = (usize, &'a str)>, me: usize, id: &str) -> bool {
+        ids.any(|(j, x)| j != me && x == id)
+    }
+    let taken = match s {
+        Selection::Part(i) => used(
+            m.parts.iter().map(|x| x.info.id.as_str()).enumerate(),
+            i,
+            id,
+        ),
+        Selection::Deformer(i) => used(
+            m.deformers.iter().map(|x| x.info.id.as_str()).enumerate(),
+            i,
+            id,
+        ),
+        Selection::ArtMesh(i) => used(
+            m.art_meshes.iter().map(|x| x.info.id.as_str()).enumerate(),
+            i,
+            id,
+        ),
+        Selection::Glue(i) => used(
+            m.glues.iter().map(|x| x.info.id.as_str()).enumerate(),
+            i,
+            id,
+        ),
+    };
+    taken.then(|| format!("ID: \"{id}\" is duplicated."))
+}
+
+/// Editable name, ID, visibility and lock of the selected object.
+fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut Log) {
+    let Some(info) = info(&doc.model, s).cloned() else {
+        return;
+    };
+    let editable = doc.editable();
+    egui::Grid::new("inspector-common")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.weak("Name");
+            if let Some(name) = commit_text(ui, ("insp-name", s), &info.name, editable) {
+                doc.edit("Change Name", |m| {
+                    if let Some(i) = info_mut(m, s) {
+                        i.name = name;
+                    }
+                });
+            }
+            ui.end_row();
+            ui.weak("ID");
+            if let Some(id) = commit_text(ui, ("insp-id", s), &info.id, editable) {
+                match id_problem(&doc.model, s, &id) {
+                    Some(p) => log.warn(p),
+                    None => {
+                        doc.edit("Change ID", |m| {
+                            if let Some(i) = info_mut(m, s) {
+                                i.id = id;
+                            }
+                        });
+                    }
+                }
+            }
+            ui.end_row();
+            let (mut visible, mut locked) = (info.visible, info.locked);
+            ui.weak("Draw");
+            if ui
+                .add_enabled(editable, egui::Checkbox::without_text(&mut visible))
+                .changed()
+            {
+                doc.edit("Change Visibility", |m| {
+                    if let Some(i) = info_mut(m, s) {
+                        i.visible = visible;
+                    }
+                });
+            }
+            ui.end_row();
+            ui.weak("Lock");
+            if ui
+                .add_enabled(editable, egui::Checkbox::without_text(&mut locked))
+                .changed()
+            {
+                doc.edit("Lock", |m| {
+                    if let Some(i) = info_mut(m, s) {
+                        i.locked = locked;
+                    }
+                });
+            }
+            ui.end_row();
+        });
+    if let Selection::ArtMesh(a) = s {
+        let mut culling = doc.model.art_meshes[a].culling;
+        if ui
+            .add_enabled(editable, egui::Checkbox::new(&mut culling, "Culling"))
+            .changed()
+        {
+            doc.edit("Change Culling", |m| {
+                std::sync::Arc::make_mut(&mut m.art_meshes[a]).culling = culling;
+            });
+        }
+    }
+    ui.separator();
+}
+
+pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
+    if let Some(s) = doc.selection {
+        common_fields(ui, doc, s, log);
+    }
     let m = &doc.model;
     let row = |ui: &mut egui::Ui, k: &str, v: String| {
         ui.horizontal(|ui| {
@@ -480,8 +661,6 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Document) {
         Some(Selection::ArtMesh(a)) => {
             let x = &m.art_meshes[a];
             row(ui, "Type", "ArtMesh".into());
-            row(ui, "ID", x.info.id.clone());
-            row(ui, "Name", x.info.display_name().to_owned());
             row(ui, "Vertices", x.vertex_count().to_string());
             row(ui, "Polygons", (x.indices.len() / 3).to_string());
             row(
@@ -494,7 +673,6 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Document) {
                 "Blend",
                 format!("{:?} / {:?}", x.color_composition, x.alpha_composition),
             );
-            row(ui, "Culling", x.culling.to_string());
             if !x.clip.is_empty() {
                 let ids: Vec<&str> = x
                     .clip
@@ -521,16 +699,12 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Document) {
         Some(Selection::Part(p)) => {
             let x = &m.parts[p];
             row(ui, "Type", "Part".into());
-            row(ui, "ID", x.info.id.clone());
-            row(ui, "Name", x.info.display_name().to_owned());
             row(ui, "Draw order group", x.draw_order_group.to_string());
             row(ui, "Offscreen", x.offscreen.to_string());
             bindings(ui, &x.grid.bindings, x.grid.keyforms.len());
         }
         Some(Selection::Deformer(d)) => {
             let x = &m.deformers[d];
-            row(ui, "ID", x.info.id.clone());
-            row(ui, "Name", x.info.display_name().to_owned());
             match &x.kind {
                 DeformerKind::Warp(w) => {
                     row(ui, "Type", "Warp Deformer".into());
@@ -556,7 +730,6 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Document) {
         Some(Selection::Glue(g)) => {
             let x = &m.glues[g];
             row(ui, "Type", "Glue".into());
-            row(ui, "ID", x.info.id.clone());
             row(ui, "Pairs", x.pairs.len().to_string());
             bindings(ui, &x.grid.bindings, x.grid.keyforms.len());
         }
