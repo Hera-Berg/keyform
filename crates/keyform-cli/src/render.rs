@@ -10,6 +10,7 @@ struct Args {
     size: u32,
     ss: u32,
     background: bool,
+    gpu: bool,
     steps: usize,
     values: Vec<(String, f32)>,
 }
@@ -19,6 +20,7 @@ fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
         size: 1024,
         ss: 2,
         background: false,
+        gpu: false,
         steps: 5,
         values: Vec::new(),
     };
@@ -28,6 +30,7 @@ fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
             "--size" => a.size = it.next().ok_or("--size N")?.parse()?,
             "--ss" => a.ss = it.next().ok_or("--ss N")?.parse()?,
             "--bg" => a.background = true,
+            "--gpu" => a.gpu = true,
             _ => match t.split_once('=') {
                 Some((id, v)) => a.values.push((id.to_owned(), v.parse()?)),
                 None => {
@@ -65,13 +68,22 @@ fn options(m: &Model, a: &Args) -> RenderOptions {
 pub fn render_cmd(model: &Path, out: &Path, rest: &[&str]) -> super::R {
     let a = parse(rest)?;
     let m = super::load_any(model)?;
-    let r = CpuRenderer::new(&m);
-    for w in &r.warnings {
-        eprintln!("warning: {w}");
-    }
     let frame = Evaluator::new(&m).evaluate(&values(&m, &a.values)?);
     let t = std::time::Instant::now();
-    let img = r.render(&frame, &options(&m, &a))?;
+    let img = if a.gpu {
+        let r = keyform_render::gpu::GpuRenderer::new(&m)?;
+        for w in &r.warnings {
+            eprintln!("warning: {w}");
+        }
+        eprintln!("gpu: {}", r.adapter_info);
+        r.render(&frame, &options(&m, &a))?
+    } else {
+        let r = CpuRenderer::new(&m);
+        for w in &r.warnings {
+            eprintln!("warning: {w}");
+        }
+        r.render(&frame, &options(&m, &a))?
+    };
     std::fs::write(out, img.encode_png()?)?;
     println!(
         "wrote {out:?} ({}×{}, {:.0} ms)",
@@ -111,6 +123,54 @@ pub fn sweep_cmd(model: &Path, out: &Path, id: &str, rest: &[&str]) -> super::R 
     println!(
         "wrote {out:?}: {id} from {} to {} in {steps} steps",
         p.min, p.max
+    );
+    Ok(())
+}
+
+/// Renders the same frame on CPU and GPU and reports the differences;
+/// writes an amplified difference image.
+pub fn gpudiff_cmd(model: &Path, out: &Path, rest: &[&str]) -> super::R {
+    let a = parse(rest)?;
+    let m = super::load_any(model)?;
+    let frame = Evaluator::new(&m).evaluate(&values(&m, &a.values)?);
+    let opts = options(&m, &a);
+    let cpu = CpuRenderer::new(&m).render(&frame, &opts)?;
+    let g = keyform_render::gpu::GpuRenderer::new(&m)?;
+    let gpu = g.render(&frame, &opts)?;
+    let mut diff = RgbaImage::new(cpu.width, cpu.height);
+    let (mut sum, mut max, mut over8) = (0u64, 0u8, 0usize);
+    for (i, (p, q)) in cpu
+        .data
+        .chunks_exact(4)
+        .zip(gpu.data.chunks_exact(4))
+        .enumerate()
+    {
+        // Compare premultiplied values: straight colour is meaningless at
+        // near-zero alpha.
+        let pm = |c: &[u8]| [0, 1, 2].map(|i| (u16::from(c[i]) * u16::from(c[3]) / 255) as u8);
+        let (pp, qq) = (pm(p), pm(q));
+        let d = pp
+            .iter()
+            .zip(&qq)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
+            .max(p[3].abs_diff(q[3]));
+        sum += u64::from(d);
+        max = max.max(d);
+        if d > 8 {
+            over8 += 1;
+        }
+        let v = d.saturating_mul(8);
+        diff.data[4 * i..4 * i + 4].copy_from_slice(&[v, v, v, 255]);
+    }
+    let n = (cpu.width * cpu.height) as f64;
+    std::fs::write(out, diff.encode_png()?)?;
+    println!(
+        "{}: mean |Δ| {:.3}, max {max}, {:.3}% of pixels differ by > 8 (diff ×8 in {out:?})",
+        g.adapter_info,
+        sum as f64 / n,
+        100.0 * over8 as f64 / n
     );
     Ok(())
 }

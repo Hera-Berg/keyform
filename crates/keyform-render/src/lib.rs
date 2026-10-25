@@ -4,6 +4,8 @@
 //! spec: 40-rendering/
 
 pub mod blend;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod image;
 
 use std::collections::HashMap;
@@ -19,6 +21,8 @@ pub enum RenderError {
     Image(String),
     #[error("invalid render options: {0}")]
     Options(String),
+    #[error("gpu: {0}")]
+    Gpu(String),
 }
 
 /// Maps canvas pixels to output pixels: `out = (canvas − origin) · scale`.
@@ -194,31 +198,13 @@ impl<'m> CpuRenderer<'m> {
             }
         }
 
-        // Downsample, then un-premultiply to straight 8-bit RGBA.
-        let (ow, oh) = (v.width as usize, v.height as usize);
-        let mut out = RgbaImage::new(v.width, v.height);
-        let n = (ss * ss) as f32;
-        for y in 0..oh {
-            for x in 0..ow {
-                let mut acc = [0.0f32; 4];
-                for sy in 0..ss {
-                    for sx in 0..ss {
-                        let p = t.px[(y * ss + sy) * w + x * ss + sx];
-                        for i in 0..4 {
-                            acc[i] += p[i].clamp(0.0, 1.0);
-                        }
-                    }
-                }
-                let a = acc[3] / n;
-                let o = 4 * (y * ow + x);
-                for i in 0..3 {
-                    let c = if a > 0.0 { acc[i] / n / a } else { 0.0 };
-                    out.data[o + i] = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
-                out.data[o + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
-            }
-        }
-        Ok(out)
+        Ok(finish_image(
+            &t.px,
+            w,
+            v.width as usize,
+            v.height as usize,
+            ss,
+        ))
     }
 
     /// Mask image from clip sources' texture alpha, accumulated with "over";
@@ -280,6 +266,56 @@ impl<'m> CpuRenderer<'m> {
             .map(|p| if invert { 1.0 - p[3] } else { p[3] })
             .collect()
     }
+}
+
+pub(crate) fn check_view(v: &View) -> Result<(), RenderError> {
+    if v.width == 0
+        || v.height == 0
+        || v.width > 16384
+        || v.height > 16384
+        || v.scale.is_nan()
+        || v.scale <= 0.0
+    {
+        return Err(RenderError::Options(format!(
+            "{}×{} at scale {}",
+            v.width, v.height, v.scale
+        )));
+    }
+    Ok(())
+}
+
+/// Box-filters a premultiplied `ss`× supersampled buffer of width `w` down to
+/// `ow`×`oh` and converts to straight 8-bit RGBA.
+pub(crate) fn finish_image(
+    px: &[[f32; 4]],
+    w: usize,
+    ow: usize,
+    oh: usize,
+    ss: usize,
+) -> RgbaImage {
+    let mut out = RgbaImage::new(ow as u32, oh as u32);
+    let n = (ss * ss) as f32;
+    for y in 0..oh {
+        for x in 0..ow {
+            let mut acc = [0.0f32; 4];
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let p = px[(y * ss + sy) * w + x * ss + sx];
+                    for i in 0..4 {
+                        acc[i] += p[i].clamp(0.0, 1.0);
+                    }
+                }
+            }
+            let a = acc[3] / n;
+            let o = 4 * (y * ow + x);
+            for i in 0..3 {
+                let c = if a > 0.0 { acc[i] / n / a } else { 0.0 };
+                out.data[o + i] = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            out.data[o + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
 }
 
 struct Shade {

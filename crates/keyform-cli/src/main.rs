@@ -14,8 +14,10 @@ const USAGE: &str = "usage:
                                    export for runtime: a .moc3 path writes only the
                                    moc3, a folder gets the full file set
   kf diffmoc <a.moc3> <b.moc3>     compare two moc3 files section by section
-  kf render <model> <out.png> [--size N] [--ss N] [--bg] [ID=VALUE ...]
+  kf render <model> <out.png> [--size N] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
                                    render a .cmo3/.moc3 at parameter values
+  kf gpudiff <model> <diff.png> [render options]
+                                   compare the CPU and GPU renderers
   kf sweep <model> <out.png> <ID> [steps] [--size N]
                                    contact sheet sweeping one parameter min→max
   kf compare <a> <b> [samples]     evaluate two models (.cmo3/.moc3) at the same
@@ -40,6 +42,9 @@ fn main() -> ExitCode {
         ["diffmoc", a, b] => diffmoc(Path::new(a), Path::new(b)),
         ["render", model, out, rest @ ..] => {
             render::render_cmd(Path::new(model), Path::new(out), rest)
+        }
+        ["gpudiff", model, out, rest @ ..] => {
+            render::gpudiff_cmd(Path::new(model), Path::new(out), rest)
         }
         ["sweep", model, out, id, rest @ ..] => {
             render::sweep_cmd(Path::new(model), Path::new(out), id, rest)
