@@ -17,6 +17,7 @@ use std::sync::Arc;
 use keyform_model::*;
 
 mod grid;
+mod params;
 
 use grid::Ctx;
 
@@ -48,17 +49,10 @@ impl Cmo3Document {
         let mut root = self.xml.root.clone();
         let s = &self.sources;
         let (old, new) = (&self.saved, &self.model);
-        let mut ctx = Ctx::new(&root, &new.parameters, &s.parameters);
+        let mut ctx = Ctx::new(&root, &new.parameters, &old.parameters, &s.parameters);
         let ctx = &mut ctx;
-        sync_list(
-            &mut root,
-            &old.parameters,
-            &new.parameters,
-            |root, i, o, n| {
-                let path = s.parameters.get(i).cloned().flatten();
-                write_parameter(element_at(root, path.as_deref())?, o, n)
-            },
-        )?;
+        params::sync_parameters(&mut root, ctx, s, old, new)?;
+        params::sync_physics(&mut root, ctx, old, new)?;
         sync_list(&mut root, &old.parts, &new.parts, |root, i, o, n| {
             write_part(root, ctx, source(&s.parts, i)?, o, n)
         })?;
@@ -233,35 +227,31 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
             .iter()
             .zip(&new.textures)
             .all(|(a, b)| Arc::ptr_eq(a, b) || a == b);
+    // Groups: only their child lists may change (rewritten with parameters).
     let same_groups = old.parameter_groups.len() == new.parameter_groups.len()
         && old
             .parameter_groups
             .iter()
             .zip(&new.parameter_groups)
-            .all(|(a, b)| Arc::ptr_eq(a, b) || a == b);
+            .all(|(a, b)| {
+                Arc::ptr_eq(a, b)
+                    || ParameterGroup {
+                        children: Vec::new(),
+                        ..(**a).clone()
+                    } == ParameterGroup {
+                        children: Vec::new(),
+                        ..(**b).clone()
+                    }
+            });
     let checks = [
         (same_textures, "textures"),
         (same_groups, "parameter groups"),
-        (
-            old.root_parameter_entries == new.root_parameter_entries,
-            "parameter order",
-        ),
         (old.root_part == new.root_part, "root part"),
-        (old.physics == new.physics, "physics settings"),
         (old.export == new.export, "export settings"),
         (old.canvas == new.canvas, "canvas"),
         (old.name == new.name, "model name"),
         (old.guid == new.guid, "model GUID"),
-        (
-            old.eye_blink_parameters == new.eye_blink_parameters
-                && old.lip_sync_parameters == new.lip_sync_parameters,
-            "effect parameter groups",
-        ),
         (old.target_version == new.target_version, "SDK target"),
-        (
-            old.parameters.len() == new.parameters.len(),
-            "parameter count",
-        ),
         (old.parts.len() == new.parts.len(), "part count"),
         (old.deformers.len() == new.deformers.len(), "deformer count"),
         (
@@ -642,22 +632,17 @@ fn write_forms<F: FormFields>(
     (og, ob): (&KeyformGrid<F>, &BlendShapes<F>),
     (ng, nb): (&KeyformGrid<F>, &BlendShapes<F>),
 ) -> Result<()> {
-    if og.bindings != ng.bindings || og.guids != ng.guids || og.keyforms.len() != ng.keyforms.len()
+    if !grid::same_bindings(ctx, &og.bindings, &ng.bindings)
+        || og.guids != ng.guids
+        || og.keyforms.len() != ng.keyforms.len()
     {
         // Keys changed: the grid is rewritten (blend shapes must stay as they are).
-        if ob != nb {
+        if !grid::same_blend(ctx, ob, nb, true) {
             return unsupported(format!("{what}: blend shapes together with keys"));
         }
         return grid::rebuild_grid(root, ctx, src, what, og, ng);
     }
-    let same_shapes = ob.constraints == nb.constraints
-        && ob.shapes.len() == nb.shapes.len()
-        && ob
-            .shapes
-            .iter()
-            .zip(&nb.shapes)
-            .all(|(a, b)| a.parameter == b.parameter && a.key == b.key);
-    if !same_shapes {
+    if !grid::same_blend(ctx, ob, nb, false) {
         return unsupported(format!("{what}: blend shapes"));
     }
     let forms = og

@@ -5,6 +5,7 @@ pub mod checks;
 pub mod forms;
 pub mod history;
 pub mod keys;
+pub mod objects;
 pub mod warp_net;
 
 pub use checks::{mask_issues, IssueList, MaskIssues, OpenBinding};

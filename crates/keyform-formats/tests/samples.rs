@@ -399,3 +399,47 @@ fn mask_check_on_samples() {
         }
     }
 }
+
+/// Parameters created and deleted (with their bindings, groups, effect
+/// lists, tracking entries and physics) survive a save and reload.
+#[test]
+fn cmo3_save_after_parameter_edits() {
+    use keyform_edit::objects::{add_parameter, remove_parameter};
+    use keyform_edit::{add_key, ObjectRef};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::Parameter;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        // Delete a parameter that objects are bound to.
+        let victim = (0..m.parameters.len())
+            .find(|&p| {
+                m.art_meshes
+                    .iter()
+                    .any(|a| a.grid.bindings.iter().any(|b| b.parameter == p))
+            })
+            .unwrap();
+        let victim_id = m.parameters[victim].id.clone();
+        assert!(remove_parameter(m, victim));
+        // New parameters: top level, and inside the first group.
+        let top = add_parameter(
+            m,
+            Parameter::new("ParamKeyformTest", -10.0, 10.0, 0.0),
+            None,
+        );
+        let group = (!m.parameter_groups.is_empty()).then_some(0);
+        let inner = add_parameter(m, Parameter::new("ParamKeyformTest2", 0.0, 1.0, 0.0), group);
+        add_key(m, ObjectRef::ArtMesh(0), top, -10.0).unwrap();
+        add_key(m, ObjectRef::ArtMesh(0), top, 10.0).unwrap();
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}");
+        assert!(back.model.parameters.iter().all(|p| p.id != victim_id));
+        assert_eq!(back.model.parameters[inner].group, group);
+        let mut again = back;
+        assert_eq!(again.save_bytes().unwrap(), bytes);
+        eprintln!("{path:?}: deleted {victim_id}, added two parameters");
+    }
+}

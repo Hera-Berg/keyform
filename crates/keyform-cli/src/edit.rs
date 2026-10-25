@@ -5,6 +5,7 @@
 //! `deformer`, `glue`:
 //! - every object kind: `id`, `name`, `visible`, `locked`;
 //! - `param`: `min`, `max`, `default`, `repeat`, `description`;
+//!   `create=MIN,MAX,DEFAULT` (new top-level parameter), `delete=1`;
 //! - `part`, `mesh`, `deformer`: `opacity` (every keyform);
 //! - `mesh`, warp `deformer`: `move=DX,DY` (every keyform position);
 //! - rotation `deformer`: `angle+=DEG` (every keyform);
@@ -15,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use keyform_model::{DeformerKind, Model, ObjectInfo};
+use keyform_model::{DeformerKind, Model, ObjectInfo, Parameter};
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
@@ -94,6 +95,21 @@ fn apply(m: &mut Model, edit: &str) -> R {
     }
     let unknown = || format!("{kind}: unknown field {field:?}");
     match kind {
+        "param" if field == "create" => {
+            // create=MIN,MAX,DEFAULT
+            let v: Vec<f32> = value
+                .split(',')
+                .map(|x| x.trim().parse())
+                .collect::<Result<_, _>>()?;
+            let [min, max, default] = v[..] else {
+                return Err("create=MIN,MAX,DEFAULT".into());
+            };
+            keyform_edit::objects::add_parameter(m, Parameter::new(id, min, max, default), None);
+        }
+        "param" if field == "delete" => {
+            let i = find(&m.parameters, id, |p| &p.id)?;
+            keyform_edit::objects::remove_parameter(m, i);
+        }
         "param" => {
             let i = find(&m.parameters, id, |p| &p.id)?;
             let p = Arc::make_mut(&mut m.parameters[i]);

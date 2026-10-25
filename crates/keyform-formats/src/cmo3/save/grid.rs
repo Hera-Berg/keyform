@@ -23,8 +23,14 @@ use crate::xml::Element;
 
 /// State shared by every object written in one sync.
 pub(super) struct Ctx<'a> {
+    /// The new model's parameters.
     pub params: &'a [Arc<Parameter>],
+    /// The saved model's parameters and their elements.
+    pub old_params: &'a [Arc<Parameter>],
     pub param_paths: &'a [Option<ElementPath>],
+    /// Parameter GUID → shared id of its GUID object (filled on demand and
+    /// by new parameters).
+    pub param_guid_ids: HashMap<String, String>,
     next_id: u64,
     next_idx: u64,
     /// Shared ids that may have lost their last reference.
@@ -37,6 +43,7 @@ impl<'a> Ctx<'a> {
     pub fn new(
         root: &Element,
         params: &'a [Arc<Parameter>],
+        old_params: &'a [Arc<Parameter>],
         param_paths: &'a [Option<ElementPath>],
     ) -> Self {
         let (mut id, mut idx) = (0, 0);
@@ -50,7 +57,9 @@ impl<'a> Ctx<'a> {
         }
         Self {
             params,
+            old_params,
             param_paths,
+            param_guid_ids: HashMap::new(),
             next_id: id,
             next_idx: idx,
             orphans: Vec::new(),
@@ -59,18 +68,18 @@ impl<'a> Ctx<'a> {
     }
 }
 
-fn shared(root: &Element) -> Option<&Element> {
+pub(super) fn shared(root: &Element) -> Option<&Element> {
     root.children.iter().find(|c| c.name == "shared")
 }
 
-fn shared_mut(root: &mut Element) -> Result<&mut Element> {
+pub(super) fn shared_mut(root: &mut Element) -> Result<&mut Element> {
     match root.children.iter_mut().find(|c| c.name == "shared") {
         Some(s) => Ok(s),
         None => invalid("document has no <shared> section"),
     }
 }
 
-fn find_shared<'e>(root: &'e mut Element, id: &str) -> Result<&'e mut Element> {
+pub(super) fn find_shared<'e>(root: &'e mut Element, id: &str) -> Result<&'e mut Element> {
     match shared_mut(root)?
         .children
         .iter_mut()
@@ -81,7 +90,7 @@ fn find_shared<'e>(root: &'e mut Element, id: &str) -> Result<&'e mut Element> {
     }
 }
 
-fn get_shared<'e>(root: &'e Element, id: &str) -> Option<&'e Element> {
+pub(super) fn get_shared<'e>(root: &'e Element, id: &str) -> Option<&'e Element> {
     shared(root)?
         .children
         .iter()
@@ -89,7 +98,7 @@ fn get_shared<'e>(root: &'e Element, id: &str) -> Option<&'e Element> {
 }
 
 /// Puts `e` into `<shared>` under a fresh id and returns the id.
-fn add_shared(root: &mut Element, ctx: &mut Ctx, mut e: Element) -> Result<String> {
+pub(super) fn add_shared(root: &mut Element, ctx: &mut Ctx, mut e: Element) -> Result<String> {
     let id = format!("#{}", ctx.next_id);
     ctx.next_id += 1;
     e.attrs
@@ -103,7 +112,7 @@ fn add_shared(root: &mut Element, ctx: &mut Ctx, mut e: Element) -> Result<Strin
 }
 
 /// A reference stub `<tag xs.n=name xs.ref=id/>` (no `xs.n` for list items).
-fn stub(tag: &str, name: Option<&str>, id: &str) -> Element {
+pub(super) fn stub(tag: &str, name: Option<&str>, id: &str) -> Element {
     let mut e = Element::new(tag);
     if let Some(n) = name {
         e.attrs.push(("xs.n".into(), n.into()));
@@ -114,7 +123,7 @@ fn stub(tag: &str, name: Option<&str>, id: &str) -> Element {
 
 /// Makes `e` (an element in place) a reference to a shared object, moving
 /// its content into `<shared>` if it is inline. Returns the shared id.
-fn share_in_place(root: &mut Element, ctx: &mut Ctx, path: &[u32]) -> Result<String> {
+pub(super) fn share_in_place(root: &mut Element, ctx: &mut Ctx, path: &[u32]) -> Result<String> {
     let e = element_at(root, Some(path))?;
     if let Some(id) = e.attr("xs.ref") {
         return Ok(id.to_owned());
@@ -126,7 +135,7 @@ fn share_in_place(root: &mut Element, ctx: &mut Ctx, path: &[u32]) -> Result<Str
 }
 
 /// Path of field `name` of the object at `obj` (own element or `super` chain).
-fn field_path(root: &mut Element, obj: &[u32], name: &str) -> Result<ElementPath> {
+pub(super) fn field_path(root: &mut Element, obj: &[u32], name: &str) -> Result<ElementPath> {
     let mut path = obj.to_vec();
     let e = element_at(root, Some(obj))?;
     let Some(depth) = holder_depth(e, name) else {
@@ -158,7 +167,7 @@ fn field_path(root: &mut Element, obj: &[u32], name: &str) -> Result<ElementPath
 }
 
 /// UUID of a GUID-valued element (inline `uuid`, or the shared object's).
-fn uuid_of(root: &Element, e: &Element) -> Option<String> {
+pub(super) fn uuid_of(root: &Element, e: &Element) -> Option<String> {
     match e.attr("xs.ref") {
         Some(id) => get_shared(root, id)?.attr("uuid").map(str::to_owned),
         None => e.attr("uuid").map(str::to_owned),
@@ -185,7 +194,7 @@ fn form_guid_field(form: &mut Element) -> Option<&mut Element> {
     None
 }
 
-fn set_count(list: &mut Element) {
+pub(super) fn set_count(list: &mut Element) {
     list.set_attr("count", list.children.len().to_string());
 }
 
@@ -200,7 +209,7 @@ fn float_list(name: &str, values: &[f32]) -> Element {
     l
 }
 
-fn scalar(tag: &str, name: &str, text: impl Into<String>) -> Element {
+pub(super) fn scalar(tag: &str, name: &str, text: impl Into<String>) -> Element {
     let mut e = Element::new(tag).with_attr("xs.n", name);
     e.text = text.into();
     e
@@ -215,12 +224,23 @@ fn extended_name(k: ExtendedInterpolationKind) -> &'static str {
 }
 
 /// Shared id of a parameter's GUID object (sharing it if it is inline).
-fn param_guid_id(root: &mut Element, ctx: &mut Ctx, p: usize) -> Result<String> {
-    let Some(Some(path)) = ctx.param_paths.get(p).cloned() else {
+pub(super) fn param_guid_id(root: &mut Element, ctx: &mut Ctx, p: usize) -> Result<String> {
+    let Some(guid) = ctx.params.get(p).map(|x| x.guid.clone()) else {
+        return invalid("binding to an unknown parameter");
+    };
+    if let Some(id) = ctx.param_guid_ids.get(&guid) {
+        return Ok(id.clone());
+    }
+    let Some(old) = ctx.old_params.iter().position(|x| x.guid == guid) else {
+        return invalid("parameter has no element");
+    };
+    let Some(Some(path)) = ctx.param_paths.get(old).cloned() else {
         return invalid("parameter has no element");
     };
     let field = field_path(root, &path, "guid")?;
-    share_in_place(root, ctx, &field)
+    let id = share_in_place(root, ctx, &field)?;
+    ctx.param_guid_ids.insert(guid, id.clone());
+    Ok(id)
 }
 
 /// Rewrites the grid of the object at `src` from `old` to `new`.
@@ -494,24 +514,78 @@ pub(super) fn rebuild_grid<F: FormFields>(
 }
 
 /// Removes those of `ids` that nothing refers to any more.
+/// Removes those of `ids` that nothing refers to any more, repeating
+/// while removals free further candidates (a dead binding releases the
+/// parameter GUID it named).
 pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let mut refs: HashSet<String> = HashSet::new();
-    let mut stack = vec![&*root];
-    while let Some(e) = stack.pop() {
-        if let Some(r) = e.attr("xs.ref") {
-            refs.insert(r.to_owned());
+    let mut left: Vec<String> = ids.to_vec();
+    while !left.is_empty() {
+        let mut refs: HashSet<String> = HashSet::new();
+        let mut stack = vec![&*root];
+        while let Some(e) = stack.pop() {
+            if let Some(r) = e.attr("xs.ref") {
+                refs.insert(r.to_owned());
+            }
+            stack.extend(e.children.iter());
         }
-        stack.extend(e.children.iter());
+        let dead: HashSet<String> = left
+            .iter()
+            .filter(|id| !refs.contains(*id))
+            .cloned()
+            .collect();
+        if dead.is_empty() {
+            break;
+        }
+        shared_mut(root)?
+            .children
+            .retain(|c| c.attr("xs.id").is_none_or(|id| !dead.contains(id)));
+        left.retain(|id| !dead.contains(id));
     }
-    let dead: HashSet<&String> = ids.iter().filter(|id| !refs.contains(*id)).collect();
-    shared_mut(root)?.children.retain(|c| {
-        c.attr("xs.id")
-            .is_none_or(|id| !dead.contains(&id.to_owned()))
-    });
     Ok(())
+}
+
+/// Bindings equal up to parameter renumbering (compared by GUID).
+pub(super) fn same_bindings(
+    ctx: &Ctx,
+    a: &[keyform_model::Binding],
+    b: &[keyform_model::Binding],
+) -> bool {
+    let og = |i: usize| ctx.old_params.get(i).map(|p| p.guid.as_str());
+    let ng = |i: usize| ctx.params.get(i).map(|p| p.guid.as_str());
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            og(x.parameter) == ng(y.parameter)
+                && keyform_model::Binding {
+                    parameter: 0,
+                    ..x.clone()
+                } == keyform_model::Binding {
+                    parameter: 0,
+                    ..y.clone()
+                }
+        })
+}
+
+/// Blend shapes equal up to parameter renumbering; `forms` also compares
+/// the shape forms.
+pub(super) fn same_blend<F: PartialEq>(
+    ctx: &Ctx,
+    a: &keyform_model::BlendShapes<F>,
+    b: &keyform_model::BlendShapes<F>,
+    forms: bool,
+) -> bool {
+    let og = |i: usize| ctx.old_params.get(i).map(|p| p.guid.as_str());
+    let ng = |i: usize| ctx.params.get(i).map(|p| p.guid.as_str());
+    a.shapes.len() == b.shapes.len()
+        && a.constraints.len() == b.constraints.len()
+        && a.shapes.iter().zip(&b.shapes).all(|(x, y)| {
+            og(x.parameter) == ng(y.parameter) && x.key == y.key && (!forms || x.form == y.form)
+        })
+        && a.constraints.iter().zip(&b.constraints).all(|(x, y)| {
+            og(x.blend_parameter) == ng(y.blend_parameter)
+                && og(x.constraint_parameter) == ng(y.constraint_parameter)
+                && x.value == y.value
+                && x.weight == y.weight
+        })
 }
 
 /// `<?import …?>` names of the types a rebuilt grid may contain.
