@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.png binary
+*.cmo3 binary
+*.can3 binary
+*.moc3 binary
