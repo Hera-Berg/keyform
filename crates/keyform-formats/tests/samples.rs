@@ -485,7 +485,11 @@ fn deformer_creation_keeps_shapes() {
         let before = shape(&m);
         let close = |x: &[Vec<f32>], y: &[Vec<f32>], what: &str| {
             for (p, q) in x.iter().zip(y) {
-                let err = p.iter().zip(q).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                let err = p
+                    .iter()
+                    .zip(q)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
                 assert!(err < 0.05, "{path:?} {what}: max error {err} px");
             }
         };
@@ -518,5 +522,70 @@ fn deformer_creation_keeps_shapes() {
         close(&before, &shape(&m), "after deleting both");
         assert_eq!(m.deformers.len(), doc.model.deformers.len());
         eprintln!("{path:?}: mesh {} kept its shape", m.art_meshes[a].info.id);
+    }
+}
+
+/// New and deleted parts and deformers, and objects moved under them, are
+/// written into the project and reload exactly.
+#[test]
+fn cmo3_save_after_structural_edits() {
+    use keyform_edit::objects::{
+        create_part, create_rotation_deformer, create_warp_deformer, delete_deformer, delete_part,
+        NewDeformer,
+    };
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let defaults: Vec<f32> = doc.model.parameters.iter().map(|p| p.default).collect();
+        let m = &mut doc.model;
+        let Some(a) = (0..m.art_meshes.len()).find(|&a| m.art_meshes[a].target.is_some()) else {
+            continue;
+        };
+        let (parent, part) = (m.art_meshes[a].target, m.art_meshes[a].info.parent_part);
+        let new_part = create_part(m, "Keyform Part", part);
+        let children = [ObjectRef::ArtMesh(a)];
+        let r = create_rotation_deformer(
+            m,
+            &NewDeformer {
+                name: "Keyform Rotation".into(),
+                part: Some(new_part),
+                parent,
+                children: &children,
+                values: &defaults,
+            },
+        )
+        .unwrap();
+        let w = create_warp_deformer(
+            m,
+            &NewDeformer {
+                name: "Keyform Warp".into(),
+                part: Some(new_part),
+                parent: Some(r),
+                children: &children,
+                values: &defaults,
+            },
+            4,
+            3,
+            (2, 2),
+        )
+        .unwrap();
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}: after creation");
+        // Undo it all by deletion and save again.
+        let mut doc = back;
+        let m = &mut doc.model;
+        delete_deformer(m, w, &defaults).unwrap();
+        delete_deformer(m, r, &defaults).unwrap();
+        delete_part(m, new_part).unwrap();
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.model.same_data(&edited), "{path:?}: after deletion");
+        assert_eq!(back.model.art_meshes[a].target, parent);
+        eprintln!("{path:?}: structural edits saved and reloaded");
     }
 }

@@ -28,9 +28,13 @@ pub(super) struct Ctx<'a> {
     /// The saved model's parameters and their elements.
     pub old_params: &'a [Arc<Parameter>],
     pub param_paths: &'a [Option<ElementPath>],
-    /// Parameter GUID → shared id of its GUID object (filled on demand and
-    /// by new parameters).
-    pub param_guid_ids: HashMap<String, String>,
+    /// GUID → shared id of its GUID object (filled on demand and by new
+    /// objects).
+    pub guid_ids: HashMap<String, String>,
+    /// Element of every object of the saved model, by GUID.
+    pub object_paths: HashMap<String, ElementPath>,
+    pub old_model: &'a keyform_model::Model,
+    pub new_model: &'a keyform_model::Model,
     next_id: u64,
     next_idx: u64,
     /// Shared ids that may have lost their last reference.
@@ -39,13 +43,43 @@ pub(super) struct Ctx<'a> {
     pub structural: bool,
 }
 
+impl Ctx<'_> {
+    /// Whether the saved model has an object with this GUID.
+    pub fn old_has_guid(&self, u: &str) -> bool {
+        self.object_paths.contains_key(u)
+    }
+}
+
 impl<'a> Ctx<'a> {
     pub fn new(
         root: &Element,
-        params: &'a [Arc<Parameter>],
-        old_params: &'a [Arc<Parameter>],
-        param_paths: &'a [Option<ElementPath>],
+        old_model: &'a keyform_model::Model,
+        new_model: &'a keyform_model::Model,
+        sources: &'a crate::cmo3::SourceMap,
     ) -> Self {
+        let (params, old_params, param_paths) = (
+            &new_model.parameters[..],
+            &old_model.parameters[..],
+            &sources.parameters[..],
+        );
+        let mut object_paths = HashMap::new();
+        let mut add = |guid: &str, src: Option<&crate::cmo3::ObjectSource>| {
+            if let Some(p) = src.and_then(|s| s.element.clone()) {
+                object_paths.insert(guid.to_owned(), p);
+            }
+        };
+        for (i, x) in old_model.parts.iter().enumerate() {
+            add(&x.info.guid, sources.parts.get(i));
+        }
+        for (i, x) in old_model.deformers.iter().enumerate() {
+            add(&x.info.guid, sources.deformers.get(i));
+        }
+        for (i, x) in old_model.art_meshes.iter().enumerate() {
+            add(&x.info.guid, sources.art_meshes.get(i));
+        }
+        for (i, x) in old_model.glues.iter().enumerate() {
+            add(&x.info.guid, sources.glues.get(i));
+        }
         let (mut id, mut idx) = (0, 0);
         if let Some(sh) = shared(root) {
             for e in &sh.children {
@@ -59,7 +93,10 @@ impl<'a> Ctx<'a> {
             params,
             old_params,
             param_paths,
-            param_guid_ids: HashMap::new(),
+            guid_ids: HashMap::new(),
+            object_paths,
+            old_model,
+            new_model,
             next_id: id,
             next_idx: idx,
             orphans: Vec::new(),
@@ -174,6 +211,11 @@ pub(super) fn uuid_of(root: &Element, e: &Element) -> Option<String> {
     }
 }
 
+/// The `guid` field element of a keyform element (for sibling modules).
+pub(super) fn form_guid_field_pub(form: &mut Element) -> Option<&mut Element> {
+    form_guid_field(form)
+}
+
 /// The `guid` field element of a keyform element (on its `super` chain).
 fn form_guid_field(form: &mut Element) -> Option<&mut Element> {
     let mut cur = form;
@@ -228,7 +270,7 @@ pub(super) fn param_guid_id(root: &mut Element, ctx: &mut Ctx, p: usize) -> Resu
     let Some(guid) = ctx.params.get(p).map(|x| x.guid.clone()) else {
         return invalid("binding to an unknown parameter");
     };
-    if let Some(id) = ctx.param_guid_ids.get(&guid) {
+    if let Some(id) = ctx.guid_ids.get(&guid) {
         return Ok(id.clone());
     }
     let Some(old) = ctx.old_params.iter().position(|x| x.guid == guid) else {
@@ -239,7 +281,7 @@ pub(super) fn param_guid_id(root: &mut Element, ctx: &mut Ctx, p: usize) -> Resu
     };
     let field = field_path(root, &path, "guid")?;
     let id = share_in_place(root, ctx, &field)?;
-    ctx.param_guid_ids.insert(guid, id.clone());
+    ctx.guid_ids.insert(guid, id.clone());
     Ok(id)
 }
 
@@ -519,10 +561,18 @@ pub(super) fn rebuild_grid<F: FormFields>(
 /// parameter GUID it named).
 pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<()> {
     let mut left: Vec<String> = ids.to_vec();
+    left.sort();
+    left.dedup();
     while !left.is_empty() {
+        // References from inside a candidate don't keep anything alive
+        // (a deleted object's forms refer back to it).
+        let cand: HashSet<&str> = left.iter().map(String::as_str).collect();
         let mut refs: HashSet<String> = HashSet::new();
         let mut stack = vec![&*root];
         while let Some(e) = stack.pop() {
+            if e.attr("xs.id").is_some_and(|id| cand.contains(id)) {
+                continue;
+            }
             if let Some(r) = e.attr("xs.ref") {
                 refs.insert(r.to_owned());
             }

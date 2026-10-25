@@ -254,7 +254,7 @@ pub(super) fn sync_parameters(
             let g = field_path(root, path, "guid")?;
             let id = share_in_place(root, ctx, &g)?;
             guid_ids.insert(p.guid.clone(), id.clone());
-            ctx.param_guid_ids.insert(p.guid.clone(), id);
+            ctx.guid_ids.insert(p.guid.clone(), id);
         }
     }
 
@@ -321,7 +321,7 @@ pub(super) fn sync_parameters(
             .with_attr("note", p.id.clone());
         let id = add_shared(root, ctx, guid)?;
         guid_ids.insert(p.guid.clone(), id.clone());
-        ctx.param_guid_ids.insert(p.guid.clone(), id.clone());
+        ctx.guid_ids.insert(p.guid.clone(), id.clone());
         let gid = match p.group {
             Some(g) => groups.groups[g].1.clone(),
             None => groups.root_guid.clone(),

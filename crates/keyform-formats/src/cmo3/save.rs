@@ -17,6 +17,7 @@ use std::sync::Arc;
 use keyform_model::*;
 
 mod grid;
+mod objects;
 mod params;
 
 use grid::Ctx;
@@ -49,19 +50,66 @@ impl Cmo3Document {
         let mut root = self.xml.root.clone();
         let s = &self.sources;
         let (old, new) = (&self.saved, &self.model);
-        let mut ctx = Ctx::new(&root, &new.parameters, &old.parameters, &s.parameters);
+        let mut ctx = Ctx::new(&root, old, new, s);
         let ctx = &mut ctx;
         params::sync_parameters(&mut root, ctx, s, old, new)?;
         params::sync_physics(&mut root, ctx, old, new)?;
-        sync_list(&mut root, &old.parts, &new.parts, |root, i, o, n| {
-            write_part(root, ctx, source(&s.parts, i)?, o, n)
-        })?;
-        sync_list(
-            &mut root,
-            &old.deformers,
-            &new.deformers,
-            |root, i, o, n| write_deformer(root, ctx, source(&s.deformers, i)?, o, n),
-        )?;
+        // Parts and deformers are matched by GUID: new ones first (others
+        // may refer to them), then edits, then deletions.
+        let old_parts = objects::index_by_guid(&old.parts, |p| &p.info.guid);
+        let old_defs = objects::index_by_guid(&old.deformers, |d| &d.info.guid);
+        for p in &new.parts {
+            if !old_parts.contains_key(&p.info.guid) {
+                objects::create_part(&mut root, ctx, new, p)?;
+                ctx.structural = true;
+            }
+        }
+        for d in &new.deformers {
+            if !old_defs.contains_key(&d.info.guid) {
+                objects::create_deformer(&mut root, ctx, new, d)?;
+                ctx.structural = true;
+            }
+        }
+        for n in &new.parts {
+            if let Some(&i) = old_parts.get(&n.info.guid) {
+                let o = &old.parts[i];
+                if !Arc::ptr_eq(o, n) && **o != **n {
+                    write_part(&mut root, ctx, source(&s.parts, i)?, o, n)?;
+                }
+            }
+        }
+        for n in &new.deformers {
+            if let Some(&i) = old_defs.get(&n.info.guid) {
+                let o = &old.deformers[i];
+                if !Arc::ptr_eq(o, n) && **o != **n {
+                    write_deformer(&mut root, ctx, source(&s.deformers, i)?, o, n)?;
+                }
+            }
+        }
+        let new_parts = objects::index_by_guid(&new.parts, |p| &p.info.guid);
+        let new_defs = objects::index_by_guid(&new.deformers, |d| &d.info.guid);
+        for (i, o) in old.parts.iter().enumerate() {
+            if !new_parts.contains_key(&o.info.guid) {
+                let path = source(&s.parts, i)?.element.clone();
+                objects::delete_object(
+                    &mut root,
+                    ctx,
+                    path.as_deref().unwrap_or_default(),
+                    "partSourceSet",
+                )?;
+            }
+        }
+        for (i, o) in old.deformers.iter().enumerate() {
+            if !new_defs.contains_key(&o.info.guid) {
+                let path = source(&s.deformers, i)?.element.clone();
+                objects::delete_object(
+                    &mut root,
+                    ctx,
+                    path.as_deref().unwrap_or_default(),
+                    "deformerSourceSet",
+                )?;
+            }
+        }
         sync_list(
             &mut root,
             &old.art_meshes,
@@ -246,14 +294,16 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
     let checks = [
         (same_textures, "textures"),
         (same_groups, "parameter groups"),
-        (old.root_part == new.root_part, "root part"),
+        (
+            old.root_part.map(|p| &old.parts[p].info.guid)
+                == new.root_part.map(|p| &new.parts[p].info.guid),
+            "root part",
+        ),
         (old.export == new.export, "export settings"),
         (old.canvas == new.canvas, "canvas"),
         (old.name == new.name, "model name"),
         (old.guid == new.guid, "model GUID"),
         (old.target_version == new.target_version, "SDK target"),
-        (old.parts.len() == new.parts.len(), "part count"),
-        (old.deformers.len() == new.deformers.len(), "deformer count"),
         (
             old.art_meshes.len() == new.art_meshes.len(),
             "art mesh count",
@@ -547,9 +597,57 @@ fn write_parameter(e: &mut Element, o: &Parameter, n: &Parameter) -> Result<()> 
     Ok(())
 }
 
+fn part_guid(m: &Model, p: Option<usize>) -> Option<&str> {
+    p.and_then(|p| m.parts.get(p)).map(|x| x.info.guid.as_str())
+}
+
+fn deformer_guid(m: &Model, d: Option<usize>) -> Option<&str> {
+    d.and_then(|d| m.deformers.get(d))
+        .map(|x| x.info.guid.as_str())
+}
+
+/// A part's children as (kind, GUID): comparable across renumbering.
+fn child_guids<'m>(m: &'m Model, part: &Part) -> Vec<(u8, Option<&'m str>)> {
+    part.children
+        .iter()
+        .map(|c| match *c {
+            PartChild::Part(i) => (0, m.parts.get(i).map(|x| x.info.guid.as_str())),
+            PartChild::Deformer(i) => (1, m.deformers.get(i).map(|x| x.info.guid.as_str())),
+            PartChild::ArtMesh(i) => (2, m.art_meshes.get(i).map(|x| x.info.guid.as_str())),
+            PartChild::Glue(i) => (3, m.glues.get(i).map(|x| x.info.guid.as_str())),
+            PartChild::Other => (4, None),
+        })
+        .collect()
+}
+
+/// Parent part and parent deformer changes (compared by GUID).
+fn write_parents(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    (op, np): (Option<usize>, Option<usize>),
+    target: Option<(Option<usize>, Option<usize>)>,
+) -> Result<()> {
+    let (old, new) = (ctx.old_model, ctx.new_model);
+    let Some(path) = src.element.clone() else {
+        return invalid("object has no element");
+    };
+    if part_guid(old, op) != part_guid(new, np) {
+        objects::write_parent_part(root, ctx, &path, new, np)?;
+        ctx.structural = true;
+    }
+    if let Some((ot, nt)) = target {
+        if deformer_guid(old, ot) != deformer_guid(new, nt) {
+            objects::write_target(root, ctx, &path, new, nt)?;
+            ctx.structural = true;
+        }
+    }
+    Ok(())
+}
+
 fn write_info(f: &mut Fields, id_tag: &str, o: &ObjectInfo, n: &ObjectInfo) -> Result<()> {
-    if o.guid != n.guid || o.parent_part != n.parent_part {
-        return unsupported(format!("{}: moving to another part", o.id));
+    if o.guid != n.guid {
+        return unsupported(format!("{}: object identity", o.id));
     }
     f.id("id", id_tag, &o.id, &n.id);
     f.string("localName", &o.name, &n.name);
@@ -688,6 +786,7 @@ fn write_part(
 ) -> Result<()> {
     let rest_same = Part {
         info: o.info.clone(),
+        children: o.children.clone(),
         draw_order_group: o.draw_order_group,
         sketch: o.sketch,
         offscreen: o.offscreen,
@@ -700,7 +799,22 @@ fn write_part(
         ..n.clone()
     } == *o;
     if !rest_same {
-        return unsupported(format!("part {}: children or clipping", o.info.id));
+        return unsupported(format!("part {}: clipping", o.info.id));
+    }
+    write_parents(
+        root,
+        ctx,
+        src,
+        (o.info.parent_part, n.info.parent_part),
+        None,
+    )?;
+    let (old, new) = (ctx.old_model, ctx.new_model);
+    if child_guids(old, o) != child_guids(new, n) {
+        let Some(path) = src.element.clone() else {
+            return invalid("part has no element");
+        };
+        objects::write_children(root, ctx, &path, new, n)?;
+        ctx.structural = true;
     }
     write_forms(
         root,
@@ -757,9 +871,13 @@ fn write_deformer(
     o: &Deformer,
     n: &Deformer,
 ) -> Result<()> {
-    if o.target != n.target {
-        return unsupported(format!("deformer {}: parent deformer", o.info.id));
-    }
+    write_parents(
+        root,
+        ctx,
+        src,
+        (o.info.parent_part, n.info.parent_part),
+        Some((o.target, n.target)),
+    )?;
     let id = &o.info.id;
     match (&o.kind, &n.kind) {
         (DeformerKind::Warp(ow), DeformerKind::Warp(nw)) => {
@@ -811,6 +929,7 @@ fn write_art_mesh(
 ) -> Result<()> {
     let rest_same = ArtMesh {
         info: o.info.clone(),
+        target: o.target,
         invert_clip: o.invert_clip,
         culling: o.culling,
         color_composition: o.color_composition,
@@ -821,11 +940,15 @@ fn write_art_mesh(
         ..n.clone()
     } == *o;
     if !rest_same {
-        return unsupported(format!(
-            "art mesh {}: mesh, texture, clipping or parent deformer",
-            o.info.id
-        ));
+        return unsupported(format!("art mesh {}: mesh, texture or clipping", o.info.id));
     }
+    write_parents(
+        root,
+        ctx,
+        src,
+        (o.info.parent_part, n.info.parent_part),
+        Some((o.target, n.target)),
+    )?;
     write_forms(
         root,
         ctx,
@@ -865,6 +988,13 @@ fn write_glue(
     if !rest_same {
         return unsupported(format!("glue {}: meshes or vertex pairs", o.info.id));
     }
+    write_parents(
+        root,
+        ctx,
+        src,
+        (o.info.parent_part, n.info.parent_part),
+        None,
+    )?;
     write_forms(
         root,
         ctx,

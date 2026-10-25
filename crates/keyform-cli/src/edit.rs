@@ -86,11 +86,52 @@ fn key_edit(
     Ok(true)
 }
 
+/// Structural edits: `mesh:ID.wrapwarp=NAME`, `mesh:ID.wraprotation=NAME`
+/// (a new deformer adopting the mesh, in its part), `part:ID.newpart=NAME`.
+fn structural(
+    m: &mut Model,
+    kind: &str,
+    id: &str,
+    field: &str,
+    value: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use keyform_edit::objects::{
+        create_part, create_rotation_deformer, create_warp_deformer, NewDeformer,
+    };
+    use keyform_edit::ObjectRef;
+    let defaults: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+    match (kind, field) {
+        ("mesh", "wrapwarp" | "wraprotation") => {
+            let a = find(&m.art_meshes, id, |x| &x.info.id)?;
+            let children = [ObjectRef::ArtMesh(a)];
+            let nd = NewDeformer {
+                name: value.to_owned(),
+                part: m.art_meshes[a].info.parent_part,
+                parent: m.art_meshes[a].target,
+                children: &children,
+                values: &defaults,
+            };
+            if field == "wrapwarp" {
+                create_warp_deformer(m, &nd, 5, 5, (2, 2))?;
+            } else {
+                create_rotation_deformer(m, &nd)?;
+            }
+            Ok(true)
+        }
+        ("part", "newpart") => {
+            let p = find(&m.parts, id, |x| &x.info.id)?;
+            create_part(m, value, Some(p));
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn apply(m: &mut Model, edit: &str) -> R {
     let (target, value) = edit.split_once('=').ok_or("expected KIND:ID.FIELD=VALUE")?;
     let (kind, rest) = target.split_once(':').ok_or("expected KIND:ID.FIELD")?;
     let (id, field) = rest.rsplit_once('.').ok_or("expected ID.FIELD")?;
-    if key_edit(m, kind, id, field, value)? {
+    if key_edit(m, kind, id, field, value)? || structural(m, kind, id, field, value)? {
         return Ok(());
     }
     let unknown = || format!("{kind}: unknown field {field:?}");
