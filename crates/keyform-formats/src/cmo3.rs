@@ -157,6 +157,8 @@ struct Index {
     /// CImageResource identity → texture index.
     texture_images: HashMap<*const crate::xml::Element, usize>,
     textures_by_guid: HashMap<String, usize>,
+    /// Sampling of each texture page, from the first mesh that uses it.
+    sampling: HashMap<usize, TextureSampling>,
 }
 
 struct Loader<'a, 'd> {
@@ -171,6 +173,19 @@ struct Loader<'a, 'd> {
 }
 
 type O<'g, 'd> = Obj<'g, 'd>;
+
+/// `GTexture2D` filter settings. spec: 40-rendering/appearance.md §5
+fn texture_sampling(t: &O) -> Result<TextureSampling> {
+    let min = match t.field("filterMode")? {
+        Some(f) => f.enum_value("minFilter")?,
+        None => None,
+    };
+    Ok(TextureSampling {
+        mipmaps: min.is_none_or(|v| v.contains("MIPMAP")),
+        anisotropy: t.enum_value("anisotropy")?.is_none_or(|v| v == "ON"),
+        pad_to: t.i32("mipmapLevel")?.unwrap_or(0).clamp(0, 4096) as u32,
+    })
+}
 
 fn color(o: Option<O>, default: Color) -> Result<Color> {
     let Some(o) = o else { return Ok(default) };
@@ -300,6 +315,11 @@ impl<'a, 'd> Loader<'a, 'd> {
             self.sources.glues.push(src);
         }
         self.check_deformer_cycles(&mut m);
+        for (&ti, &s) in &self.idx.sampling {
+            if let Some(t) = m.textures.get_mut(ti) {
+                std::sync::Arc::make_mut(t).sampling = s;
+            }
+        }
 
         self.load_physics(&root, &mut m)?;
 
@@ -475,6 +495,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
             self.idx.textures_by_guid.insert(guid.clone(), ti);
             m.textures.push(std::sync::Arc::new(Texture {
+                sampling: Default::default(),
                 guid,
                 name: atlas.string("name")?.unwrap_or_default(),
                 width: atlas.i32("width")?.unwrap_or(0).max(0) as u32,
@@ -1030,6 +1051,11 @@ impl<'a, 'd> Loader<'a, 'd> {
                 .flatten()
             {
                 texture = self.idx.texture_images.get(&img.identity()).copied();
+            }
+        }
+        if let (Some(ti), Some(t)) = (texture, o.field("texture")?) {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.idx.sampling.entry(ti) {
+                e.insert(texture_sampling(&t)?);
             }
         }
         let _ = m;

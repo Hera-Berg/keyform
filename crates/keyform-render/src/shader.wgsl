@@ -10,6 +10,8 @@ struct Draw {
     flags: vec4<f32>,
     // x: colour composition, y: alpha composition (moc3 codes)
     modes: vec4<u32>,
+    // xy: UV scale onto the unpadded texture area (appearance.md §5)
+    uvs: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> d: Draw;
@@ -31,33 +33,16 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
     return o;
 }
 
-fn texel(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
-    if (p.x < 0 || p.y < 0 || p.x >= size.x || p.y >= size.y) {
-        return vec4<f32>(0.0);
-    }
-    return textureLoad(tex, p, 0);
-}
-
-// Bilinear sample with a transparent border (texture wrap mode
-// CLAMP_TO_BORDER), computed exactly like the CPU renderer.
-fn sample_border(uv: vec2<f32>) -> vec4<f32> {
-    let size = vec2<i32>(textureDimensions(tex));
-    let p = uv * vec2<f32>(size) - 0.5;
-    let p0 = floor(p);
-    let f = p - p0;
-    let i = vec2<i32>(p0);
-    let a = texel(i, size);
-    let b = texel(i + vec2<i32>(1, 0), size);
-    let c = texel(i + vec2<i32>(0, 1), size);
-    let d = texel(i + vec2<i32>(1, 1), size);
-    let top = a + (b - a) * f.x;
-    let bot = c + (d - c) * f.x;
-    return top + (bot - top) * f.y;
+// Texture sample (appearance.md §5): the sampler does bilinear, trilinear
+// or anisotropic filtering over the premultiplied mip chain; outside the
+// texture is transparent where the device supports border clamping.
+fn sample_tex(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(tex, samp, uv * d.uvs.xy);
 }
 
 // Premultiplied texel with multiply and screen colour applied (appearance.md §4).
 fn shaded(uv: vec2<f32>) -> vec4<f32> {
-    let c = sample_border(uv);
+    let c = sample_tex(uv);
     let rgb = c.rgb * d.mul.rgb;
     return vec4<f32>(rgb + d.scr.rgb * c.a - rgb * d.scr.rgb, c.a);
 }
@@ -83,7 +68,7 @@ fn fs_simple(in: VsOut) -> @location(0) vec4<f32> {
 // Clip-source pass: texture alpha only, accumulated with premultiplied over.
 @fragment
 fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
-    let a = sample_border(in.uv).a;
+    let a = sample_tex(in.uv).a;
     return vec4<f32>(a);
 }
 

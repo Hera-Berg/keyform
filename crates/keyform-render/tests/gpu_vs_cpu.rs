@@ -71,6 +71,7 @@ fn scene() -> Model {
         ..Model::default()
     };
     m.textures.push(std::sync::Arc::new(Texture {
+        sampling: Default::default(),
         guid: String::new(),
         name: "t".into(),
         width: 64,
@@ -166,6 +167,7 @@ fn gpu_matches_cpu_on_all_compositions() {
         view.rotation = rot;
         view.mirror = rot != 0.0;
         let opts = RenderOptions {
+            msaa: false,
             view,
             background: bg,
             supersample: ss,

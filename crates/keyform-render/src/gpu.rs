@@ -26,7 +26,22 @@ struct DrawUniform {
     scr: [f32; 4],
     flags: [f32; 4],
     modes: [u32; 4],
+    /// xy: UV scale onto the unpadded texture area (appearance.md §5).
+    uvs: [f32; 4],
 }
+
+/// An uploaded texture: all mip levels, and how it is sampled.
+struct GpuTex {
+    view: wgpu::TextureView,
+    uv_scale: [f32; 2],
+    /// Index into `GpuRenderer::samplers`.
+    sampler: usize,
+}
+
+/// Sampler slots: bilinear, trilinear, trilinear + anisotropic.
+const SAMPLER_BILINEAR: usize = 0;
+const SAMPLER_TRILINEAR: usize = 1;
+const SAMPLER_ANISOTROPIC: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -57,10 +72,10 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
     pipelines: HashMap<(PipeKind, Cull), wgpu::RenderPipeline>,
-    sampler: wgpu::Sampler,
-    textures: Vec<Option<wgpu::TextureView>>,
+    samplers: Vec<wgpu::Sampler>,
+    textures: Vec<Option<GpuTex>>,
     /// 1×1 placeholder bound where a texture slot is unused.
-    dummy: wgpu::TextureView,
+    dummy: GpuTex,
     pub adapter_info: String,
     pub warnings: Vec<String>,
 }
@@ -87,7 +102,9 @@ impl GpuRenderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("keyform"),
-                required_features: wgpu::Features::empty(),
+                // Transparent texture borders when available (appearance.md §5).
+                required_features: adapter.features()
+                    & wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER,
                 required_limits: wgpu::Limits::downlevel_defaults()
                     .using_resolution(adapter.limits()),
                 ..Default::default()
@@ -254,17 +271,43 @@ impl GpuRenderer {
             }
         }
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("texture"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        // Texture sampling (appearance.md §5): bilinear, or trilinear with
+        // mipmaps, optionally anisotropic at the usual device maximum (16).
+        // Outside the texture is transparent where the device can do it.
+        let border = device
+            .features()
+            .contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER);
+        let address = if border {
+            wgpu::AddressMode::ClampToBorder
+        } else {
+            wgpu::AddressMode::ClampToEdge
+        };
+        let sampler = |label: &str, mips: bool, aniso: u16| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                address_mode_u: address,
+                address_mode_v: address,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: if mips {
+                    wgpu::MipmapFilterMode::Linear
+                } else {
+                    wgpu::MipmapFilterMode::Nearest
+                },
+                anisotropy_clamp: aniso,
+                border_color: border.then_some(wgpu::SamplerBorderColor::TransparentBlack),
+                ..Default::default()
+            })
+        };
+        let samplers = vec![
+            sampler("bilinear", false, 1),
+            sampler("trilinear", true, 1),
+            sampler("anisotropic", true, crate::image::MAX_ANISOTROPY as u16),
+        ];
 
         let mut warnings = Vec::new();
-        let upload = |w: u32, h: u32, rgba: &[u8], label: &str| -> wgpu::TextureView {
+        // Uploads levels (largest first, premultiplied RGBA8) as one texture.
+        let upload = |w: u32, h: u32, levels: u32, rgba: &[u8], label: &str| -> wgpu::TextureView {
             let t = device.create_texture_with_data(
                 &queue,
                 &wgpu::TextureDescriptor {
@@ -274,7 +317,7 @@ impl GpuRenderer {
                         height: h,
                         depth_or_array_layers: 1,
                     },
-                    mip_level_count: 1,
+                    mip_level_count: levels,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: TARGET_FORMAT,
@@ -286,7 +329,11 @@ impl GpuRenderer {
             );
             t.create_view(&Default::default())
         };
-        let dummy = upload(1, 1, &[0, 0, 0, 0], "dummy");
+        let dummy = GpuTex {
+            view: upload(1, 1, 1, &[0, 0, 0, 0], "dummy"),
+            uv_scale: [1.0, 1.0],
+            sampler: SAMPLER_BILINEAR,
+        };
         let max_side = device.limits().max_texture_dimension_2d;
         let textures = model
             .textures
@@ -310,17 +357,39 @@ impl GpuRenderer {
                     ));
                     return None;
                 }
-                // Premultiply at upload (cmo3.md §3), rounding like the CPU path's f32 texels.
-                let pre: Vec<u8> = img
-                    .data
-                    .chunks_exact(4)
-                    .flat_map(|p| {
-                        let a = u16::from(p[3]);
-                        let m = |c: u8| ((u16::from(c) * a + 127) / 255) as u8;
-                        [m(p[0]), m(p[1]), m(p[2]), p[3]]
-                    })
+                // Premultiplied, padded mip chain built like the CPU path's
+                // (cmo3.md §3, appearance.md §5), stored as RGBA8.
+                let chain = crate::image::Texture::new(&img, t.sampling);
+                let base = &chain.levels[0];
+                if base.width as u32 > max_side || base.height as u32 > max_side {
+                    warnings.push(format!(
+                        "texture {:?} exceeds the GPU limit {max_side}",
+                        t.name
+                    ));
+                    return None;
+                }
+                let bytes: Vec<u8> = chain
+                    .levels
+                    .iter()
+                    .flat_map(|l| l.texels.iter())
+                    .flat_map(|p| p.map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8))
                     .collect();
-                Some(upload(img.width, img.height, &pre, &t.name))
+                let sampler = match (t.sampling.mipmaps, t.sampling.anisotropy) {
+                    (false, _) => SAMPLER_BILINEAR,
+                    (true, false) => SAMPLER_TRILINEAR,
+                    (true, true) => SAMPLER_ANISOTROPIC,
+                };
+                Some(GpuTex {
+                    view: upload(
+                        base.width as u32,
+                        base.height as u32,
+                        chain.levels.len() as u32,
+                        &bytes,
+                        &t.name,
+                    ),
+                    uv_scale: chain.uv_scale,
+                    sampler,
+                })
             })
             .collect();
 
@@ -329,7 +398,7 @@ impl GpuRenderer {
             queue,
             layout,
             pipelines,
-            sampler,
+            samplers,
             textures,
             dummy,
             adapter_info,
@@ -506,7 +575,7 @@ impl GpuRenderer {
             geo.insert(mi, (vb, ib, idx.len() as u32));
         };
 
-        let tex_of = |mi: MeshIndex| -> Option<&wgpu::TextureView> {
+        let tex_of = |mi: MeshIndex| -> Option<&GpuTex> {
             m.art_meshes
                 .get(mi)?
                 .texture
@@ -584,12 +653,16 @@ impl GpuRenderer {
                         0,
                         0,
                     ],
+                    uvs: {
+                        let s = tex_of(mi).map_or([1.0, 1.0], |t| t.uv_scale);
+                        [s[0], s[1], 0.0, 0.0]
+                    },
                 },
             });
         }
 
         let bind = |uniform: &DrawUniform,
-                    tex: &wgpu::TextureView,
+                    tex: &GpuTex,
                     mask: &wgpu::TextureView,
                     dst: &wgpu::TextureView| {
             let ub = self
@@ -609,11 +682,11 @@ impl GpuRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(tex),
+                        resource: wgpu::BindingResource::TextureView(&tex.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        resource: wgpu::BindingResource::Sampler(&self.samplers[tex.sampler]),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -640,6 +713,7 @@ impl GpuRenderer {
             scr: [0.0; 4],
             flags: [0.0; 4],
             modes: [0; 4],
+            uvs: [1.0, 1.0, 0.0, 0.0],
         };
         let mut mask_views = Vec::new();
         for key in &mask_keys {
@@ -654,7 +728,12 @@ impl GpuRenderer {
             let groups: Vec<(MeshIndex, wgpu::BindGroup)> = key
                 .iter()
                 .filter_map(|&c| {
-                    Some((c, bind(&zero_uniform, tex_of(c)?, &self.dummy, &self.dummy)))
+                    let t = tex_of(c)?;
+                    let u = DrawUniform {
+                        uvs: [t.uv_scale[0], t.uv_scale[1], 0.0, 0.0],
+                        ..zero_uniform
+                    };
+                    Some((c, bind(&u, t, &self.dummy.view, &self.dummy.view)))
                 })
                 .collect();
             {
@@ -692,11 +771,11 @@ impl GpuRenderer {
         let groups: Vec<wgpu::BindGroup> = items
             .iter()
             .map(|it| {
-                let mask = it.mask.map_or(&self.dummy, |i| &mask_views[i]);
+                let mask = it.mask.map_or(&self.dummy.view, |i| &mask_views[i]);
                 let dst = if it.kind == PipeKind::Advanced {
                     &dst_view
                 } else {
-                    &self.dummy
+                    &self.dummy.view
                 };
                 bind(
                     &it.uniform,

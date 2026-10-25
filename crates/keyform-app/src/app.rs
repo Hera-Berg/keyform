@@ -122,6 +122,7 @@ pub struct KeyformApp {
     settings: Settings,
     /// The "Issues on Mask Settings" dialog is open.
     mask_dialog: bool,
+    export_image: crate::export_image::ExportImageState,
 }
 
 /// User settings. TODO: an Environment Settings dialog; for now the Show
@@ -145,6 +146,7 @@ impl Default for Settings {
 }
 
 const SETTINGS_KEY: &str = "keyform.settings";
+const EXPORT_IMAGE_KEY: &str = "keyform.export_image";
 
 /// `targetVersionNo` of "SDK(N/A)/Latest Cubism" (cmo3.md §2): no mask hint.
 const TARGET_LATEST: i32 = 9_000_000;
@@ -207,6 +209,10 @@ impl KeyformApp {
         let mut app = Self {
             settings,
             mask_dialog: false,
+            export_image: cc
+                .storage
+                .and_then(|s| eframe::get_value(s, EXPORT_IMAGE_KEY))
+                .unwrap_or_default(),
             playback,
             dock,
             slots: Vec::new(),
@@ -484,6 +490,19 @@ impl KeyformApp {
                     self.save_as_active();
                 }
                 ui.separator();
+                ui.menu_button("Export Image/Video", |ui| {
+                    let modeling = self
+                        .active
+                        .and_then(|i| self.slots.get(i))
+                        .is_some_and(|s| s.doc.mode == Mode::Modeling);
+                    if ui
+                        .add_enabled(modeling, egui::Button::new("Image…"))
+                        .on_disabled_hover_text("Needs the Modeling view of a project")
+                        .clicked()
+                    {
+                        self.export_image.open = true;
+                    }
+                });
                 ui.menu_button("Export For Runtime", |ui| {
                     if ui
                         .add_enabled(project, egui::Button::new("Export as moc3 file…"))
@@ -1289,6 +1308,8 @@ impl eframe::App for KeyformApp {
             self.quit_after_closing = true;
         }
         self.mask_dialog_ui(&ctx);
+        let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
+        crate::export_image::dialog(&ctx, &mut self.export_image, doc, &mut self.log);
         self.closing_step(&ctx);
         let title = match self.active.and_then(|i| self.slots.get(i)) {
             Some(s) => format!(
@@ -1321,6 +1342,7 @@ impl eframe::App for KeyformApp {
         eframe::set_value(storage, LAYOUT_KEY, &storable_layout(&self.dock));
         eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        eframe::set_value(storage, EXPORT_IMAGE_KEY, &self.export_image);
     }
 }
 

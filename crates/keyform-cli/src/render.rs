@@ -11,6 +11,8 @@ struct Args {
     /// Fixed scale (output = ⌊canvas × scale⌋, like the reference's image
     /// export) instead of fitting into `size`.
     scale: Option<f32>,
+    /// `--ss` given explicitly (turns off the export's MSAA-style sampling).
+    ss_given: Option<u32>,
     ss: u32,
     background: bool,
     gpu: bool,
@@ -22,6 +24,7 @@ fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut a = Args {
         size: 1024,
         scale: None,
+        ss_given: None,
         ss: 2,
         background: false,
         gpu: false,
@@ -33,7 +36,10 @@ fn parse(rest: &[&str]) -> Result<Args, Box<dyn std::error::Error>> {
         match t {
             "--size" => a.size = it.next().ok_or("--size N")?.parse()?,
             "--scale" => a.scale = Some(it.next().ok_or("--scale S")?.parse()?),
-            "--ss" => a.ss = it.next().ok_or("--ss N")?.parse()?,
+            "--ss" => {
+                a.ss = it.next().ok_or("--ss N")?.parse()?;
+                a.ss_given = Some(a.ss);
+            }
             "--bg" => a.background = true,
             "--gpu" => a.gpu = true,
             _ => match t.split_once('=') {
@@ -63,26 +69,17 @@ fn values(m: &Model, set: &[(String, f32)]) -> Result<Vec<f32>, Box<dyn std::err
 }
 
 fn options(m: &Model, a: &Args) -> RenderOptions {
+    // --scale renders like the reference's image export (dialogs.md §20):
+    // its camera, and 4 samples per pixel used like 4× MSAA.
+    let export = a.scale.and_then(|s| View::for_export(m, s));
     RenderOptions {
-        view: match a.scale {
-            Some(s) => {
-                let (cw, ch) = (m.canvas.width as f32, m.canvas.height as f32);
-                let (w, h) = ((cw * s).floor().max(1.0), (ch * s).floor().max(1.0));
-                // Like the reference's image export: ⌊canvas × scale⌋ pixels.
-                // TODO(Q-0012): centring when rounded down is provisional
-                // (it matched reference exports best).
-                View {
-                    width: w as u32,
-                    height: h as u32,
-                    scale: s,
-                    origin: [cw / 2.0 - w / (2.0 * s), ch / 2.0 - h / (2.0 * s)],
-                    ..View::fit_canvas(m, a.size)
-                }
-            }
-            None => View::fit_canvas(m, a.size),
-        },
+        msaa: export.is_some() && a.ss_given.is_none(),
+        view: export.unwrap_or_else(|| View::fit_canvas(m, a.size)),
         background: a.background.then_some([1.0, 1.0, 1.0, 1.0]),
-        supersample: a.ss,
+        supersample: match (export, a.ss_given) {
+            (Some(_), None) => 2,
+            _ => a.ss,
+        },
     }
 }
 

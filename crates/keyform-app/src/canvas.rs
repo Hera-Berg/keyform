@@ -179,6 +179,7 @@ pub fn canvas_ui(
             }
             if let (Some(r), Some((tex, id, _))) = (&gpu.renderer, &gpu.target) {
                 let opts = RenderOptions {
+                    msaa: false,
                     view,
                     background: None,
                     supersample: SUPERSAMPLE,

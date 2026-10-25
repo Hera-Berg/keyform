@@ -53,6 +53,27 @@ impl View {
         }
     }
 
+    /// The model-image export camera at magnification `mag`: an image of
+    /// ⌊W·mag⌋ × ⌊H·mag⌋ pixels, uniform scale k = min(w/W, h/H), canvas
+    /// centre at the image centre, standard pixel centres. `None` if the
+    /// image would be empty. spec: 50-ui/dialogs.md §20
+    pub fn for_export(m: &Model, mag: f32) -> Option<Self> {
+        let (cw, ch) = (m.canvas.width as f32, m.canvas.height as f32);
+        let (w, h) = ((cw * mag).floor(), (ch * mag).floor());
+        if !(w >= 1.0 && h >= 1.0 && cw > 0.0 && ch > 0.0) {
+            return None;
+        }
+        let k = (w / cw).min(h / ch);
+        Some(Self {
+            width: w as u32,
+            height: h as u32,
+            origin: [cw / 2.0 - w / (2.0 * k), ch / 2.0 - h / (2.0 * k)],
+            scale: k,
+            rotation: 0.0,
+            mirror: false,
+        })
+    }
+
     /// Canvas pixels → output pixels (before supersampling).
     pub fn to_px(&self, p: [f32; 2]) -> [f32; 2] {
         let mut x = (p[0] - self.origin[0]) * self.scale;
@@ -93,6 +114,10 @@ pub struct RenderOptions {
     pub background: Option<[f32; 4]>,
     /// Samples per axis (1 = none). The image is rendered larger and box-filtered.
     pub supersample: u32,
+    /// With supersampling, behave like multisampling: textures are sampled
+    /// once per output pixel, at its centre and with its level of detail;
+    /// only coverage is supersampled (image export, dialogs.md §20).
+    pub msaa: bool,
 }
 
 /// Prepared textures for one model.
@@ -117,7 +142,7 @@ impl<'m> CpuRenderer<'m> {
             .textures
             .iter()
             .map(|t| match t.png.as_deref().map(RgbaImage::decode_png) {
-                Some(Ok(img)) => Some(Texture::from_image(&img)),
+                Some(Ok(img)) => Some(Texture::new(&img, t.sampling)),
                 Some(Err(e)) => {
                     warnings.push(format!("texture {:?}: {e}", t.name));
                     None
@@ -186,7 +211,16 @@ impl<'m> CpuRenderer<'m> {
             } else {
                 let key = (am.clip.clone(), am.invert_clip);
                 if !mask_cache.contains_key(&key) {
-                    let mk = self.build_mask(frame, &am.clip, am.invert_clip, w, h, &to_px);
+                    let mk = self.build_mask(
+                        frame,
+                        &am.clip,
+                        am.invert_clip,
+                        w,
+                        h,
+                        &to_px,
+                        ss,
+                        opts.msaa,
+                    );
                     mask_cache.insert(key.clone(), mk);
                 }
                 mask_cache.get(&key)
@@ -222,23 +256,20 @@ impl<'m> CpuRenderer<'m> {
                         am.uvs.get(2 * i + 1).copied().unwrap_or(0.0),
                     ]
                 };
-                raster_triangle(
-                    &mut t,
-                    [p0, p1, p2],
-                    [uv(i0), uv(i1), uv(i2)],
-                    |x, y, u, vv, t| {
-                        let idx = y * t.w + x;
-                        if !simple {
-                            // One blend per pixel per mesh (blending.md §2).
-                            if written[idx] == stamp {
-                                return;
-                            }
-                            written[idx] = stamp;
+                let tri_uv = [uv(i0), uv(i1), uv(i2)];
+                let g = Sampler::new([p0, p1, p2], tri_uv, ss, opts.msaa);
+                raster_triangle(&mut t, [p0, p1, p2], tri_uv, |x, y, u, vv, t| {
+                    let idx = y * t.w + x;
+                    if !simple {
+                        // One blend per pixel per mesh (blending.md §2).
+                        if written[idx] == stamp {
+                            return;
                         }
-                        let k = mask.map_or(1.0, |m| m[idx]);
-                        shade.apply(tex.sample(u, vv), k, &mut t.px[idx]);
-                    },
-                );
+                        written[idx] = stamp;
+                    }
+                    let k = mask.map_or(1.0, |m| m[idx]);
+                    shade.apply(g.sample(tex, x, y, u, vv), k, &mut t.px[idx]);
+                });
             }
         }
 
@@ -254,6 +285,7 @@ impl<'m> CpuRenderer<'m> {
     /// Mask image from clip sources' texture alpha, accumulated with "over";
     /// opacity and colors of the sources do not count (clipping.md §1). Hidden
     /// sources still mask in the editor (§3).
+    #[allow(clippy::too_many_arguments)]
     fn build_mask(
         &self,
         frame: &Frame,
@@ -262,6 +294,8 @@ impl<'m> CpuRenderer<'m> {
         w: usize,
         h: usize,
         to_px: &dyn Fn(&[f32]) -> V2,
+        ss: usize,
+        msaa: bool,
     ) -> Vec<f32> {
         let mut t = Target {
             w,
@@ -294,16 +328,13 @@ impl<'m> CpuRenderer<'m> {
                         am.uvs.get(2 * i + 1).copied().unwrap_or(0.0),
                     ]
                 };
-                raster_triangle(
-                    &mut t,
-                    [p0, p1, p2],
-                    [uv(ix[0]), uv(ix[1]), uv(ix[2])],
-                    |x, y, u, v, t| {
-                        let a = tex.sample(u, v)[3];
-                        let p = &mut t.px[y * t.w + x][3];
-                        *p = a + *p * (1.0 - a);
-                    },
-                );
+                let tri_uv = [uv(ix[0]), uv(ix[1]), uv(ix[2])];
+                let g = Sampler::new([p0, p1, p2], tri_uv, ss, msaa);
+                raster_triangle(&mut t, [p0, p1, p2], tri_uv, |x, y, u, v, t| {
+                    let a = g.sample(tex, x, y, u, v)[3];
+                    let p = &mut t.px[y * t.w + x][3];
+                    *p = a + *p * (1.0 - a);
+                });
             }
         }
         t.px.iter()
@@ -389,6 +420,55 @@ impl Shade {
         } else {
             *dst = blend::blend_advanced(self.cc, self.ac, c, self.alpha * k, *dst);
         }
+    }
+}
+
+/// Texture sampling for one triangle: its constant UV gradients and the
+/// sample position rule (per subsample, or per output pixel for MSAA).
+struct Sampler {
+    /// d(u, v)/dx and d(u, v)/dy per buffer pixel.
+    ddx: V2,
+    ddy: V2,
+    ss: usize,
+    msaa: bool,
+}
+
+impl Sampler {
+    fn new(p: [V2; 3], uv: [V2; 3], ss: usize, msaa: bool) -> Self {
+        let area =
+            (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]);
+        let inv = if area.abs() > 1e-12 { 1.0 / area } else { 0.0 };
+        // Barycentric weight derivatives (see `raster_triangle`'s edges).
+        let dw = |a: V2, b: V2| [-(b[1] - a[1]) * inv, (b[0] - a[0]) * inv];
+        let (w0, w1, w2) = (dw(p[1], p[2]), dw(p[2], p[0]), dw(p[0], p[1]));
+        let d = |k: usize, c: usize| w0[k] * uv[0][c] + w1[k] * uv[1][c] + w2[k] * uv[2][c];
+        Self {
+            ddx: [d(0, 0), d(0, 1)],
+            ddy: [d(1, 0), d(1, 1)],
+            ss,
+            msaa,
+        }
+    }
+
+    fn sample(&self, tex: &Texture, x: usize, y: usize, u: f32, v: f32) -> [f32; 4] {
+        if !self.msaa || self.ss <= 1 {
+            return tex.sample_grad(u, v, self.ddx, self.ddy);
+        }
+        // Move to the output pixel's centre and use its footprint.
+        let ss = self.ss as f32;
+        let cx = ((x / self.ss) as f32 + 0.5) * ss - (x as f32 + 0.5);
+        let cy = ((y / self.ss) as f32 + 0.5) * ss - (y as f32 + 0.5);
+        let (u, v) = (
+            u + self.ddx[0] * cx + self.ddy[0] * cy,
+            v + self.ddx[1] * cx + self.ddy[1] * cy,
+        );
+        let k = ss;
+        tex.sample_grad(
+            u,
+            v,
+            [self.ddx[0] * k, self.ddx[1] * k],
+            [self.ddy[0] * k, self.ddy[1] * k],
+        )
     }
 }
 

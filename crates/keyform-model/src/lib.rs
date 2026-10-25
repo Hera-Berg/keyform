@@ -600,6 +600,30 @@ pub struct Glue {
 }
 
 /// A texture image (atlas page) with its PNG bytes.
+/// How a texture is sampled. spec: 40-rendering/appearance.md §5
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureSampling {
+    /// Trilinear minification with mipmaps (`LINEAR_MIPMAP_LINEAR`);
+    /// otherwise plain bilinear.
+    pub mipmaps: bool,
+    /// Anisotropic filtering at the device's maximum.
+    pub anisotropy: bool,
+    /// The texture is padded (transparent, right and bottom) to a multiple
+    /// of this before mips are built; 0 = no padding (`mipmapLevel`).
+    pub pad_to: u32,
+}
+
+impl Default for TextureSampling {
+    /// Runtime models: the Viewer's "Enable Mipmap" default (on).
+    fn default() -> Self {
+        Self {
+            mipmaps: true,
+            anisotropy: true,
+            pad_to: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Texture {
     pub guid: Guid,
@@ -611,6 +635,7 @@ pub struct Texture {
     /// The stored page is used as is and never re-rendered from the model
     /// images. spec: 70-advanced/texture-atlas.md §1, §6
     pub locked: bool,
+    pub sampling: TextureSampling,
 }
 
 #[cfg(test)]

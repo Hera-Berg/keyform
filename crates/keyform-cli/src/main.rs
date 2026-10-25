@@ -95,6 +95,7 @@ fn load_any(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
                 .map(|i| (i.width, i.height))
                 .unwrap_or((0, 0));
             m.textures.push(std::sync::Arc::new(keyform_model::Texture {
+                sampling: Default::default(),
                 guid: String::new(),
                 name: format!("texture_{i:02}"),
                 width: w,

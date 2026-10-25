@@ -6,6 +6,7 @@
 mod app;
 mod canvas;
 mod document;
+mod export_image;
 mod fonts;
 mod icons;
 mod log;
@@ -45,7 +46,20 @@ fn main() -> eframe::Result<()> {
             },
         }
     }
+    // Ask for transparent texture borders where the GPU has them
+    // (40-rendering/appearance.md §5); the renderer falls back otherwise.
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut wgpu_options.wgpu_setup {
+        let base = c.device_descriptor.clone();
+        c.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut d = base(adapter);
+            d.required_features |=
+                adapter.features() & wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER;
+            d
+        });
+    }
     let options = eframe::NativeOptions {
+        wgpu_options,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size(size)
             .with_min_inner_size([640.0, 480.0])

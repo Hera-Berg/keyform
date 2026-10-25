@@ -240,6 +240,7 @@ fn load_runtime_textures(m: &mut Model, dir: &Path, files: &[String], log: &mut 
                 let (w, h) = keyform_formats::image::RgbaImage::decode_png(&png)
                     .map_or((0, 0), |i| (i.width, i.height));
                 m.textures.push(std::sync::Arc::new(Texture {
+                    sampling: Default::default(),
                     guid: String::new(),
                     name: format!("texture_{i:02}"),
                     width: w,
