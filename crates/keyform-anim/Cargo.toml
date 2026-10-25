@@ -1,0 +1,14 @@
+[package]
+name = "keyform-anim"
+description = "Keyform animation playback: motion3, expressions (exp3), pose (pose3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

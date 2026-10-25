@@ -5,6 +5,7 @@ members = [
     "crates/keyform-model",
     "crates/keyform-eval",
     "crates/keyform-formats",
+    "crates/keyform-anim",
     "crates/keyform-render",
     "crates/keyform-cli",
     
@@ -22,6 +23,7 @@ keyform-model = { path = "crates/keyform-model" }
 keyform-eval = { path = "crates/keyform-eval" }
 keyform-formats = { path = "crates/keyform-formats" }
 keyform-render = { path = "crates/keyform-render" }
+keyform-anim = { path = "crates/keyform-anim" }
 thiserror = "2"
 quick-xml = "0.37"
 flate2 = "1"
