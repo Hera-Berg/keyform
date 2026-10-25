@@ -124,6 +124,7 @@ pub struct KeyformApp {
     mask_dialog: bool,
     export_image: crate::export_image::ExportImageState,
     create_deformer: crate::create_deformer::CreateDeformerState,
+    param_dialog: crate::param_dialog::ParamDialog,
 }
 
 /// User settings. TODO: an Environment Settings dialog; for now the Show
@@ -211,6 +212,7 @@ impl KeyformApp {
             settings,
             mask_dialog: false,
             create_deformer: Default::default(),
+            param_dialog: Default::default(),
             export_image: cc
                 .storage
                 .and_then(|s| eframe::get_value(s, EXPORT_IMAGE_KEY))
@@ -1412,6 +1414,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::create_deformer::dialog(&ctx, &mut self.create_deformer, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::param_dialog::dialog(&ctx, &mut self.param_dialog, doc, &mut self.log);
         let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
         crate::export_image::dialog(&ctx, &mut self.export_image, doc, &mut self.log);
         self.closing_step(&ctx);

@@ -12,6 +12,7 @@ mod fonts;
 mod icons;
 mod log;
 mod palettes;
+mod param_dialog;
 mod theme;
 mod viewer_settings;
 

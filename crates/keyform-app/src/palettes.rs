@@ -396,6 +396,21 @@ fn run_key_op(doc: &mut Document, op: KeyOp, p: usize, log: &mut Log) {
 
 /// The key operations of a parameter row's context menu (palettes.md §3).
 fn key_menu(ui: &mut egui::Ui, doc: &mut Document, p: usize, log: &mut Log) {
+    use crate::param_dialog::Request;
+    // Row context menu (palettes.md §3): Edit / Create / Delete parameter.
+    let project = doc.editable() && doc.mode == crate::document::Mode::Modeling;
+    let group = doc.model.parameters.get(p).and_then(|x| x.group);
+    for (label, req) in [
+        ("Edit Parameter", Request::Edit(p)),
+        ("Create Parameter", Request::Create(group)),
+        ("Delete", Request::Delete(p)),
+    ] {
+        if ui.add_enabled(project, egui::Button::new(label)).clicked() {
+            doc.param_request = Some(req);
+            ui.close();
+        }
+    }
+    ui.separator();
     let can = doc.editable() && doc.primary().is_some();
     for (label, op) in [
         ("Add key", KeyOp::Add),

@@ -279,6 +279,8 @@ pub struct Document {
     drag: Option<Drag>,
     /// A message for the log from a canvas tool (taken by the app).
     pub notice: Option<String>,
+    /// A parameter dialog requested by a palette (taken by the app).
+    pub param_request: Option<crate::param_dialog::Request>,
     /// Result of the mask check, recomputed when the model changes
     /// (dialogs.md §21).
     pub mask_issues: keyform_edit::MaskIssues,
@@ -576,6 +578,7 @@ impl Document {
             drag: None,
             edit_level: 2,
             notice: None,
+            param_request: None,
             mask_issues: keyform_edit::mask_issues(&model),
             mode: if palette_from_children {
                 Mode::Modeling
