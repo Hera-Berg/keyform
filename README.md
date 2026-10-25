@@ -13,6 +13,9 @@ Live2D Cubism Editor 5.3 project files (`.cmo3`, `.can3`) and runtime exports
 | `keyform-eval` | deterministic CPU evaluation: keyform interpolation, blend shapes, warp/rotation deformers, glue, draw order |
 | `keyform-formats` | CAFF container, lossless XML object graph, `.cmo3` loader, moc3 reader/writer/import, runtime JSON, PNG, texture cleanup |
 | `keyform-render` | rendering: deterministic CPU reference rasterizer and the wgpu renderer (feature `gpu`, default), kept pixel-equivalent by tests |
+| `keyform-anim` | motion3 / exp3 / pose3 files and runtime playback (fades, expressions, pose) |
+| `keyform-physics` | pendulum physics simulation and physics3.json |
+| `keyform-app` | the editor application (`keyform`): egui + egui_dock, GPU canvas, palettes, viewer settings |
 | `keyform-cli` | `kf` command-line tool |
 | `fuzz/` | cargo-fuzz targets (outside the workspace, nightly) |
 
@@ -36,6 +39,16 @@ and `cdi3.json` equal to reference exports found next to the project; texture
 cleanup bit-exact on locked reference pages; and mutation robustness of
 every parser. `tests/gpu_vs_cpu.rs` checks the GPU renderer against the CPU
 renderer on a synthetic scene (skipped without a GPU adapter).
+
+## Application
+
+    cargo run --release -p keyform-app -- [model.cmo3 | model.model3.json | model.moc3]
+
+Phase 2 is a viewer: open (or drop) a model, drive parameters, play motions
+and expressions with physics and pose, and edit and save the runtime
+settings (`model3.json` motions/expressions/pose/hit areas/eye-blink and
+lip-sync groups, `*.exp3.json`, `*.pose3.json`; Ctrl+S). Debug options:
+`--screenshot out.png --frames N --size WxH --play MOTION ParamId=value`.
 
 ## `kf` tool
 

@@ -51,9 +51,16 @@ pub fn parts_ui(
                 .as_ref()
                 .map(|f| f.meshes.iter().map(|m| m.draw_order).collect())
                 .unwrap_or_default();
+            let tree;
+            let model = if doc.palette_from_children {
+                &doc.model
+            } else {
+                tree = parent_link_tree(&doc.model);
+                &tree
+            };
             part_children(
                 ui,
-                &doc.model,
+                model,
                 root,
                 &mut sel,
                 *show_deformers,
@@ -63,6 +70,41 @@ pub fn parts_ui(
             );
             doc.selection = sel;
         });
+}
+
+/// A copy of the part tree whose child lists come from parent links, in
+/// model order (runtime models carry no palette order).
+fn parent_link_tree(m: &Model) -> Model {
+    let mut t = Model {
+        parts: m.parts.clone(),
+        art_meshes: m.art_meshes.clone(),
+        deformers: m.deformers.clone(),
+        glues: m.glues.clone(),
+        ..Model::default()
+    };
+    for p in &mut t.parts {
+        p.children.clear();
+    }
+    let root = m.root_part;
+    let parent = |pp: Option<usize>| pp.or(root).filter(|&p| p < m.parts.len());
+    for (i, p) in m.parts.iter().enumerate() {
+        if Some(i) != root {
+            if let Some(q) = parent(p.info.parent_part).filter(|&q| q != i) {
+                t.parts[q].children.push(PartChild::Part(i));
+            }
+        }
+    }
+    for (i, a) in m.art_meshes.iter().enumerate() {
+        if let Some(q) = parent(a.info.parent_part) {
+            t.parts[q].children.push(PartChild::ArtMesh(i));
+        }
+    }
+    for (i, d) in m.deformers.iter().enumerate() {
+        if let Some(q) = parent(d.info.parent_part) {
+            t.parts[q].children.push(PartChild::Deformer(i));
+        }
+    }
+    t
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -532,105 +574,6 @@ pub fn log_ui(ui: &mut egui::Ui, log: &mut Log, tokens: &Tokens) {
                     Level::Error => tokens.error,
                 };
                 ui.label(RichText::new(msg).color(color));
-            }
-        });
-}
-
-// ---------------------------------------------------------------- Model settings (viewer)
-
-/// Motions, expressions, pose, physics and hit areas of the active model.
-/// spec: 70-advanced/viewer.md §2
-pub fn model_settings_ui(ui: &mut egui::Ui, doc: &mut Document) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::CollapsingHeader::new(format!("Motions ({})", doc.motions.len()))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut doc.looping, "Loop");
-                        if icons::icon_button(ui, Icon::Stop, "Stop motion").clicked() {
-                            doc.motion_player.stop();
-                        }
-                    });
-                    let mut play = None;
-                    let mut last_group = None;
-                    for (i, m) in doc.motions.iter().enumerate() {
-                        if last_group != Some(&m.group) {
-                            ui.label(RichText::new(&m.group).strong());
-                            last_group = Some(&m.group);
-                        }
-                        ui.horizontal(|ui| {
-                            if icons::icon_button(ui, Icon::Play, "Play motion").clicked() {
-                                play = Some(i);
-                            }
-                            ui.label(&m.file).on_hover_text(format!(
-                                "{:.2} s, {} curves",
-                                m.motion.duration,
-                                m.motion.curves.len()
-                            ));
-                        });
-                    }
-                    if let Some(i) = play {
-                        doc.play_motion(i);
-                    }
-                    if doc.motions.is_empty() {
-                        ui.weak("No motions (open a model3.json that lists motions).");
-                    }
-                });
-            egui::CollapsingHeader::new(format!("Expressions ({})", doc.expressions.len()))
-                .default_open(true)
-                .show(ui, |ui| {
-                    let mut apply = None;
-                    for (i, e) in doc.expressions.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            if icons::icon_button(ui, Icon::Play, "Apply expression").clicked() {
-                                apply = Some(i);
-                            }
-                            ui.label(&e.name).on_hover_text(&e.file);
-                        });
-                    }
-                    if let Some(i) = apply {
-                        doc.play_expression(i);
-                    }
-                    if !doc.expressions.is_empty() && ui.button("Reset expression").clicked() {
-                        let now = doc.time;
-                        doc.expression_player.stop(now);
-                    }
-                });
-            if let Some(pose) = &doc.pose {
-                egui::CollapsingHeader::new("Pose").show(ui, |ui| {
-                    for (gi, g) in pose.groups.iter().enumerate() {
-                        let ids: Vec<&str> = g.iter().map(|n| n.id.as_str()).collect();
-                        ui.label(format!("Group {}: {}", gi + 1, ids.join(" / ")));
-                    }
-                });
-            }
-            egui::CollapsingHeader::new(format!("Physics ({})", doc.model.physics.settings.len()))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut doc.physics_enabled, "Enable physics");
-                        if ui.button("Reset").clicked() {
-                            doc.sim.reset(&doc.model.physics);
-                        }
-                    });
-                    for s in &doc.model.physics.settings {
-                        ui.label(format!(
-                            "{}  ({} in, {} out, {} pendulums)",
-                            s.name,
-                            s.inputs.len(),
-                            s.outputs.len(),
-                            s.vertices.len()
-                        ));
-                    }
-                });
-            if !doc.hit_areas.is_empty() {
-                egui::CollapsingHeader::new("Hit areas").show(ui, |ui| {
-                    for (id, name) in &doc.hit_areas {
-                        ui.label(format!("{name} — {id}"));
-                    }
-                });
             }
         });
 }

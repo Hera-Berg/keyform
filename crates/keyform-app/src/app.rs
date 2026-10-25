@@ -75,6 +75,7 @@ pub struct Slot {
 
 #[derive(Default)]
 pub struct PaletteState {
+    pub settings: crate::viewer_settings::SettingsState,
     pub parts_filter: String,
     pub param_filter: String,
     pub show_deformers: bool,
@@ -103,6 +104,8 @@ pub struct KeyformApp {
     last_time: Option<f64>,
     /// Parameter values given on the command line, applied after opening.
     pub initial_values: Vec<(String, f32)>,
+    /// Motion to start on the first document (`--play N`).
+    pub initial_motion: Option<usize>,
 }
 
 const RECENT_KEY: &str = "keyform.recent_files";
@@ -136,6 +139,7 @@ impl KeyformApp {
             frames: 0,
             last_time: None,
             initial_values: Vec::new(),
+            initial_motion: None,
         };
         match cjk {
             Some(f) => app.log.info(format!("CJK font: {f}")),
@@ -300,6 +304,20 @@ impl KeyformApp {
                     }
                 }
                 ui.separator();
+                let can_save = self
+                    .active
+                    .and_then(|i| self.slots.get(i))
+                    .is_some_and(|s| s.doc.can_save_settings());
+                if ui
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new("Save model3.json").shortcut_text("Ctrl+S"),
+                    )
+                    .clicked()
+                {
+                    self.save_active();
+                }
+                ui.separator();
                 if ui
                     .add(egui::Button::new("Exit").shortcut_text("Alt+F4"))
                     .clicked()
@@ -447,7 +465,25 @@ impl KeyformApp {
         });
     }
 
+    /// The viewer binds Save to writing model3.json (shortcuts.md).
+    fn save_active(&mut self) {
+        if let Some(i) = self.active {
+            if let Some(s) = self.slots.get_mut(i) {
+                crate::viewer_settings::save(&mut s.doc, &mut self.log);
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        let save = ctx.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
+                egui::Modifiers::COMMAND,
+                egui::Key::S,
+            ))
+        });
+        if save {
+            self.save_active();
+        }
         let (open, close) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&egui::KeyboardShortcut::new(
@@ -640,12 +676,23 @@ impl TabViewer for Viewer<'_> {
                     *self.active = Some(i);
                 }
             }
-            Tab::ModelSettings => match self.active_doc() {
-                Some(d) => palettes::model_settings_ui(ui, d),
-                None => {
-                    ui.weak("No model");
+            Tab::ModelSettings => {
+                let doc = self
+                    .active
+                    .and_then(|i| self.slots.get_mut(i))
+                    .map(|s| &mut s.doc);
+                match doc {
+                    Some(d) => crate::viewer_settings::settings_ui(
+                        ui,
+                        d,
+                        &mut self.palettes.settings,
+                        self.log,
+                    ),
+                    None => {
+                        ui.weak("No model");
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -683,6 +730,10 @@ impl eframe::App for KeyformApp {
                     }
                 }
             }
+        }
+
+        if let (Some(n), Some(s)) = (self.initial_motion.take(), self.slots.first_mut()) {
+            s.doc.play_motion(n);
         }
 
         // Playback clock.

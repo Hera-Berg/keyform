@@ -26,27 +26,124 @@ pub fn to_json_string(v: &Value) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// File references found in a model3.json (paths relative to its folder).
+/// A motion entry of model3.json (viewer.md §1.3).
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct MotionRef {
+    pub file: String,
+    pub sound: Option<String>,
+    pub motion_sync: Option<String>,
+    /// Seconds; `None` = not overridden.
+    pub fade_in: Option<f32>,
+    pub fade_out: Option<f32>,
+}
+
+/// A parameter (or part) group of model3.json, e.g. EyeBlink / LipSync.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Model3Group {
+    pub target: String,
+    pub name: String,
+    pub ids: Vec<String>,
+}
+
+/// model3.json. The parsed document is kept, so saving preserves unknown
+/// members and the original key order; typed fields are written back into
+/// place, new keys in the order of runtime-json.md §2.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Model3 {
     pub moc: String,
     pub textures: Vec<String>,
     pub physics: Option<String>,
+    pub user_data: Option<String>,
     pub pose: Option<String>,
     pub display_info: Option<String>,
-    pub user_data: Option<String>,
-    pub expressions: Vec<(String, String)>,
-    pub motions: Vec<(String, Vec<String>)>,
-    pub groups: Vec<(String, Vec<String>)>,
-    pub hit_areas: Vec<(String, String)>,
+    pub motion_sync: Option<String>,
+    /// (name, file); `None` = member absent.
+    pub expressions: Option<Vec<(String, String)>>,
+    /// Groups in file order.
+    pub motions: Option<Vec<(String, Vec<MotionRef>)>>,
+    pub groups: Option<Vec<Model3Group>>,
+    /// (id, name).
+    pub hit_areas: Option<Vec<(String, String)>>,
+    raw: Value,
+    trailing_newline: bool,
+}
+
+/// Canonical member order (runtime-json.md §2).
+const FILE_REF_ORDER: [&str; 10] = [
+    "Moc",
+    "Textures",
+    "Physics",
+    "UserData",
+    "Pose",
+    "DisplayInfo",
+    "MotionSync",
+    "TrackCursorInfo",
+    "Expressions",
+    "Motions",
+];
+const ROOT_ORDER: [&str; 5] = ["Version", "FileReferences", "Groups", "HitAreas", "Layout"];
+
+/// Sets or removes `key`, keeping its position if present; a new key goes
+/// before the first existing key that follows it in `order`.
+fn set_ordered(map: &mut Map<String, Value>, key: &str, value: Option<Value>, order: &[&str]) {
+    match value {
+        None => {
+            map.shift_remove(key);
+        }
+        Some(v) if map.contains_key(key) => {
+            map.insert(key.to_owned(), v);
+        }
+        Some(v) => {
+            let rank = |k: &str| order.iter().position(|o| *o == k).unwrap_or(usize::MAX);
+            let r = rank(key);
+            let mut out = Map::new();
+            let mut placed = false;
+            for (k, old) in std::mem::take(map) {
+                if !placed && rank(&k) > r && rank(&k) != usize::MAX {
+                    out.insert(key.to_owned(), v.clone());
+                    placed = true;
+                }
+                out.insert(k, old);
+            }
+            if !placed {
+                out.insert(key.to_owned(), v);
+            }
+            *map = out;
+        }
+    }
+}
+
+fn fade_value(x: f32) -> Value {
+    serde_json::Number::from_f64((f64::from(x) * 1000.0).round() / 1000.0)
+        .map_or(Value::Null, Value::Number)
 }
 
 impl Model3 {
-    /// Parses a model3.json leniently (unknown members ignored).
+    /// A new model3.json for `moc` with `textures`.
+    pub fn new(moc: &str, textures: Vec<String>) -> Self {
+        Self {
+            moc: moc.to_owned(),
+            textures,
+            physics: None,
+            user_data: None,
+            pose: None,
+            display_info: None,
+            motion_sync: None,
+            expressions: None,
+            motions: None,
+            groups: None,
+            hit_areas: None,
+            raw: json!({ "Version": 3 }),
+            trailing_newline: false,
+        }
+    }
+
+    /// Parses a model3.json leniently (unknown members are kept).
     pub fn parse(text: &str) -> Result<Self> {
         let v: Value = serde_json::from_str(text)
             .map_err(|e| FormatError::Invalid(format!("model3.json: {e}")))?;
         let s = |v: &Value| v.as_str().map(str::to_owned);
+        let f = |v: &Value| v.as_f64().filter(|x| x.is_finite()).map(|x| x as f32);
         let fr = &v["FileReferences"];
         let moc = s(&fr["Moc"])
             .ok_or_else(|| FormatError::Invalid("model3.json lacks FileReferences.Moc".into()))?;
@@ -59,49 +156,190 @@ impl Model3 {
             moc,
             textures: list(&fr["Textures"]),
             physics: s(&fr["Physics"]),
+            user_data: s(&fr["UserData"]),
             pose: s(&fr["Pose"]),
             display_info: s(&fr["DisplayInfo"]),
-            user_data: s(&fr["UserData"]),
-            expressions: fr["Expressions"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|e| Some((s(&e["Name"])?, s(&e["File"])?)))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            motions: fr["Motions"]
-                .as_object()
-                .map(|o| {
-                    o.iter()
-                        .map(|(k, g)| {
-                            (
-                                k.clone(),
-                                g.as_array()
-                                    .map(|a| a.iter().filter_map(|m| s(&m["File"])).collect())
-                                    .unwrap_or_default(),
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            groups: v["Groups"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|g| Some((s(&g["Name"])?, list(&g["Ids"]))))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            hit_areas: v["HitAreas"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|h| Some((s(&h["Id"])?, s(&h["Name"]).unwrap_or_default())))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            motion_sync: s(&fr["MotionSync"]),
+            expressions: fr["Expressions"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|e| Some((s(&e["Name"]).unwrap_or_default(), s(&e["File"])?)))
+                    .collect()
+            }),
+            motions: fr["Motions"].as_object().map(|o| {
+                o.iter()
+                    .map(|(k, g)| {
+                        let refs = g
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|m| {
+                                        Some(MotionRef {
+                                            file: s(&m["File"])?,
+                                            sound: s(&m["Sound"]),
+                                            motion_sync: s(&m["MotionSync"]),
+                                            fade_in: f(&m["FadeInTime"]),
+                                            fade_out: f(&m["FadeOutTime"]),
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (k.clone(), refs)
+                    })
+                    .collect()
+            }),
+            groups: v["Groups"].as_array().map(|a| {
+                a.iter()
+                    .map(|g| Model3Group {
+                        target: s(&g["Target"]).unwrap_or_else(|| "Parameter".into()),
+                        name: s(&g["Name"]).unwrap_or_default(),
+                        ids: list(&g["Ids"]),
+                    })
+                    .collect()
+            }),
+            hit_areas: v["HitAreas"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|h| Some((s(&h["Id"])?, s(&h["Name"]).unwrap_or_default())))
+                    .collect()
+            }),
+            trailing_newline: text.ends_with('\n'),
+            raw: v,
         })
+    }
+
+    /// Serializes, preserving members this type doesn't model.
+    pub fn to_json(&self) -> Value {
+        let mut root = self.raw.as_object().cloned().unwrap_or_default();
+        let mut fr = root
+            .get("FileReferences")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let str_opt = |v: &Option<String>| v.as_ref().map(|x| json!(x));
+        set_ordered(&mut fr, "Moc", Some(json!(self.moc)), &FILE_REF_ORDER);
+        set_ordered(
+            &mut fr,
+            "Textures",
+            Some(json!(self.textures)),
+            &FILE_REF_ORDER,
+        );
+        set_ordered(&mut fr, "Physics", str_opt(&self.physics), &FILE_REF_ORDER);
+        set_ordered(
+            &mut fr,
+            "UserData",
+            str_opt(&self.user_data),
+            &FILE_REF_ORDER,
+        );
+        set_ordered(&mut fr, "Pose", str_opt(&self.pose), &FILE_REF_ORDER);
+        set_ordered(
+            &mut fr,
+            "DisplayInfo",
+            str_opt(&self.display_info),
+            &FILE_REF_ORDER,
+        );
+        set_ordered(
+            &mut fr,
+            "MotionSync",
+            str_opt(&self.motion_sync),
+            &FILE_REF_ORDER,
+        );
+        set_ordered(
+            &mut fr,
+            "Expressions",
+            self.expressions.as_ref().map(|e| {
+                Value::Array(
+                    e.iter()
+                        .map(|(n, f)| json!({ "Name": n, "File": f }))
+                        .collect(),
+                )
+            }),
+            &FILE_REF_ORDER,
+        );
+        let motions = self.motions.as_ref().map(|groups| {
+            let old = fr
+                .get("Motions")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut out = Map::new();
+            for (g, refs) in groups {
+                let old_list = old.get(g).and_then(Value::as_array);
+                let arr = refs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| {
+                        // Keep members of the existing entry we don't model.
+                        let mut o = old_list
+                            .and_then(|l| l.get(i))
+                            .and_then(Value::as_object)
+                            .filter(|o| {
+                                o.get("File").and_then(Value::as_str) == Some(r.file.as_str())
+                            })
+                            .cloned()
+                            .unwrap_or_default();
+                        let order = ["File", "Sound", "MotionSync", "FadeInTime", "FadeOutTime"];
+                        set_ordered(&mut o, "File", Some(json!(r.file)), &order);
+                        set_ordered(&mut o, "Sound", r.sound.as_ref().map(|x| json!(x)), &order);
+                        set_ordered(
+                            &mut o,
+                            "MotionSync",
+                            r.motion_sync.as_ref().map(|x| json!(x)),
+                            &order,
+                        );
+                        set_ordered(&mut o, "FadeInTime", r.fade_in.map(fade_value), &order);
+                        set_ordered(&mut o, "FadeOutTime", r.fade_out.map(fade_value), &order);
+                        Value::Object(o)
+                    })
+                    .collect();
+                out.insert(g.clone(), Value::Array(arr));
+            }
+            Value::Object(out)
+        });
+        set_ordered(&mut fr, "Motions", motions, &FILE_REF_ORDER);
+        set_ordered(
+            &mut root,
+            "FileReferences",
+            Some(Value::Object(fr)),
+            &ROOT_ORDER,
+        );
+        set_ordered(
+            &mut root,
+            "Groups",
+            self.groups.as_ref().map(|g| {
+                Value::Array(
+                    g.iter()
+                        .map(|g| json!({ "Target": g.target, "Name": g.name, "Ids": g.ids }))
+                        .collect(),
+                )
+            }),
+            &ROOT_ORDER,
+        );
+        set_ordered(
+            &mut root,
+            "HitAreas",
+            self.hit_areas.as_ref().map(|h| {
+                Value::Array(
+                    h.iter()
+                        .map(|(i, n)| json!({ "Id": i, "Name": n }))
+                        .collect(),
+                )
+            }),
+            &ROOT_ORDER,
+        );
+        if !root.contains_key("Version") {
+            set_ordered(&mut root, "Version", Some(json!(3)), &ROOT_ORDER);
+        }
+        Value::Object(root)
+    }
+
+    /// Text as written by [`Self::to_json`], keeping the source file's
+    /// trailing-newline convention.
+    pub fn to_string_pretty(&self) -> String {
+        let mut s = to_json_string(&self.to_json());
+        if self.trailing_newline {
+            s.push('\n');
+        }
+        s
     }
 }
 
@@ -213,6 +451,100 @@ pub fn cdi3_json(m: &Model, params: &[usize], parts: &[usize]) -> Value {
         root.insert("CombinedParameters".into(), Value::Array(combined));
     }
     Value::Object(root)
+}
+
+/// Applies a cdi3.json (§4) to a model imported from moc3: parameter names
+/// and groups (the Parameter palette tree), part names. Unknown IDs are
+/// ignored. Returns how many entries were applied.
+pub fn apply_display_info(m: &mut Model, text: &str) -> Result<usize> {
+    use keyform_model::ParameterGroup;
+    let v: Value =
+        serde_json::from_str(text).map_err(|e| FormatError::Invalid(format!("cdi3.json: {e}")))?;
+    let s = |v: &Value| v.as_str().map(str::to_owned);
+    let mut applied = 0;
+    // Groups first, so parameters can be placed into them.
+    let mut group_index = std::collections::HashMap::new();
+    let groups: Vec<(String, String, String)> = v["ParameterGroups"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|g| {
+                    Some((
+                        s(&g["Id"])?,
+                        s(&g["GroupId"]).unwrap_or_default(),
+                        s(&g["Name"]).unwrap_or_default(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    m.parameter_groups.clear();
+    for (id, _, name) in &groups {
+        group_index.insert(id.clone(), m.parameter_groups.len());
+        m.parameter_groups.push(ParameterGroup {
+            guid: String::new(),
+            id: id.clone(),
+            name: name.clone(),
+            parent: None,
+            children: Vec::new(),
+        });
+    }
+    let mut root = Vec::new();
+    for (i, (_, parent, _)) in groups.iter().enumerate() {
+        match group_index.get(parent) {
+            Some(&p) if p != i => {
+                m.parameter_groups[i].parent = Some(p);
+                m.parameter_groups[p].children.push(ParamEntry::Group(i));
+            }
+            _ => root.push(ParamEntry::Group(i)),
+        }
+    }
+    let pindex: std::collections::HashMap<String, usize> = m
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.clone(), i))
+        .collect();
+    let mut placed = vec![false; m.parameters.len()];
+    for p in v["Parameters"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let Some(&pi) = s(&p["Id"]).and_then(|id| pindex.get(&id)) else {
+            continue;
+        };
+        if placed[pi] {
+            continue;
+        }
+        placed[pi] = true;
+        if let Some(n) = s(&p["Name"]).filter(|n| !n.is_empty()) {
+            m.parameters[pi].name = n;
+        }
+        match s(&p["GroupId"]).and_then(|g| group_index.get(&g).copied()) {
+            Some(g) => {
+                m.parameters[pi].group = Some(g);
+                m.parameter_groups[g]
+                    .children
+                    .push(ParamEntry::Parameter(pi));
+            }
+            None => root.push(ParamEntry::Parameter(pi)),
+        }
+        applied += 1;
+    }
+    // Parameters cdi3 doesn't mention stay at the top level.
+    root.extend(
+        (0..m.parameters.len())
+            .filter(|&i| !placed[i])
+            .map(ParamEntry::Parameter),
+    );
+    m.root_parameter_entries = root;
+    for part in v["Parts"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let (Some(id), Some(name)) = (s(&part["Id"]), s(&part["Name"])) else {
+            continue;
+        };
+        if let Some(p) = m.parts.iter_mut().find(|p| p.info.id == id) {
+            p.info.name = name;
+            applied += 1;
+        }
+    }
+    Ok(applied)
 }
 
 /// userdata3.json (§3), or `None` when no exported art mesh has user data.
@@ -346,8 +678,16 @@ mod tests {
     fn model3_parse_is_lenient() {
         let m = Model3::parse(r#"{"Version":3,"FileReferences":{"Moc":"x.moc3","Textures":["t.png",5],"Motions":{"Idle":[{"File":"m.motion3.json"}]}},"Groups":[{"Name":"EyeBlink","Ids":["A"]}]}"#).unwrap();
         assert_eq!(m.textures, vec!["t.png"]);
-        assert_eq!(m.motions[0].1, vec!["m.motion3.json"]);
+        assert_eq!(m.motions.as_ref().unwrap()[0].1[0].file, "m.motion3.json");
         assert!(Model3::parse("{}").is_err());
+        // Edits keep unknown members and insert new keys in canonical order.
+        let mut m = Model3::parse(r#"{"Version":3,"FileReferences":{"Moc":"x.moc3","Textures":[],"Motions":{}},"Custom":1}"#).unwrap();
+        m.pose = Some("x.pose3.json".into());
+        m.physics = Some("x.physics3.json".into());
+        let v = m.to_json();
+        let keys: Vec<&String> = v["FileReferences"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["Moc", "Textures", "Physics", "Pose", "Motions"]);
+        assert_eq!(v["Custom"], 1);
         assert!(Model3::parse("not json").is_err());
     }
 }

@@ -8,7 +8,7 @@ use keyform_anim::{Expression, ExpressionPlayer, Motion, MotionPlayer, Pose, Pos
 use keyform_eval::{EvalOptions, Evaluator, Frame, Overrides};
 use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::moc3::{moc3_to_model, Moc3Raw};
-use keyform_formats::runtime_json::Model3;
+use keyform_formats::runtime_json::{Model3, Model3Group, MotionRef};
 use keyform_model::{Model, Texture};
 use keyform_physics::PhysicsSim;
 
@@ -25,14 +25,20 @@ pub enum Selection {
 
 pub struct MotionEntry {
     pub group: String,
-    pub file: String,
-    pub motion: Arc<Motion>,
+    /// The model3.json entry (file, sound, fades).
+    pub reference: MotionRef,
+    /// `None` when the file could not be loaded (kept so saving keeps it).
+    pub motion: Option<Arc<Motion>>,
 }
 
 pub struct ExpressionEntry {
     pub name: String,
     pub file: String,
-    pub expression: Arc<Expression>,
+    pub expression: Expression,
+    /// Edited since loading: written on save.
+    pub dirty: bool,
+    /// The file could not be loaded: never overwritten.
+    pub broken: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,6 +91,34 @@ pub struct Document {
     pub view: ViewState,
     pub selection: Option<Selection>,
     pub hit_areas: Vec<(String, String)>,
+    /// Parts palette order comes from part child lists (projects) or from
+    /// parent links (runtime models, which store no palette order).
+    pub palette_from_children: bool,
+}
+
+pub fn load_motion(dir: &Path, file: &str, log: &mut Log) -> Option<Arc<Motion>> {
+    match std::fs::read_to_string(dir.join(file))
+        .map_err(|e| e.to_string())
+        .and_then(|t| Motion::parse(&t).map_err(|e| e.to_string()))
+    {
+        Ok(m) => Some(Arc::new(m)),
+        Err(e) => {
+            log.error(format!("{file}: {e}"));
+            None
+        }
+    }
+}
+
+/// `path` relative to `dir` with forward slashes (model3.json references),
+/// or `None` if it isn't inside `dir`.
+pub fn relative_to(dir: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(dir).ok()?;
+    Some(
+        rel.components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -174,31 +208,41 @@ impl Document {
                     Err(e) => log.error(format!("{ph}: {e}")),
                 }
             }
+            if let Some(di) = &m3.display_info {
+                match std::fs::read_to_string(dir.join(di))
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| {
+                        keyform_formats::runtime_json::apply_display_info(&mut model, &t)
+                            .map_err(|e| e.to_string())
+                    }) {
+                    Ok(n) => log.info(format!("{di}: {n} display names")),
+                    Err(e) => log.warn(format!("{di}: {e}")),
+                }
+            }
             // Effect groups from model3.json (runtime-json.md §2).
-            for (gname, ids) in &m3.groups {
-                let list: Vec<usize> = ids.iter().filter_map(|i| pindex.get(i).copied()).collect();
-                match gname.as_str() {
+            for g in m3.groups.iter().flatten() {
+                let list: Vec<usize> = g
+                    .ids
+                    .iter()
+                    .filter_map(|i| pindex.get(i).copied())
+                    .collect();
+                match g.name.as_str() {
                     "EyeBlink" => model.eye_blink_parameters = list,
                     "LipSync" => model.lip_sync_parameters = list,
                     _ => {}
                 }
             }
-            for (group, files) in &m3.motions {
-                for f in files {
-                    match std::fs::read_to_string(dir.join(f))
-                        .map_err(|e| e.to_string())
-                        .and_then(|t| Motion::parse(&t).map_err(|e| e.to_string()))
-                    {
-                        Ok(m) => motions.push(MotionEntry {
-                            group: group.clone(),
-                            file: f.clone(),
-                            motion: Arc::new(m),
-                        }),
-                        Err(e) => log.error(format!("{f}: {e}")),
-                    }
+            for (group, refs) in m3.motions.iter().flatten() {
+                for r in refs {
+                    let motion = load_motion(&dir, &r.file, log);
+                    motions.push(MotionEntry {
+                        group: group.clone(),
+                        reference: r.clone(),
+                        motion,
+                    });
                 }
             }
-            for (ename, f) in &m3.expressions {
+            for (ename, f) in m3.expressions.iter().flatten() {
                 match std::fs::read_to_string(dir.join(f))
                     .map_err(|e| e.to_string())
                     .and_then(|t| Expression::parse(&t).map_err(|e| e.to_string()))
@@ -206,9 +250,20 @@ impl Document {
                     Ok(e) => expressions.push(ExpressionEntry {
                         name: ename.clone(),
                         file: f.clone(),
-                        expression: Arc::new(e),
+                        expression: e,
+                        dirty: false,
+                        broken: false,
                     }),
-                    Err(e) => log.error(format!("{f}: {e}")),
+                    Err(e) => {
+                        log.error(format!("{f}: {e}"));
+                        expressions.push(ExpressionEntry {
+                            name: ename.clone(),
+                            file: f.clone(),
+                            expression: Expression::default(),
+                            dirty: false,
+                            broken: true,
+                        });
+                    }
                 }
             }
             if let Some(p) = &m3.pose {
@@ -220,7 +275,7 @@ impl Document {
                     Err(e) => log.error(format!("{p}: {e}")),
                 }
             }
-            hit_areas = m3.hit_areas.clone();
+            hit_areas = m3.hit_areas.clone().unwrap_or_default();
             source = Some(Source::Runtime {
                 model3: Some(Box::new(m3)),
                 dir: dir.clone(),
@@ -255,6 +310,7 @@ impl Document {
             motions.len(),
             expressions.len()
         ));
+        let palette_from_children = matches!(source, Source::Project(_));
         Ok(Self {
             path: path.to_path_buf(),
             title: name,
@@ -283,6 +339,7 @@ impl Document {
             },
             selection: None,
             hit_areas,
+            palette_from_children,
             model,
         })
     }
@@ -293,17 +350,152 @@ impl Document {
     }
 
     pub fn play_motion(&mut self, i: usize) {
-        if let Some(m) = self.motions.get(i) {
-            self.motion_player
-                .start(m.motion.clone(), self.time, self.looping);
+        if let Some(m) = self.motions.get(i).and_then(|m| m.motion.clone()) {
+            self.motion_player.start(m, self.time, self.looping);
         }
     }
 
     pub fn play_expression(&mut self, i: usize) {
         if let Some(e) = self.expressions.get(i) {
             self.expression_player
-                .start(e.expression.clone(), self.time);
+                .start(Arc::new(e.expression.clone()), self.time);
         }
+    }
+
+    /// Whether viewer settings can be saved (runtime models only).
+    pub fn can_save_settings(&self) -> bool {
+        matches!(self.source, Source::Runtime { .. })
+    }
+
+    /// Saves the viewer settings: model3.json (created next to a bare moc3
+    /// if missing), edited expressions, and the pose. Returns the files
+    /// written. spec: 70-advanced/viewer.md §1
+    pub fn save_settings(&mut self) -> Result<Vec<PathBuf>, String> {
+        let Source::Runtime { model3, dir } = &mut self.source else {
+            return Err("Viewer settings belong to runtime models (.model3.json / .moc3).".into());
+        };
+        let dir = dir.clone();
+        let mut written = Vec::new();
+        let write =
+            |path: PathBuf, text: String, written: &mut Vec<PathBuf>| -> Result<(), String> {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
+                std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+                written.push(path);
+                Ok(())
+            };
+        let stem = self
+            .title
+            .trim_end_matches(".model3.json")
+            .trim_end_matches(".moc3")
+            .to_owned();
+        let (m3_path, m3) = match model3 {
+            Some(m) => (self.path.clone(), m),
+            None => {
+                let moc = self.title.clone();
+                *model3 = Some(Box::new(Model3::new(&moc, Vec::new())));
+                let m = model3.as_mut().ok_or("internal")?;
+                (dir.join(format!("{stem}.model3.json")), m)
+            }
+        };
+
+        // Motions, grouped in order of first appearance.
+        let mut groups: Vec<(String, Vec<MotionRef>)> = Vec::new();
+        for e in &self.motions {
+            match groups.iter_mut().find(|(g, _)| *g == e.group) {
+                Some((_, refs)) => refs.push(e.reference.clone()),
+                None => groups.push((e.group.clone(), vec![e.reference.clone()])),
+            }
+        }
+        m3.motions = if groups.is_empty() && m3.motions.is_none() {
+            None
+        } else {
+            Some(groups)
+        };
+
+        // Expressions: write the edited ones.
+        for e in &mut self.expressions {
+            if e.dirty && !e.broken {
+                write(
+                    dir.join(&e.file),
+                    keyform_anim::json::to_string(&e.expression.to_json()),
+                    &mut written,
+                )?;
+                e.dirty = false;
+            }
+        }
+        let exps: Vec<(String, String)> = self
+            .expressions
+            .iter()
+            .map(|e| (e.name.clone(), e.file.clone()))
+            .collect();
+        m3.expressions = if exps.is_empty() && m3.expressions.is_none() {
+            None
+        } else {
+            Some(exps)
+        };
+
+        // Pose.
+        match &self.pose {
+            Some(p) if !p.groups.is_empty() => {
+                let file = m3
+                    .pose
+                    .clone()
+                    .unwrap_or_else(|| format!("{stem}.pose3.json"));
+                write(
+                    dir.join(&file),
+                    keyform_anim::json::to_string(&p.to_json()),
+                    &mut written,
+                )?;
+                m3.pose = Some(file);
+            }
+            _ => m3.pose = None,
+        }
+
+        // Hit areas and effect groups.
+        m3.hit_areas = if self.hit_areas.is_empty() && m3.hit_areas.is_none() {
+            None
+        } else {
+            Some(self.hit_areas.clone())
+        };
+        let ids = |list: &[usize]| -> Vec<String> {
+            list.iter()
+                .filter_map(|&p| self.model.parameters.get(p))
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        let mut g = m3.groups.clone().unwrap_or_default();
+        for (name, list) in [
+            ("EyeBlink", ids(&self.model.eye_blink_parameters)),
+            ("LipSync", ids(&self.model.lip_sync_parameters)),
+        ] {
+            match g.iter().position(|x| x.name == name) {
+                Some(i) if list.is_empty() => {
+                    g.remove(i);
+                }
+                Some(i) => g[i].ids = list,
+                None if !list.is_empty() => g.push(Model3Group {
+                    target: "Parameter".into(),
+                    name: name.into(),
+                    ids: list,
+                }),
+                None => {}
+            }
+        }
+        m3.groups = if g.is_empty() && m3.groups.is_none() {
+            None
+        } else {
+            Some(g)
+        };
+
+        write(m3_path.clone(), m3.to_string_pretty(), &mut written)?;
+        if self.path != m3_path {
+            // A bare moc3 now has a model3.json: further saves go there.
+            self.path = m3_path;
+        }
+        Ok(written)
     }
 
     /// Whether anything animates (the UI then repaints continuously).
@@ -364,5 +556,94 @@ impl Document {
         }
         let ev = Evaluator::new(&self.model);
         self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                copy_dir(&p, &to.join(e.file_name()));
+            } else {
+                std::fs::copy(&p, to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+
+    /// Saving viewer settings on a sample runtime folder (a scratch copy):
+    /// unchanged → identical model3.json; edits land in place.
+    #[test]
+    fn save_settings_roundtrip_and_edit() {
+        let Ok(dirs) = std::env::var("KEYFORM_SAMPLES") else {
+            return;
+        };
+        let Some(model3) = std::env::split_paths(&dirs)
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().ends_with(".model3.json"))
+        else {
+            return;
+        };
+        let scratch =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-scratch/viewer-save");
+        let _ = std::fs::remove_dir_all(&scratch);
+        copy_dir(model3.parent().unwrap(), &scratch);
+        let path = scratch.join(model3.file_name().unwrap());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        doc.save_settings().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "unchanged save must not alter model3.json"
+        );
+
+        doc.hit_areas.push(("HitAreaTest".into(), "Test".into()));
+        if let Some(e) = doc.expressions.first_mut() {
+            e.expression.fade_in = Some(0.25);
+            e.dirty = true;
+        }
+        doc.live = doc.values.clone();
+        if let Some(v) = doc.live.first_mut() {
+            *v += 1.0;
+        }
+        let n = doc.expressions.len();
+        // "New from current values" equivalent.
+        doc.expressions.push(ExpressionEntry {
+            name: "New.exp3.json".into(),
+            file: "expressions/New.exp3.json".into(),
+            expression: Expression {
+                fade_in: None,
+                fade_out: None,
+                params: vec![],
+            },
+            dirty: true,
+            broken: false,
+        });
+        let written = doc.save_settings().unwrap();
+        assert!(written
+            .iter()
+            .any(|p| p.ends_with("expressions/New.exp3.json")));
+        let m3 = Model3::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(m3
+            .hit_areas
+            .unwrap()
+            .contains(&("HitAreaTest".into(), "Test".into())));
+        assert_eq!(m3.expressions.unwrap().len(), n + 1);
+        if n > 0 {
+            let first = &doc.expressions[0];
+            let e = Expression::parse(&std::fs::read_to_string(scratch.join(&first.file)).unwrap())
+                .unwrap();
+            assert_eq!(e.fade_in, Some(0.25));
+        }
+        // The edited model3.json reopens.
+        Document::open(&path, &mut log).unwrap();
     }
 }

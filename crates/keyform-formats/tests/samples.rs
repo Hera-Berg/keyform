@@ -200,3 +200,27 @@ fn texture_cleanup_matches_reference_pages() {
         }
     }
 }
+
+/// model3.json files written by the reference (any found under the sample
+/// directories, one level deep) must re-serialize byte for byte.
+#[test]
+fn model3_json_roundtrip_is_byte_exact() {
+    use keyform_formats::runtime_json::Model3;
+    let mut files = Vec::new();
+    for d in std::env::var("KEYFORM_SAMPLES")
+        .map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.path().to_string_lossy().ends_with(".model3.json") {
+                files.push(e.path());
+            }
+        }
+    }
+    for p in files {
+        let text = std::fs::read_to_string(&p).unwrap();
+        let m = Model3::parse(&text).unwrap();
+        assert_eq!(m.to_string_pretty(), text, "{p:?}");
+        eprintln!("{p:?}: model3.json byte-exact");
+    }
+}
