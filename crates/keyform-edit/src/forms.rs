@@ -172,6 +172,7 @@ mod tests {
 
     fn mesh_model() -> Model {
         let a = ArtMesh {
+            clip_missing: false,
             info: ObjectInfo::new("A"),
             target: None,
             positions: vec![0.0, 0.0, 1.0, 0.0],

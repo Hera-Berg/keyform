@@ -90,6 +90,7 @@ mod tests {
 
     fn mesh(id: &str, d: f32) -> (ArtMesh, MeshState) {
         let a = ArtMesh {
+            clip_missing: false,
             info: ObjectInfo::new(id),
             target: None,
             positions: vec![],

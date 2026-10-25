@@ -178,9 +178,24 @@ fn roundtrip(input: &Path, output: &Path) -> R {
     Ok(())
 }
 
+/// Prints the mask check, which the reference shows on export (dialogs.md §21).
+fn print_mask_issues(m: &Model) {
+    let issues = keyform_edit::mask_issues(m);
+    for list in issues.describe(m) {
+        println!("mask issue: {}", list.message);
+        for (item, lines) in list.items {
+            println!("  {item}");
+            for l in lines {
+                println!("    {l}");
+            }
+        }
+    }
+}
+
 fn export(input: &Path, output: &Path, version: Option<u8>) -> R {
     use keyform_formats::moc3::{export_moc3, ExportOptions};
     let doc = load(input)?;
+    print_mask_issues(&doc.model);
     let mut opts = ExportOptions::for_model(&doc.model);
     if let Some(v) = version {
         opts.version = v;

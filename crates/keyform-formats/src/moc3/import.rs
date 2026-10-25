@@ -496,6 +496,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
         }
         let nvu = nv as usize;
         m.art_meshes.push(std::sync::Arc::new(ArtMesh {
+            clip_missing: false,
             info,
             target,
             positions: keyforms

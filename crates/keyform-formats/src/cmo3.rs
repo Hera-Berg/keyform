@@ -842,8 +842,9 @@ impl<'a, 'd> Loader<'a, 'd> {
             };
             children.push(child.unwrap_or(PartChild::Other));
         }
-        let clip = self.clip_list(o)?;
+        let (clip, clip_missing) = self.clip_list(o)?;
         Ok(Part {
+            clip_missing,
             info,
             children,
             draw_order_group: o.bool("enableDrawOrderGroup")?.unwrap_or(false),
@@ -865,11 +866,17 @@ impl<'a, 'd> Loader<'a, 'd> {
         })
     }
 
-    fn clip_list(&self, o: &O<'a, 'd>) -> Result<Vec<MeshIndex>> {
-        Ok(o.list("clipGuidList")?
-            .iter()
-            .filter_map(|c| c.attr("uuid").and_then(|u| self.idx.meshes.get(u).copied()))
-            .collect())
+    /// Clip masks, and whether the list names drawables that don't exist.
+    fn clip_list(&self, o: &O<'a, 'd>) -> Result<(Vec<MeshIndex>, bool)> {
+        let mut found = Vec::new();
+        let mut missing = false;
+        for c in o.list("clipGuidList")? {
+            match c.attr("uuid").and_then(|u| self.idx.meshes.get(u).copied()) {
+                Some(i) => found.push(i),
+                None => missing = true,
+            }
+        }
+        Ok((found, missing))
     }
 
     fn load_deformer(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<Deformer> {
@@ -1026,8 +1033,10 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
         let _ = m;
+        let (clip, clip_missing) = self.clip_list(o)?;
         Ok(ArtMesh {
-            clip: self.clip_list(o)?,
+            clip,
+            clip_missing,
             invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
             info,
             target,

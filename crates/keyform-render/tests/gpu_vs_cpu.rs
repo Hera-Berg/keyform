@@ -36,6 +36,7 @@ fn quad(id: &str, x: f32, y: f32, s: f32, draw_order: f32, mirrored: bool) -> Ar
         positions = vec![x + s, y, x, y, x, y + s, x + s, y + s];
     }
     ArtMesh {
+        clip_missing: false,
         info: ObjectInfo::new(id),
         target: None,
         positions: positions.clone(),

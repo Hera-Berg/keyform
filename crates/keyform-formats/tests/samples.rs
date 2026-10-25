@@ -360,3 +360,42 @@ fn cmo3_save_after_key_edits() {
         eprintln!("{path:?}: key edits saved and reloaded");
     }
 }
+
+/// The mask check on the samples, and on hiyori with Angle X widened (the
+/// reference listed Warp10 and Warp11 for that edit).
+#[test]
+fn mask_check_on_samples() {
+    use keyform_edit::{mask_issues, ObjectRef};
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let i = mask_issues(&doc.model);
+        eprintln!(
+            "{path:?}: deleted {}, hidden {}, outside {}",
+            i.deleted.len(),
+            i.hidden.len(),
+            i.outside.len()
+        );
+        let m = &mut doc.model;
+        let Some(p) = m.parameters.iter().position(|p| p.id == "ParamAngleX") else {
+            continue;
+        };
+        std::sync::Arc::make_mut(&mut m.parameters[p]).max += 10.0;
+        let after = mask_issues(m);
+        let names: Vec<String> = after
+            .outside
+            .iter()
+            .filter(|(_, b)| b.iter().any(|b| b.parameter == p && b.max))
+            .map(|(o, _)| match o {
+                ObjectRef::Deformer(d) => m.deformers[*d].info.id.clone(),
+                ObjectRef::ArtMesh(a) => m.art_meshes[*a].info.id.clone(),
+                ObjectRef::Part(x) => m.parts[*x].info.id.clone(),
+                ObjectRef::Glue(g) => m.glues[*g].info.id.clone(),
+            })
+            .collect();
+        eprintln!("  Angle X max +10 → {names:?}");
+        if path.to_string_lossy().contains("hiyori_pro") {
+            assert!(names.contains(&"Warp10".to_owned()) && names.contains(&"Warp11".to_owned()));
+        }
+    }
+}

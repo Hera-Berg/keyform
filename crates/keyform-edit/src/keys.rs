@@ -264,6 +264,7 @@ mod tests {
             ..ArtMeshForm::default()
         };
         let mut a = ArtMesh {
+            clip_missing: false,
             info: ObjectInfo::new("A"),
             target: None,
             positions: vec![0.0, 0.0],

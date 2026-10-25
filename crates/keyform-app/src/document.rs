@@ -74,7 +74,7 @@ pub struct PlaybackOptions {
     pub idle_motion: bool,
     pub track_cursor: bool,
     pub breath: bool,
-    /// "Parameter repeat". TODO(Q-0013): behaviour not specified; stored only.
+    /// Repeat parameters wrap instead of clamping (viewer.md §3.8).
     pub parameter_repeat: bool,
     /// Restricted Bezier evaluation for every motion.
     pub old_playback: bool,
@@ -197,6 +197,9 @@ pub struct Document {
     drag: Option<Drag>,
     /// A message for the log from a canvas tool (taken by the app).
     pub notice: Option<String>,
+    /// Result of the mask check, recomputed when the model changes
+    /// (dialogs.md §21).
+    pub mask_issues: keyform_edit::MaskIssues,
     /// History revision at the last save (the unmodified state).
     saved_revision: u64,
 }
@@ -475,6 +478,7 @@ impl Document {
             saved_revision: 0,
             drag: None,
             notice: None,
+            mask_issues: keyform_edit::mask_issues(&model),
             mode: if palette_from_children {
                 Mode::Modeling
             } else {
@@ -690,6 +694,29 @@ impl Document {
         }
         self.history
             .commit("Move", StepKind::Real, self.edit_state(), false);
+        self.mask_issues = keyform_edit::mask_issues(&self.model);
+    }
+
+    /// Exports the runtime file set (moc3, textures, physics3, cdi3,
+    /// model3) into `dir`. Returns the files written and warnings.
+    pub fn export_runtime(&self, dir: &Path) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+        use keyform_formats::moc3::ExportOptions;
+        use keyform_formats::runtime_json::{export_runtime, RuntimeExportOptions};
+        let name = self
+            .path
+            .file_stem()
+            .map_or("model".into(), |s| s.to_string_lossy().into_owned());
+        let ro = RuntimeExportOptions {
+            moc3: ExportOptions::for_model(&self.model),
+            export_physics: true,
+            extend_edge_color: self.model.export.extend_edge_color,
+            export_display_info: true,
+            export_user_data: true,
+        };
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let (files, rep) =
+            export_runtime(&self.model, &ro, dir, &name).map_err(|e| e.to_string())?;
+        Ok((files, rep.warnings))
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -740,6 +767,9 @@ impl Document {
 
     /// Rebuilds what is derived from the model after an edit, undo or redo.
     fn model_changed(&mut self) {
+        if self.drag.is_none() {
+            self.mask_issues = keyform_edit::mask_issues(&self.model);
+        }
         let m = &self.model;
         self.param_index = m
             .parameters
@@ -1024,6 +1054,10 @@ impl Document {
             return;
         }
         self.time += f64::from(dt);
+        // Parameter repeat (§3.8): repeat parameters wrap only when it is on.
+        for (r, p) in self.ranges.iter_mut().zip(&self.model.parameters) {
+            r.repeat = p.repeat && o.parameter_repeat;
+        }
         self.motion_player.force_restricted_beziers = o.old_playback;
         self.expression_player.old_fading = o.old_fading;
         if o.idle_motion && !self.motion_player.is_playing() {

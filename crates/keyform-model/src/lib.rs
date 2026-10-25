@@ -480,6 +480,9 @@ pub struct Part {
     pub offscreen: bool,
     pub clip: Vec<MeshIndex>,
     pub invert_clip: bool,
+    /// The stored clip list names drawables that no longer exist
+    /// (spec: 50-ui/dialogs.md §21 "deleted mask").
+    pub clip_missing: bool,
     pub color_composition: ColorComposition,
     pub alpha_composition: AlphaComposition,
     /// Editor default draw order (500 unless changed). spec: object-model.md §11
@@ -498,6 +501,7 @@ impl Part {
             offscreen: false,
             clip: Vec::new(),
             invert_clip: false,
+            clip_missing: false,
             color_composition: ColorComposition::Normal,
             alpha_composition: AlphaComposition::Over,
             default_order: 500,
@@ -558,6 +562,9 @@ pub struct ArtMesh {
     pub texture: Option<usize>,
     pub clip: Vec<MeshIndex>,
     pub invert_clip: bool,
+    /// The stored clip list names drawables that no longer exist
+    /// (spec: 50-ui/dialogs.md §21 "deleted mask").
+    pub clip_missing: bool,
     pub culling: bool,
     pub color_composition: ColorComposition,
     pub alpha_composition: AlphaComposition,

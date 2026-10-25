@@ -118,7 +118,36 @@ pub struct KeyformApp {
     window_title: String,
     /// Animation menu toggles (viewer.md §3.7), shared by all documents.
     playback: PlaybackOptions,
+    /// User settings (persisted).
+    settings: Settings,
+    /// The "Issues on Mask Settings" dialog is open.
+    mask_dialog: bool,
 }
+
+/// User settings. TODO: an Environment Settings dialog; for now the Show
+/// menu holds the switches.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Settings ▸ Notification ▸ "Always show warnings regarding masks".
+    pub mask_warnings: bool,
+    /// The mask dialog's "do not show again" (export time).
+    pub mask_dialog_suppressed: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            mask_warnings: true,
+            mask_dialog_suppressed: false,
+        }
+    }
+}
+
+const SETTINGS_KEY: &str = "keyform.settings";
+
+/// `targetVersionNo` of "SDK(N/A)/Latest Cubism" (cmo3.md §2): no mask hint.
+const TARGET_LATEST: i32 = 9_000_000;
 
 const RECENT_KEY: &str = "keyform.recent_files";
 const PLAYBACK_KEY: &str = "keyform.playback";
@@ -171,7 +200,13 @@ impl KeyformApp {
             .storage
             .and_then(|s| eframe::get_value::<PlaybackOptions>(s, PLAYBACK_KEY))
             .unwrap_or_default();
+        let settings = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Settings>(s, SETTINGS_KEY))
+            .unwrap_or_default();
         let mut app = Self {
+            settings,
+            mask_dialog: false,
             playback,
             dock,
             slots: Vec::new(),
@@ -449,6 +484,15 @@ impl KeyformApp {
                     self.save_as_active();
                 }
                 ui.separator();
+                ui.menu_button("Export For Runtime", |ui| {
+                    if ui
+                        .add_enabled(project, egui::Button::new("Export as moc3 file…"))
+                        .clicked()
+                    {
+                        self.export_runtime_active();
+                    }
+                });
+                ui.separator();
                 if ui
                     .add(egui::Button::new("Exit").shortcut_text("Alt+F4"))
                     .clicked()
@@ -494,6 +538,11 @@ impl KeyformApp {
                 }
             });
             ui.menu_button("Show", |ui| {
+                ui.checkbox(
+                    &mut self.settings.mask_warnings,
+                    "Always show warnings regarding masks",
+                );
+                ui.separator();
                 let has = self.active.is_some();
                 if ui
                     .add_enabled(has, egui::Button::new("Fit to View"))
@@ -591,11 +640,8 @@ impl KeyformApp {
         ui.checkbox(&mut o.track_cursor, "Track cursor")
             .on_hover_text("Drag over the view: left button = primary, right = secondary target");
         ui.checkbox(&mut o.breath, "Breath");
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut o.parameter_repeat, "Parameter repeat"),
-        )
-        .on_disabled_hover_text("Not implemented yet");
+        ui.checkbox(&mut o.parameter_repeat, "Parameter repeat")
+            .on_hover_text("Repeat parameters wrap around instead of stopping at min/max");
         ui.separator();
         if ui
             .checkbox(&mut o.old_playback, "Use old playback methods")
@@ -742,6 +788,94 @@ impl KeyformApp {
         }
     }
 
+    /// File ▸ Export For Runtime: writes the runtime set into a chosen
+    /// folder, then shows the mask check if it found problems (§21).
+    fn export_runtime_active(&mut self) {
+        let Some(s) = self.active.and_then(|i| self.slots.get(i)) else {
+            return;
+        };
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(dir) = s.doc.path.parent() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(dir) = dialog.pick_folder() else {
+            return;
+        };
+        match s.doc.export_runtime(&dir) {
+            Ok((files, warnings)) => {
+                for w in warnings {
+                    self.log.warn(w);
+                }
+                self.log.info(format!(
+                    "exported {} files to {}",
+                    files.len(),
+                    dir.display()
+                ));
+                if !s.doc.mask_issues.is_empty() && !self.settings.mask_dialog_suppressed {
+                    self.mask_dialog = true;
+                }
+            }
+            Err(e) => self.log.error(format!("export failed: {e}")),
+        }
+    }
+
+    /// The "Issues on Mask Settings" dialog. spec: 50-ui/dialogs.md §21
+    fn mask_dialog_ui(&mut self, ctx: &egui::Context) {
+        use keyform_edit::checks::{MASK_CONSEQUENCES, MASK_INTRO, MASK_MANUAL, MASK_TITLE};
+        if !self.mask_dialog {
+            return;
+        }
+        let Some(doc) = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc) else {
+            self.mask_dialog = false;
+            return;
+        };
+        let lists = doc.mask_issues.describe(&doc.model);
+        let mut open = true;
+        let mut ok = false;
+        egui::Window::new(MASK_TITLE)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                for t in MASK_INTRO {
+                    ui.label(t);
+                }
+                for t in MASK_CONSEQUENCES {
+                    ui.label(format!("  • {t}"));
+                }
+                ui.label(MASK_MANUAL);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        for l in &lists {
+                            ui.strong(l.message);
+                            for (item, lines) in &l.items {
+                                ui.label(format!("  • {item}"));
+                                for line in lines {
+                                    ui.weak(format!("      ◦ {line}"));
+                                }
+                            }
+                            ui.add_space(4.0);
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut self.settings.mask_dialog_suppressed,
+                        "Do not show again",
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ok = ui.button("OK").clicked();
+                    });
+                });
+            });
+        if !open || ok {
+            self.mask_dialog = false;
+        }
+    }
+
     fn undo_active(&mut self, redo: bool) {
         let Some(d) = self.active_doc() else { return };
         let name = if redo { d.redo() } else { d.undo() };
@@ -857,6 +991,8 @@ struct Viewer<'a> {
     palettes: &'a mut PaletteState,
     closed: &'a mut Vec<u64>,
     open_request: &'a mut bool,
+    mask_warnings: bool,
+    mask_dialog: &'a mut bool,
 }
 
 impl Viewer<'_> {
@@ -910,6 +1046,30 @@ impl TabViewer for Viewer<'_> {
                     || r.hovered() && ui.input(|i| i.pointer.any_pressed())
                 {
                     *self.active = Some(i);
+                }
+                // Mask hint (dialogs.md §21), Modeling view only.
+                let doc = &slot.doc;
+                if self.mask_warnings
+                    && doc.mode == Mode::Modeling
+                    && doc.model.target_version != TARGET_LATEST
+                    && !doc.mask_issues.is_empty()
+                {
+                    let text = egui::RichText::new(keyform_edit::checks::MASK_HINT)
+                        .color(self.tokens.accent)
+                        .size(15.0);
+                    let galley_w = 360.0;
+                    let at = egui::Rect::from_min_size(
+                        r.rect.right_bottom() - egui::vec2(galley_w + 12.0, 34.0),
+                        egui::vec2(galley_w, 26.0),
+                    );
+                    let hint = ui.put(
+                        at,
+                        egui::Button::new(text).fill(self.tokens.background.gamma_multiply(0.9)),
+                    );
+                    if hint.clicked() {
+                        *self.active = Some(i);
+                        *self.mask_dialog = true;
+                    }
                 }
             }
             Tab::Welcome => {
@@ -1109,6 +1269,8 @@ impl eframe::App for KeyformApp {
                     palettes: &mut self.palettes,
                     closed: &mut closed,
                     open_request: &mut open_request,
+                    mask_warnings: self.settings.mask_warnings,
+                    mask_dialog: &mut self.mask_dialog,
                 };
                 DockArea::new(&mut self.dock).show_inside(ui, &mut viewer);
             });
@@ -1126,6 +1288,7 @@ impl eframe::App for KeyformApp {
             }
             self.quit_after_closing = true;
         }
+        self.mask_dialog_ui(&ctx);
         self.closing_step(&ctx);
         let title = match self.active.and_then(|i| self.slots.get(i)) {
             Some(s) => format!(
@@ -1157,6 +1320,7 @@ impl eframe::App for KeyformApp {
         storage.set_string(RECENT_KEY, recent.join("\n"));
         eframe::set_value(storage, LAYOUT_KEY, &storable_layout(&self.dock));
         eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
+        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
 }
 

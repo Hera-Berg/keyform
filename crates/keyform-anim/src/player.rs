@@ -30,13 +30,30 @@ pub struct ParamRange {
 }
 
 impl ParamRange {
-    /// Clamps, or wraps into [min, max) for a repeat parameter (§3).
+    /// Clamps, or wraps a repeat parameter into its range. `repeat` is the
+    /// parameter's flag combined with Animation ▸ "Parameter repeat".
+    /// spec: viewer.md §3, §3.8
     pub fn fit(&self, v: f32) -> f32 {
         let (lo, hi) = (self.min.min(self.max), self.min.max(self.max));
-        if self.repeat && hi > lo {
-            lo + (v - lo).rem_euclid(hi - lo)
+        if !self.repeat || hi <= lo {
+            return v.clamp(lo, hi);
+        }
+        let span = hi - lo;
+        let w = if v > hi {
+            lo + (v - hi) % span
+        } else if v < lo {
+            hi - (lo - v) % span
         } else {
-            v.clamp(lo, hi)
+            v
+        };
+        if w.is_nan() {
+            if v > hi {
+                hi
+            } else {
+                lo
+            }
+        } else {
+            w
         }
     }
 }
@@ -682,6 +699,11 @@ mod tests {
             repeat: true,
         };
         assert_eq!(r.fit(190.0), -170.0);
+        assert_eq!(r.fit(180.0), 180.0, "the bound itself stays");
+        assert_eq!(r.fit(-190.0), 170.0);
+        assert_eq!(r.fit(f32::INFINITY), 180.0, "NaN modulo → the bound");
+        let clamp = ParamRange { repeat: false, ..r };
+        assert_eq!(clamp.fit(190.0), 180.0);
         let mut f = Fixture::new();
         let mut p = f.params();
         assert_eq!(p.get("PartArm"), 0.0);
