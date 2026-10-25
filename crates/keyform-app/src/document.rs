@@ -37,6 +37,25 @@ pub enum KeyOp {
     DeleteAll,
 }
 
+/// What the document view does. spec: 50-ui/main-window.md §4 (a model
+/// view uses the Modeling workspace; runtime models open in the viewer)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Editing: the model shows exactly the slider values.
+    Modeling,
+    /// Playback preview (viewer.md §3).
+    Viewer,
+}
+
+/// An object being dragged on the canvas: edits are previewed live on top of
+/// `base` and committed as one undo step at the end.
+struct Drag {
+    base: Model,
+    target: Selection,
+    cell: usize,
+    parent: Option<keyform_eval::DeformerMap>,
+}
+
 /// Binding more parameters than this to one object shows a warning
 /// (palettes.md §3).
 const BINDING_WARN: usize = 3;
@@ -174,6 +193,10 @@ pub struct Document {
     /// parent links (runtime models, which store no palette order).
     pub palette_from_children: bool,
     pub history: History<EditState>,
+    pub mode: Mode,
+    drag: Option<Drag>,
+    /// A message for the log from a canvas tool (taken by the app).
+    pub notice: Option<String>,
     /// History revision at the last save (the unmodified state).
     saved_revision: u64,
 }
@@ -450,6 +473,13 @@ impl Document {
                 selection: None,
             }),
             saved_revision: 0,
+            drag: None,
+            notice: None,
+            mode: if palette_from_children {
+                Mode::Modeling
+            } else {
+                Mode::Viewer
+            },
             model,
         })
     }
@@ -495,7 +525,7 @@ impl Document {
 
     /// The value the Parameter palette shows for `p`.
     pub fn shown_value(&self, p: usize) -> f32 {
-        if self.manual.get(p).copied().unwrap_or(false) {
+        if self.mode == Mode::Modeling || self.manual.get(p).copied().unwrap_or(false) {
             self.values[p]
         } else {
             self.live.get(p).copied().unwrap_or(0.0)
@@ -573,6 +603,97 @@ impl Document {
             Some(f) => Err(f),
             None => Ok(warning),
         }
+    }
+
+    /// The top-most visible, unlocked art mesh under canvas point `q`
+    /// (canvas-and-tools.md §3).
+    pub fn hit_test(&self, q: [f32; 2]) -> Option<Selection> {
+        let frame = self.frame.as_ref()?;
+        // Which side of edge b→a the point q is on.
+        let side = |a: [f32; 2], b: [f32; 2]| {
+            (q[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (q[1] - b[1])
+        };
+        let inside = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
+            let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+            let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+            let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+            !(neg && pos)
+        };
+        for &mi in frame.render_order.iter().rev() {
+            let (Some(st), Some(mesh)) = (frame.meshes.get(mi), self.model.art_meshes.get(mi))
+            else {
+                continue;
+            };
+            if st.hidden || st.outside || st.opacity <= 0.0 || mesh.info.locked {
+                continue;
+            }
+            let pt = |i: u32| {
+                let i = i as usize;
+                [
+                    st.positions.get(2 * i).copied().unwrap_or(0.0),
+                    st.positions.get(2 * i + 1).copied().unwrap_or(0.0),
+                ]
+            };
+            let hit = mesh
+                .indices
+                .chunks_exact(3)
+                .any(|t| inside(pt(t[0]), pt(t[1]), pt(t[2])));
+            if hit {
+                return Some(Selection::ArtMesh(mi));
+            }
+        }
+        None
+    }
+
+    /// Starts dragging `o` in its current keyform.
+    pub fn drag_begin(&mut self, o: Selection) -> Result<(), String> {
+        if !self.editable() || self.mode != Mode::Modeling {
+            return Err("Editing is available in the Modeling workspace of a project.".into());
+        }
+        let cell =
+            keyform_edit::current_cell(&self.model, o, &self.values).map_err(|e| e.to_string())?;
+        let parent = keyform_edit::parent_deformer(&self.model, o).and_then(|d| {
+            self.frame
+                .as_ref()
+                .and_then(|f| f.deformers.get(d))
+                .and_then(|s| s.map.clone())
+        });
+        self.drag = Some(Drag {
+            base: self.model.clone(),
+            target: o,
+            cell,
+            parent,
+        });
+        Ok(())
+    }
+
+    /// Shows the dragged object moved by `total` canvas pixels.
+    pub fn drag_update(&mut self, total: [f32; 2]) {
+        let Some(d) = &self.drag else { return };
+        let mut m = d.base.clone();
+        match keyform_edit::translate(&mut m, d.target, d.cell, d.parent.as_ref(), total, None) {
+            Ok(_) => {
+                self.model = m;
+                self.model_changed();
+            }
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    /// Ends a drag: one undo step "Move" if anything moved.
+    pub fn drag_end(&mut self) {
+        let Some(d) = self.drag.take() else { return };
+        if self.model.same_data(&d.base) {
+            self.model = d.base;
+            self.model_changed();
+            return;
+        }
+        self.history
+            .commit("Move", StepKind::Real, self.edit_state(), false);
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
     /// Changes the selection as a selection-only undo step (undo.md §3).
@@ -859,6 +980,9 @@ impl Document {
 
     /// Whether anything animates (the UI then repaints continuously).
     pub fn is_animating(&self, o: &PlaybackOptions) -> bool {
+        if self.mode == Mode::Modeling {
+            return false;
+        }
         self.motion_player.is_playing()
             || o.physics && !self.model.physics.settings.is_empty()
             || o.pose && self.pose.is_some()
@@ -888,6 +1012,17 @@ impl Document {
     /// Advances playback by `dt` seconds and evaluates the model, in the
     /// frame order of spec 70-advanced/viewer.md §3.1.
     pub fn tick(&mut self, dt: f32, o: &PlaybackOptions, log: &mut Log) {
+        if self.mode == Mode::Modeling {
+            // The model exactly at the slider values, nothing animated.
+            self.live.clone_from(&self.values);
+            let ov = Overrides {
+                part_opacity: vec![None; self.model.parts.len()],
+                model_opacity: 1.0,
+            };
+            let ev = Evaluator::new(&self.model);
+            self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
+            return;
+        }
         self.time += f64::from(dt);
         self.motion_player.force_restricted_beziers = o.old_playback;
         self.expression_player.old_fading = o.old_fading;
@@ -1165,5 +1300,76 @@ mod tests {
         doc.save_project(None).unwrap();
         let back = Document::open(&path, &mut log).unwrap();
         assert!(back.model.same_data(&doc.model));
+    }
+
+    /// Arrow tool: hit-test a mesh, drag it in its current keyform, undo.
+    #[test]
+    fn drag_moves_current_keyform() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = std::env::var("KEYFORM_SAMPLES").unwrap_or_else(|_| root.display().to_string());
+        let Some(path) = std::env::split_paths(&dirs)
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "cmo3"))
+        else {
+            return;
+        };
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        assert_eq!(doc.mode, Mode::Modeling);
+        doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        // The centroid of some visible mesh's first triangle hits a mesh.
+        let frame = doc.frame.clone().unwrap();
+        let (_, q) = frame
+            .render_order
+            .iter()
+            .rev()
+            .find_map(|&mi| {
+                let st = &frame.meshes[mi];
+                let t = doc.model.art_meshes[mi].indices.get(..3)?;
+                (!st.hidden && !st.outside && st.opacity > 0.0).then(|| {
+                    let p = |i: u32| {
+                        [
+                            st.positions[2 * i as usize],
+                            st.positions[2 * i as usize + 1],
+                        ]
+                    };
+                    let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                    (mi, [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0])
+                })
+            })
+            .unwrap();
+        let hit = doc.hit_test(q).unwrap();
+        let Selection::ArtMesh(h) = hit else { panic!() };
+        // Put every parameter on a key of the hit mesh (defaults may not be).
+        for b in doc.model.art_meshes[h].grid.bindings.clone() {
+            doc.set_manual(b.parameter, b.keys[0]);
+        }
+        doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        let before = doc.frame.as_ref().unwrap().meshes[h].positions.clone();
+        doc.select(Some(hit));
+        doc.drag_begin(hit).unwrap();
+        doc.drag_update([5.0, 0.0]);
+        doc.drag_update([10.0, -4.0]);
+        doc.drag_end();
+        assert_eq!(doc.history.undo_name(), Some("Move"));
+        doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        let after = &doc.frame.as_ref().unwrap().meshes[h].positions;
+        // Every vertex moved by (10, −4) on the canvas (glue may bend a few).
+        let moved = before
+            .chunks(2)
+            .zip(after.chunks(2))
+            .filter(|(a, b)| {
+                ((b[0] - a[0]) - 10.0).abs() < 0.05 && ((b[1] - a[1]) + 4.0).abs() < 0.05
+            })
+            .count();
+        assert!(
+            moved * 10 >= before.len() / 2 * 9,
+            "{moved} of {}",
+            before.len() / 2
+        );
+        doc.undo();
+        doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        assert_eq!(doc.frame.as_ref().unwrap().meshes[h].positions, before);
     }
 }

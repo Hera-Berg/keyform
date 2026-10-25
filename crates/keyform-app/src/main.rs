@@ -1,6 +1,7 @@
 //! Keyform editor application.
 //!
-//! Usage: `keyform [FILE…] [--screenshot OUT.png [--frames N]] [--size WxH] [--play MOTION] [ID=VALUE …]`
+//! Usage: `keyform [FILE…] [--screenshot OUT.png [--frames N]] [--size WxH] [--play MOTION]
+//! [--select OBJECT_ID] [ID=VALUE …]`
 
 mod app;
 mod canvas;
@@ -21,11 +22,13 @@ fn main() -> eframe::Result<()> {
     let mut size = [1200.0f32, 900.0];
     let mut values = Vec::new();
     let mut play = None;
+    let mut select = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--screenshot" => screenshot = args.next().map(PathBuf::from),
             "--play" => play = args.next().and_then(|n| n.parse::<usize>().ok()),
+            "--select" => select = args.next(),
             "--frames" => frames = args.next().and_then(|n| n.parse().ok()).unwrap_or(frames),
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
@@ -63,6 +66,7 @@ fn main() -> eframe::Result<()> {
             let mut a = app::KeyformApp::new(cc, files, shot);
             a.initial_values = values;
             a.initial_motion = play;
+            a.initial_select = select;
             Ok(Box::new(a))
         }),
     )

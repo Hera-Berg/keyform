@@ -50,13 +50,14 @@ Open (or drop) a model, drive parameters, play motions and expressions with
 physics and pose (Animation menu: expression, eye blink, physics, pose,
 breath, cursor tracking by dragging over the view, idle motion, old fading
 and old playback methods). Projects (`.cmo3`) can be edited (Inspector name/ID/
-visibility/lock, Parts palette eye, Parameter palette keys) with undo/redo (Ctrl+Z, Ctrl+Y) and
+visibility/lock, Parts palette eye, Parameter palette keys, canvas
+click-to-select and drag to move an object in its current keyform) with undo/redo (Ctrl+Z, Ctrl+Y) and
 saved in place (Ctrl+S, Save as Ctrl+Shift+S): only changed fields are
 rewritten. For runtime models, Save writes the viewer settings
 (`model3.json` motions/expressions/pose/hit areas/eye-blink and lip-sync
 groups, `*.exp3.json`, `*.pose3.json`). The dock layout is kept between
 sessions. Debug options:
-`--screenshot out.png --frames N --size WxH --play MOTION ParamId=value`.
+`--screenshot out.png --frames N --size WxH --play MOTION --select OBJECT_ID ParamId=value`.
 
 ## `kf` tool
 

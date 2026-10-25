@@ -105,7 +105,11 @@ pub fn canvas_ui(
         fit(doc, rect);
     }
     navigate(ui, &response, doc, gpu, rect, ppp);
-    track_cursor(ui, &response, doc, rect);
+    if doc.mode == crate::document::Mode::Viewer {
+        track_cursor(ui, &response, doc, rect);
+    } else {
+        arrow_tool(ui, &response, doc, rect, ppp);
+    }
 
     let view = view_of(doc, rect, ppp);
     let to_screen = |p: [f32; 2]| -> Pos2 {
@@ -202,12 +206,133 @@ pub fn canvas_ui(
         }
     }
 
+    draw_selection(&painter, doc, &to_screen, tokens);
+
     status.zoom = doc.view.zoom;
     status.rotation = doc.view.rotation;
     status.cursor = response
         .hover_pos()
         .map(|p| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]));
     response
+}
+
+/// Arrow tool: click selects the top-most object (Shift toggles it), a
+/// drag moves the selected object in its current keyform; Space/R drags
+/// navigate instead. spec: canvas-and-tools.md §3
+fn arrow_tool(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect: Rect, ppp: f32) {
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let (space, rkey, shift) = ui.input(|i| {
+        (
+            !typing && i.key_down(egui::Key::Space),
+            !typing && i.key_down(egui::Key::R),
+            i.modifiers.shift,
+        )
+    });
+    if space || rkey {
+        return;
+    }
+    let view = view_of(doc, rect, ppp);
+    let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
+    let primary = egui::PointerButton::Primary;
+    if response.drag_started_by(primary) || response.clicked_by(primary) {
+        let Some(press) = ui.input(|i| i.pointer.press_origin()) else {
+            return;
+        };
+        let hit = doc.hit_test(to_canvas(press));
+        if shift {
+            if hit.is_some() {
+                let sel = if doc.selection == hit { None } else { hit };
+                doc.select(sel);
+            }
+        } else if hit != doc.selection {
+            doc.select(hit);
+        }
+        if response.drag_started_by(primary) && !shift {
+            if let Some(o) = hit {
+                if let Err(e) = doc.drag_begin(o) {
+                    doc.notice = Some(e);
+                }
+            }
+        }
+    }
+    if doc.is_dragging() {
+        if response.dragged_by(primary) {
+            if let (Some(a), Some(b)) = (
+                ui.input(|i| i.pointer.press_origin()),
+                ui.input(|i| i.pointer.interact_pos()),
+            ) {
+                let (ca, cb) = (to_canvas(a), to_canvas(b));
+                doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]]);
+            }
+        } else {
+            doc.drag_end();
+        }
+    }
+}
+
+/// Outline of the selected object over the model.
+fn draw_selection(
+    painter: &egui::Painter,
+    doc: &Document,
+    to_screen: &dyn Fn([f32; 2]) -> Pos2,
+    tokens: &Tokens,
+) {
+    use crate::document::Selection;
+    let (Some(sel), Some(frame)) = (doc.selection, doc.frame.as_ref()) else {
+        return;
+    };
+    let stroke = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.85));
+    match sel {
+        Selection::ArtMesh(a) => {
+            let (Some(st), Some(mesh)) = (frame.meshes.get(a), doc.model.art_meshes.get(a)) else {
+                return;
+            };
+            let pt = |i: u32| {
+                let i = i as usize;
+                to_screen([
+                    st.positions.get(2 * i).copied().unwrap_or(0.0),
+                    st.positions.get(2 * i + 1).copied().unwrap_or(0.0),
+                ])
+            };
+            for t in mesh.indices.chunks_exact(3) {
+                let (p, q, r) = (pt(t[0]), pt(t[1]), pt(t[2]));
+                painter.line_segment([p, q], stroke);
+                painter.line_segment([q, r], stroke);
+                painter.line_segment([r, p], stroke);
+            }
+        }
+        Selection::Deformer(d) => match frame.deformers.get(d).and_then(|s| s.map.as_ref()) {
+            Some(keyform_eval::DeformerMap::Warp(w)) => {
+                let p = |i: usize, j: usize| {
+                    let k = 2 * (j * (w.cols + 1) + i);
+                    to_screen([w.points[k], w.points[k + 1]])
+                };
+                for j in 0..=w.rows {
+                    for i in 0..=w.cols {
+                        if i < w.cols {
+                            painter.line_segment([p(i, j), p(i + 1, j)], stroke);
+                        }
+                        if j < w.rows {
+                            painter.line_segment([p(i, j), p(i, j + 1)], stroke);
+                        }
+                        painter.circle_filled(p(i, j), 2.0, tokens.accent);
+                    }
+                }
+            }
+            Some(keyform_eval::DeformerMap::Rotation(r)) => {
+                let o = to_screen(r.origin);
+                let (s, c) = r.angle.to_radians().sin_cos();
+                // Handle pointing along the deformed local "up" (−y).
+                let len = 40.0;
+                let tip = o + egui::vec2(s * len, -c * len);
+                painter.circle_stroke(o, 6.0, stroke);
+                painter.line_segment([o, tip], stroke);
+                painter.circle_filled(tip, 3.0, tokens.accent);
+            }
+            None => {}
+        },
+        Selection::Part(_) | Selection::Glue(_) => {}
+    }
 }
 
 /// spec: canvas-and-tools.md §2

@@ -1,9 +1,11 @@
 //! Keyform editing core, independent of the UI: undo/redo history and
 //! model edit operations.
 
+pub mod forms;
 pub mod history;
 pub mod keys;
 
+pub use forms::{current_cell, parent_deformer, translate, FormError};
 pub use history::{History, StepKind};
 pub use keys::{add_key, delete_all_keys, keys_of, remove_key, KeyError, ObjectRef};
 

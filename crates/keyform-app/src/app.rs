@@ -9,7 +9,7 @@ use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 
 use crate::canvas::{self, CanvasStatus, ViewGpu};
-use crate::document::{Document, PlaybackOptions};
+use crate::document::{Document, Mode, PlaybackOptions};
 use crate::log::Log;
 use crate::palettes;
 use crate::theme::{self, Tokens};
@@ -106,6 +106,8 @@ pub struct KeyformApp {
     pub initial_values: Vec<(String, f32)>,
     /// Motion to start on the first document (`--play N`).
     pub initial_motion: Option<usize>,
+    /// Object to select in the first document (`--select ID`).
+    pub initial_select: Option<String>,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
     /// first (main-window.md §5).
     closing: Vec<u64>,
@@ -187,6 +189,7 @@ impl KeyformApp {
             last_time: None,
             initial_values: Vec::new(),
             initial_motion: None,
+            initial_select: None,
             closing: Vec::new(),
             quit_after_closing: false,
             allow_quit: false,
@@ -619,14 +622,36 @@ impl KeyformApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            // Workspace of the active document: projects edit in Modeling and
+            // can preview playback in Viewer; runtime models only play.
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            let (mode, editable) = doc
+                .as_ref()
+                .map_or((Mode::Viewer, false), |d| (d.mode, d.editable()));
+            let label = match mode {
+                Mode::Modeling => "Modeling",
+                Mode::Viewer => "Viewer",
+            };
+            let mut chosen = mode;
             egui::ComboBox::from_id_salt("workspace")
-                .selected_text("Viewer")
+                .selected_text(label)
                 .width(140.0)
                 .show_ui(ui, |ui| {
-                    let _ = ui.selectable_label(true, "Viewer");
-                    ui.add_enabled(false, egui::Button::selectable(false, "Modeling"));
+                    ui.add_enabled_ui(editable, |ui| {
+                        ui.selectable_value(&mut chosen, Mode::Modeling, "Modeling");
+                    });
+                    ui.selectable_value(&mut chosen, Mode::Viewer, "Viewer");
                     ui.add_enabled(false, egui::Button::selectable(false, "Animation"));
                 });
+            if let Some(d) = doc {
+                if chosen != d.mode {
+                    d.mode = chosen;
+                    d.reset_parameters();
+                }
+            }
             ui.separator();
             ui.weak("Edit Level:");
             for l in ["1", "2", "3"] {
@@ -1027,6 +1052,28 @@ impl eframe::App for KeyformApp {
         if let (Some(n), Some(s)) = (self.initial_motion.take(), self.slots.first_mut()) {
             s.doc.play_motion(n);
         }
+        if let (Some(id), Some(s)) = (self.initial_select.take(), self.slots.first_mut()) {
+            use crate::document::Selection;
+            let m = &s.doc.model;
+            let sel = m
+                .art_meshes
+                .iter()
+                .position(|x| x.info.id == id)
+                .map(Selection::ArtMesh)
+                .or_else(|| {
+                    m.deformers
+                        .iter()
+                        .position(|x| x.info.id == id)
+                        .map(Selection::Deformer)
+                })
+                .or_else(|| {
+                    m.parts
+                        .iter()
+                        .position(|x| x.info.id == id)
+                        .map(Selection::Part)
+                });
+            s.doc.select(sel);
+        }
 
         // Playback clock.
         let now = ctx.input(|i| i.time);
@@ -1038,6 +1085,11 @@ impl eframe::App for KeyformApp {
             animating |= s.doc.is_animating(&self.playback);
         }
 
+        for s in &mut self.slots {
+            if let Some(n) = s.doc.notice.take() {
+                self.log.warn(n);
+            }
+        }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
