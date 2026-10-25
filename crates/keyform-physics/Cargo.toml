@@ -1,0 +1,18 @@
+[package]
+name = "keyform-physics"
+description = "Keyform physics: pendulum simulation and physics3.json"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+keyform-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+keyform-formats.workspace = true
+
+[lints]
+workspace = true

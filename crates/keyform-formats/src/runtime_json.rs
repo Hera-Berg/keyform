@@ -237,20 +237,22 @@ pub fn userdata3_json(m: &Model, meshes: &[usize]) -> Option<Value> {
 #[derive(Clone, Debug)]
 pub struct RuntimeExportOptions {
     pub moc3: ExportOptions,
+    pub export_physics: bool,
     pub extend_edge_color: bool,
     pub export_display_info: bool,
     pub export_user_data: bool,
 }
 
 /// Writes the "Export For Runtime" file set into `dir` with base `name`.
-/// Physics and motion sync are not written yet. Returns the written paths.
+/// Motion sync is not written yet. Returns the written paths and the export
+/// report (physics verification messages are added to its warnings).
 pub fn export_runtime(
     m: &Model,
     opts: &RuntimeExportOptions,
     dir: &Path,
     name: &str,
 ) -> Result<(Vec<PathBuf>, ExportReport)> {
-    let (raw, rep) = export_moc3(m, &opts.moc3)?;
+    let (raw, mut rep) = export_moc3(m, &opts.moc3)?;
     let mut written = Vec::new();
     let mut write = |path: PathBuf, bytes: &[u8]| -> Result<()> {
         std::fs::write(&path, bytes)?;
@@ -280,6 +282,21 @@ pub fn export_runtime(
             tex_paths.push(rel);
         }
     }
+    // physics3.json (70-advanced/physics.md §4): verified copy, written only
+    // when at least one setting remains.
+    let mut physics = false;
+    if opts.export_physics {
+        let (rig, msgs) = keyform_physics::json3::verify(&m.physics, &m.parameters);
+        rep.warnings.extend(msgs);
+        if let Some(v) = keyform_physics::json3::to_json(&rig, &m.parameters, m.export.physics_fps)
+        {
+            write(
+                dir.join(format!("{name}.physics3.json")),
+                to_json_string(&v).as_bytes(),
+            )?;
+            physics = true;
+        }
+    }
     let mut user_data = false;
     if opts.export_user_data {
         if let Some(u) = userdata3_json(m, &rep.art_meshes) {
@@ -301,7 +318,7 @@ pub fn export_runtime(
         name,
         &tex_paths,
         m,
-        false,
+        physics,
         user_data,
         opts.export_display_info,
     );

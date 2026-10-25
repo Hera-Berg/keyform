@@ -14,6 +14,7 @@ keyform-model.workspace = true
 keyform-eval.workspace = true
 keyform-formats.workspace = true
 keyform-render.workspace = true
+keyform-physics.workspace = true
 
 [lints]
 workspace = true

@@ -377,6 +377,7 @@ dependencies = [
  "keyform-eval",
  "keyform-formats",
  "keyform-model",
+ "keyform-physics",
  "keyform-render",
 ]
 
@@ -395,6 +396,7 @@ dependencies = [
  "flate2",
  "keyform-eval",
  "keyform-model",
+ "keyform-physics",
  "png",
  "quick-xml",
  "serde",
@@ -405,6 +407,17 @@ dependencies = [
 [[package]]
 name = "keyform-model"
 version = "0.1.0"
+
+[[package]]
+name = "keyform-physics"
+version = "0.1.0"
+dependencies = [
+ "keyform-formats",
+ "keyform-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "keyform-render"

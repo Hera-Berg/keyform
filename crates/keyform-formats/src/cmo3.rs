@@ -227,6 +227,8 @@ impl<'a, 'd> Loader<'a, 'd> {
         }
         self.check_deformer_cycles(&mut m);
 
+        self.load_physics(&root, &mut m)?;
+
         if let Some(opts) = root.field("modelOptions")? {
             if let Some(e) = opts.own_field("MODEL_EXPORT_SETTING_KEY")? {
                 m.export = ExportSettings {
@@ -240,6 +242,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                     export_invisible_art_meshes: e.bool("exportInvisibleArtMesh")?.unwrap_or(false),
                     export_sketch_parts: e.bool("exportSketchPart")?.unwrap_or(false),
                     extend_edge_color: e.bool("enableExtendEdgeColor")?.unwrap_or(true),
+                    physics_fps: !e.bool("ignoreFPSOnPhysicsJson")?.unwrap_or(false),
                 };
             }
         }
@@ -268,6 +271,99 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
         Ok(m)
+    }
+
+    /// Physics settings. spec: 70-advanced/physics.md §1; the document stores
+    /// no gravity, wind or enable flag, so their defaults apply.
+    fn load_physics(&mut self, root: &O<'a, 'd>, m: &mut Model) -> Result<()> {
+        let Some(set) = root.field("physicsSettingsSourceSet")? else {
+            return Ok(());
+        };
+        m.physics.fps = set.f32("settingFPS")?.filter(|f| *f > 0.0);
+        let kind = |o: &O<'a, 'd>| -> Result<PhysicsKind> {
+            Ok(match o.enum_value("type")? {
+                Some("SRC_TO_Y") => PhysicsKind::Y,
+                Some("SRC_TO_G_ANGLE") => PhysicsKind::Angle,
+                _ => PhysicsKind::X,
+            })
+        };
+        let vec2 = |o: Option<O<'a, 'd>>| -> Result<[f32; 2]> {
+            Ok(match o {
+                Some(v) => [v.f32("x")?.unwrap_or(0.0), v.f32("y")?.unwrap_or(0.0)],
+                None => [0.0, 0.0],
+            })
+        };
+        for s in set.list("_sourceCubismPhysics")? {
+            let id = s.id("id")?.unwrap_or_default().to_owned();
+            let mut inputs = Vec::new();
+            for i in s.list("inputs")? {
+                let Some(&parameter) = i.guid("source")?.and_then(|g| self.idx.params.get(g))
+                else {
+                    self.warn(format!("physics {id}: input with unknown parameter"));
+                    continue;
+                };
+                inputs.push(PhysicsInput {
+                    parameter,
+                    weight: i.f32("weight")?.unwrap_or(100.0),
+                    kind: kind(&i)?,
+                    reflect: i.bool("isReverse")?.unwrap_or(false),
+                });
+            }
+            let mut outputs = Vec::new();
+            for o in s.list("outputs")? {
+                let Some(&parameter) = o.guid("destination")?.and_then(|g| self.idx.params.get(g))
+                else {
+                    self.warn(format!("physics {id}: output with unknown parameter"));
+                    continue;
+                };
+                outputs.push(PhysicsOutput {
+                    parameter,
+                    vertex_index: o.i32("vertexIndex")?.unwrap_or(1).max(0) as usize,
+                    translation_scale: vec2(o.field("translationScale")?)?,
+                    angle_scale: o.f32("angleScale")?.unwrap_or(0.0),
+                    weight: o.f32("weight")?.unwrap_or(100.0),
+                    kind: kind(&o)?,
+                    reflect: o.bool("isReverse")?.unwrap_or(false),
+                });
+            }
+            let mut vertices = Vec::new();
+            for v in s.list("vertices")? {
+                vertices.push(PhysicsVertex {
+                    position: vec2(v.field("position")?)?,
+                    mobility: v.f32("mobility")?.unwrap_or(1.0),
+                    delay: v.f32("delay")?.unwrap_or(1.0),
+                    acceleration: v.f32("acceleration")?.unwrap_or(1.0),
+                    radius: v.f32("radius")?.unwrap_or(0.0),
+                });
+            }
+            let norm = |min: &str, def: &str, max: &str| -> Result<Normalization> {
+                Ok(Normalization {
+                    minimum: s.f32(min)?.unwrap_or(-10.0),
+                    default: s.f32(def)?.unwrap_or(0.0),
+                    maximum: s.f32(max)?.unwrap_or(10.0),
+                })
+            };
+            m.physics.settings.push(PhysicsSetting {
+                guid: s.guid("guid")?.unwrap_or_default().to_owned(),
+                name: s.string("name")?.unwrap_or_default(),
+                id,
+                enabled: true,
+                inputs,
+                outputs,
+                vertices,
+                position: norm(
+                    "normalizedPositionValueMin",
+                    "normalizedPositionDefaultValue",
+                    "normalizedPositionValueMax",
+                )?,
+                angle: norm(
+                    "normalizedAngleValueMin",
+                    "normalizedAngleDefaultValue",
+                    "normalizedAngleValueMax",
+                )?,
+            });
+        }
+        Ok(())
     }
 
     fn sources(&self, root: &O<'a, 'd>, set: &str) -> Result<Vec<O<'a, 'd>>> {

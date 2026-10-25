@@ -183,6 +183,7 @@ fn export(input: &Path, output: &Path, version: Option<u8>) -> R {
             .map_or("model".into(), |s| s.to_string_lossy().into_owned());
         let ro = RuntimeExportOptions {
             moc3: opts,
+            export_physics: true,
             extend_edge_color: doc.model.export.extend_edge_color,
             export_display_info: true,
             export_user_data: true,

@@ -5,9 +5,11 @@
 
 pub mod forms;
 pub mod grid;
+pub mod physics;
 
 pub use forms::*;
 pub use grid::*;
+pub use physics::*;
 
 pub type Color = [f32; 4];
 pub const WHITE: Color = [1.0, 1.0, 1.0, 1.0];
@@ -46,6 +48,7 @@ pub struct Model {
     pub art_meshes: Vec<ArtMesh>,
     pub glues: Vec<Glue>,
     pub textures: Vec<Texture>,
+    pub physics: PhysicsRig,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
     pub eye_blink_parameters: Vec<ParamIndex>,
@@ -97,6 +100,9 @@ pub struct ExportSettings {
     /// "Apply color leakage prevention to texture"; on for a model's first
     /// export, then remembered. spec: export-dialog.md §1
     pub extend_edge_color: bool,
+    /// "Export Calculate FPS to Physics settings file" (the stored option is
+    /// its inverse, `ignoreFPSOnPhysicsJson`). spec: export-dialog.md §1
+    pub physics_fps: bool,
 }
 
 impl Default for ExportSettings {
@@ -109,6 +115,7 @@ impl Default for ExportSettings {
             export_invisible_art_meshes: false,
             export_sketch_parts: false,
             extend_edge_color: true,
+            physics_fps: true,
         }
     }
 }
