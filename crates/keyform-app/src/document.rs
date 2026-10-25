@@ -51,9 +51,13 @@ pub enum Mode {
 /// `base` and committed as one undo step at the end.
 struct Drag {
     base: Model,
-    target: Selection,
-    cell: usize,
-    parent: Option<keyform_eval::DeformerMap>,
+    /// (object, keyform cell, parent map, points to move — all if None)
+    targets: Vec<(
+        Selection,
+        usize,
+        Option<keyform_eval::DeformerMap>,
+        Option<Vec<usize>>,
+    )>,
 }
 
 /// Binding more parameters than this to one object shows a warning
@@ -101,12 +105,46 @@ impl Default for PlaybackOptions {
     }
 }
 
+/// Selected objects (last = primary) and selected points of them.
+/// spec: 50-ui/canvas-and-tools.md §3
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SelectionSet {
+    pub objects: Vec<Selection>,
+    /// (object, point index): mesh vertices, warp grid points, rotation origin.
+    pub points: Vec<(Selection, usize)>,
+}
+
+impl SelectionSet {
+    pub fn of(o: Option<Selection>) -> Self {
+        Self {
+            objects: o.into_iter().collect(),
+            points: Vec::new(),
+        }
+    }
+}
+
+/// Is `q` inside the convex quadrilateral `c` (either winding)?
+pub fn in_quad(c: &[[f32; 2]; 4], q: [f32; 2]) -> bool {
+    let mut sign = 0.0f32;
+    for i in 0..4 {
+        let (a, b) = (c[i], c[(i + 1) % 4]);
+        let d = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]);
+        if d != 0.0 {
+            if sign != 0.0 && d.signum() != sign {
+                return false;
+            }
+            sign = d.signum();
+        }
+    }
+    true
+}
+
 /// The undoable state of a document (spec: 50-ui/undo.md §2). The edit
 /// level joins it when edit levels are implemented.
 #[derive(Clone)]
 pub struct EditState {
     pub model: Model,
-    pub selection: Option<Selection>,
+    pub selection: SelectionSet,
 }
 
 pub struct MotionEntry {
@@ -194,7 +232,7 @@ pub struct Document {
     pub time: f64,
     pub frame: Option<Frame>,
     pub view: ViewState,
-    pub selection: Option<Selection>,
+    pub selection: SelectionSet,
     pub hit_areas: Vec<(String, String)>,
     /// Parts palette order comes from part child lists (projects) or from
     /// parent links (runtime models, which store no palette order).
@@ -489,12 +527,12 @@ impl Document {
                 mirror: false,
                 fit_pending: true,
             },
-            selection: None,
+            selection: SelectionSet::default(),
             hit_areas,
             palette_from_children,
             history: History::new(EditState {
                 model: model.clone(),
-                selection: None,
+                selection: SelectionSet::default(),
             }),
             saved_revision: 0,
             drag: None,
@@ -523,7 +561,7 @@ impl Document {
     fn edit_state(&self) -> EditState {
         EditState {
             model: self.model.clone(),
-            selection: self.selection,
+            selection: self.selection.clone(),
         }
     }
 
@@ -562,7 +600,7 @@ impl Document {
     pub fn key_op(&mut self, op: KeyOp, p: usize) -> Result<Option<String>, String> {
         use keyform_edit::{add_key, delete_all_keys, keys_of, remove_key, KeyError};
         const NO_OBJECT: &str = "Please execute after selecting an object that has keyforms.";
-        let Some(o) = self.selection else {
+        let Some(o) = self.primary() else {
             return Err(NO_OBJECT.into());
         };
         let Some(param) = self.model.parameters.get(p).cloned() else {
@@ -670,24 +708,65 @@ impl Document {
         None
     }
 
-    /// Starts dragging `o` in its current keyform.
-    pub fn drag_begin(&mut self, o: Selection) -> Result<(), String> {
+    /// Starts dragging the selection in the current keyforms: the selected
+    /// points (`points`), or the selected objects whole. An object whose
+    /// parent deformer also moves is carried by it and not moved itself.
+    pub fn drag_begin(&mut self, points: bool) -> Result<(), String> {
         if !self.editable() || self.mode != Mode::Modeling {
             return Err("Editing is available in the Modeling workspace of a project.".into());
         }
-        let cell =
-            keyform_edit::current_cell(&self.model, o, &self.values).map_err(|e| e.to_string())?;
-        let parent = keyform_edit::parent_deformer(&self.model, o).and_then(|d| {
-            self.frame
-                .as_ref()
-                .and_then(|f| f.deformers.get(d))
-                .and_then(|s| s.map.clone())
-        });
+        let objects = self.selection.objects.clone();
+        let moving: Vec<Selection> = if points {
+            let mut v: Vec<Selection> = self.selection.points.iter().map(|p| p.0).collect();
+            v.dedup();
+            v
+        } else {
+            objects
+        };
+        let carried = |o: Selection| {
+            let mut d = keyform_edit::parent_deformer(&self.model, o);
+            let mut guard = 0;
+            while let Some(p) = d {
+                if !points && moving.contains(&Selection::Deformer(p)) {
+                    return true;
+                }
+                d = self.model.deformers.get(p).and_then(|x| x.target);
+                guard += 1;
+                if guard > self.model.deformers.len() {
+                    break;
+                }
+            }
+            false
+        };
+        let mut targets = Vec::new();
+        for &o in &moving {
+            if carried(o) {
+                continue;
+            }
+            let cell = keyform_edit::current_cell(&self.model, o, &self.values)
+                .map_err(|e| e.to_string())?;
+            let parent = keyform_edit::parent_deformer(&self.model, o).and_then(|d| {
+                self.frame
+                    .as_ref()
+                    .and_then(|f| f.deformers.get(d))
+                    .and_then(|s| s.map.clone())
+            });
+            let which = points.then(|| {
+                self.selection
+                    .points
+                    .iter()
+                    .filter(|p| p.0 == o)
+                    .map(|p| p.1)
+                    .collect()
+            });
+            targets.push((o, cell, parent, which));
+        }
+        if targets.is_empty() {
+            return Ok(());
+        }
         self.drag = Some(Drag {
             base: self.model.clone(),
-            target: o,
-            cell,
-            parent,
+            targets,
         });
         Ok(())
     }
@@ -696,13 +775,16 @@ impl Document {
     pub fn drag_update(&mut self, total: [f32; 2]) {
         let Some(d) = &self.drag else { return };
         let mut m = d.base.clone();
-        match keyform_edit::translate(&mut m, d.target, d.cell, d.parent.as_ref(), total, None) {
-            Ok(_) => {
-                self.model = m;
-                self.model_changed();
+        for (o, cell, parent, which) in &d.targets {
+            if let Err(e) =
+                keyform_edit::translate(&mut m, *o, *cell, parent.as_ref(), total, which.as_deref())
+            {
+                self.notice = Some(e.to_string());
+                return;
             }
-            Err(e) => self.notice = Some(e.to_string()),
         }
+        self.model = m;
+        self.model_changed();
     }
 
     /// Ends a drag: one undo step "Move" if anything moved.
@@ -744,14 +826,99 @@ impl Document {
         self.drag.is_some()
     }
 
-    /// Changes the selection as a selection-only undo step (undo.md §3).
+    /// The primary (last selected) object.
+    pub fn primary(&self) -> Option<Selection> {
+        self.selection.objects.last().copied()
+    }
+
+    /// Selects one object (or nothing) as a selection-only undo step
+    /// (undo.md §3).
     pub fn select(&mut self, sel: Option<Selection>) {
-        if sel == self.selection {
+        self.set_selection(SelectionSet::of(sel));
+    }
+
+    /// Replaces the selection as a selection-only undo step.
+    pub fn set_selection(&mut self, set: SelectionSet) {
+        if set == self.selection {
             return;
         }
-        self.selection = sel;
+        self.selection = set;
         self.history
             .commit("Select", StepKind::SelectionOnly, self.edit_state(), false);
+    }
+
+    /// Canvas positions of an object's editable points: mesh vertices, warp
+    /// grid points, the rotation origin.
+    pub fn object_points(&self, o: Selection) -> Vec<[f32; 2]> {
+        let Some(f) = self.frame.as_ref() else {
+            return Vec::new();
+        };
+        match o {
+            Selection::ArtMesh(i) => f
+                .meshes
+                .get(i)
+                .map(|m| m.positions.chunks_exact(2).map(|p| [p[0], p[1]]).collect())
+                .unwrap_or_default(),
+            Selection::Deformer(d) => match f.deformers.get(d).and_then(|s| s.map.as_ref()) {
+                Some(keyform_eval::DeformerMap::Warp(w)) => {
+                    w.points.chunks_exact(2).map(|p| [p[0], p[1]]).collect()
+                }
+                Some(keyform_eval::DeformerMap::Rotation(r)) => vec![r.origin],
+                None => Vec::new(),
+            },
+            Selection::Part(_) | Selection::Glue(_) => Vec::new(),
+        }
+    }
+
+    /// The point of a selected object nearest to `q` within `radius`.
+    pub fn point_hit(&self, q: [f32; 2], radius: f32) -> Option<(Selection, usize)> {
+        let mut best: Option<(f32, Selection, usize)> = None;
+        for &o in &self.selection.objects {
+            for (i, p) in self.object_points(o).iter().enumerate() {
+                let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+                if d <= radius && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, o, i));
+                }
+            }
+        }
+        best.map(|(_, o, i)| (o, i))
+    }
+
+    /// Visible, unlocked art meshes with a vertex inside the canvas quad.
+    pub fn objects_in(&self, quad: &[[f32; 2]; 4]) -> Vec<Selection> {
+        let Some(f) = self.frame.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for &mi in f.render_order.iter().rev() {
+            let (Some(st), Some(mesh)) = (f.meshes.get(mi), self.model.art_meshes.get(mi)) else {
+                continue;
+            };
+            if st.hidden || st.outside || mesh.info.locked {
+                continue;
+            }
+            if st
+                .positions
+                .chunks_exact(2)
+                .any(|p| in_quad(quad, [p[0], p[1]]))
+            {
+                out.push(Selection::ArtMesh(mi));
+            }
+        }
+        out
+    }
+
+    /// Points of the selected objects inside the canvas quad.
+    pub fn points_in(&self, quad: &[[f32; 2]; 4]) -> Vec<(Selection, usize)> {
+        let mut out = Vec::new();
+        for &o in &self.selection.objects {
+            for (i, p) in self.object_points(o).iter().enumerate() {
+                if in_quad(quad, *p) {
+                    out.push((o, i));
+                }
+            }
+        }
+        out
     }
 
     /// Undoes one step; returns its name.
@@ -772,7 +939,10 @@ impl Document {
 
     fn restore(&mut self, state: EditState) {
         self.model = state.model;
-        self.selection = state.selection.filter(|s| self.selection_valid(*s));
+        let mut sel = state.selection;
+        sel.objects.retain(|s| self.selection_valid(*s));
+        sel.points.retain(|(s, _)| self.selection_valid(*s));
+        self.selection = sel;
         self.model_changed();
     }
 
@@ -1331,7 +1501,7 @@ mod tests {
         assert_eq!(doc.undo().as_deref(), Some("Change Name"));
         assert!(doc.model.same_data(&original));
         assert!(!doc.is_modified());
-        assert_eq!(doc.selection, Some(Selection::ArtMesh(0)));
+        assert_eq!(doc.primary(), Some(Selection::ArtMesh(0)));
         assert_eq!(doc.redo().as_deref(), Some("Change Name"));
         assert_eq!(doc.redo().as_deref(), Some("Change Visibility"));
         assert!(doc.model.same_data(&edited));
@@ -1454,7 +1624,7 @@ mod tests {
         doc.tick(0.0, &PlaybackOptions::default(), &mut log);
         let before = doc.frame.as_ref().unwrap().meshes[h].positions.clone();
         doc.select(Some(hit));
-        doc.drag_begin(hit).unwrap();
+        doc.drag_begin(false).unwrap();
         doc.drag_update([5.0, 0.0]);
         doc.drag_update([10.0, -4.0]);
         doc.drag_end();
@@ -1575,5 +1745,69 @@ mod tests {
         }
         eprintln!("motion-sync mouth peak {peak}, toggle off {peak_off}");
         assert!(peak_off < peak, "{peak_off} vs {peak}");
+    }
+
+    #[test]
+    fn quad_test() {
+        let q = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert!(in_quad(&q, [5.0, 5.0]));
+        assert!(!in_quad(&q, [11.0, 5.0]));
+        let rev = [q[3], q[2], q[1], q[0]];
+        assert!(in_quad(&rev, [1.0, 9.0]));
+    }
+
+    /// Point selection: only the selected vertex moves; rectangles select.
+    #[test]
+    fn point_drag_moves_only_selected_points() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = root.join("hiyori_pro_t11.cmo3");
+        if !path.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        let o = PlaybackOptions::default();
+        doc.tick(0.0, &o, &mut log);
+        // A visible mesh whose grid is on keys at the defaults.
+        let f = doc.frame.clone().unwrap();
+        let a = (0..doc.model.art_meshes.len())
+            .find(|&a| {
+                let st = &f.meshes[a];
+                !st.hidden
+                    && !st.outside
+                    && keyform_edit::current_cell(&doc.model, Selection::ArtMesh(a), &doc.values)
+                        .is_ok()
+            })
+            .unwrap();
+        let sel = Selection::ArtMesh(a);
+        doc.select(Some(sel));
+        let pts = doc.object_points(sel);
+        let hit = doc.point_hit(pts[0], 0.5).unwrap();
+        assert_eq!(hit.0, sel);
+        doc.set_selection(SelectionSet {
+            objects: vec![sel],
+            points: vec![hit],
+        });
+        doc.drag_begin(true).unwrap();
+        doc.drag_update([0.0, 7.0]);
+        doc.drag_end();
+        doc.tick(0.0, &o, &mut log);
+        let after = doc.object_points(sel);
+        let moved: Vec<usize> = (0..pts.len())
+            .filter(|&i| (after[i][1] - pts[i][1]).abs() > 1e-3)
+            .collect();
+        assert!(moved.contains(&hit.1));
+        // Glue may pull a few neighbours; most vertices stay.
+        assert!(moved.len() * 4 <= pts.len().max(4), "{moved:?}");
+        // A rectangle around the mesh's first vertex finds the mesh.
+        let p = after[0];
+        let quad = [
+            [p[0] - 1.0, p[1] - 1.0],
+            [p[0] + 1.0, p[1] - 1.0],
+            [p[0] + 1.0, p[1] + 1.0],
+            [p[0] - 1.0, p[1] + 1.0],
+        ];
+        assert!(doc.objects_in(&quad).contains(&sel));
+        assert!(doc.points_in(&quad).iter().any(|x| x.0 == sel));
     }
 }

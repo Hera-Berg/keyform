@@ -16,7 +16,13 @@ pub struct ViewGpu {
     target: Option<(wgpu::Texture, egui::TextureId, [u32; 2])>,
     /// Pan axis lock while Shift is held: None = undecided.
     pan_axis: Option<Option<bool>>,
+    /// Rectangle selection in progress: start (screen) and whether it
+    /// selects points (of the selected objects) rather than objects.
+    rect: Option<(Pos2, bool)>,
 }
+
+/// Pick radius for points, in screen points.
+const POINT_PICK: f32 = 6.0;
 
 /// Live information for the status bar.
 #[derive(Default, Clone, Copy)]
@@ -108,7 +114,7 @@ pub fn canvas_ui(
     if doc.mode == crate::document::Mode::Viewer {
         track_cursor(ui, &response, doc, rect);
     } else {
-        arrow_tool(ui, &response, doc, rect, ppp);
+        arrow_tool(ui, &response, doc, gpu, rect, ppp);
     }
 
     let view = view_of(doc, rect, ppp);
@@ -208,6 +214,16 @@ pub fn canvas_ui(
     }
 
     draw_selection(&painter, doc, &to_screen, tokens);
+    if let (Some((a, _)), Some(b)) = (gpu.rect, ui.input(|i| i.pointer.interact_pos())) {
+        let r = Rect::from_two_pos(a, b);
+        painter.rect_stroke(
+            r,
+            0.0,
+            egui::Stroke::new(1.0, tokens.accent),
+            egui::StrokeKind::Inside,
+        );
+        painter.rect_filled(r, 0.0, tokens.accent.gamma_multiply(0.08));
+    }
 
     status.zoom = doc.view.zoom;
     status.rotation = doc.view.rotation;
@@ -217,10 +233,26 @@ pub fn canvas_ui(
     response
 }
 
-/// Arrow tool: click selects the top-most object (Shift toggles it), a
-/// drag moves the selected object in its current keyform; Space/R drags
-/// navigate instead. spec: canvas-and-tools.md §3
-fn arrow_tool(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect: Rect, ppp: f32) {
+/// Arrow tool (canvas-and-tools.md §3):
+/// - click selects the top-most object, Shift toggles it; clicking an
+///   object that is already selected keeps the selection;
+/// - pressing on a point of a selected object selects the point (Shift
+///   toggles) and a drag moves the selected points;
+/// - dragging a selected object moves every selected object;
+/// - dragging on empty space draws a rectangle: it selects points of the
+///   selected objects, or objects when nothing is selected (Shift adds);
+/// - a click on empty space clears the selection.
+///
+/// Space/R drags navigate instead.
+fn arrow_tool(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    doc: &mut Document,
+    gpu: &mut ViewGpu,
+    rect: Rect,
+    ppp: f32,
+) {
+    use crate::document::SelectionSet;
     let typing = ui.ctx().egui_wants_keyboard_input();
     let (space, rkey, shift) = ui.input(|i| {
         (
@@ -235,33 +267,94 @@ fn arrow_tool(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect
     let view = view_of(doc, rect, ppp);
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
     let primary = egui::PointerButton::Primary;
+    let press = ui.input(|i| i.pointer.press_origin());
     if response.drag_started_by(primary) || response.clicked_by(primary) {
-        let Some(press) = ui.input(|i| i.pointer.press_origin()) else {
-            return;
-        };
-        let hit = doc.hit_test(to_canvas(press));
-        if shift {
-            if hit.is_some() {
-                let sel = if doc.selection == hit { None } else { hit };
-                doc.select(sel);
+        let Some(press) = press else { return };
+        let q = to_canvas(press);
+        let radius = POINT_PICK / doc.view.zoom.max(1e-6);
+        let mut set = doc.selection.clone();
+        let mut drag_points = false;
+        if let Some(pt) = doc.point_hit(q, radius) {
+            // A point of a selected object.
+            if shift {
+                if let Some(i) = set.points.iter().position(|p| *p == pt) {
+                    set.points.remove(i);
+                } else {
+                    set.points.push(pt);
+                }
+            } else if !set.points.contains(&pt) {
+                set.points = vec![pt];
             }
-        } else if hit != doc.selection {
-            doc.select(hit);
+            drag_points = true;
+        } else if let Some(hit) = doc.hit_test(q) {
+            if shift {
+                if let Some(i) = set.objects.iter().position(|o| *o == hit) {
+                    set.objects.remove(i);
+                    set.points.retain(|p| p.0 != hit);
+                } else {
+                    set.objects.push(hit);
+                }
+            } else if !set.objects.contains(&hit) {
+                set = SelectionSet::of(Some(hit));
+            }
+        } else if response.drag_started_by(primary) {
+            gpu.rect = Some((press, !set.objects.is_empty()));
+        } else if !shift {
+            set = SelectionSet::default();
         }
-        if response.drag_started_by(primary) && !shift {
-            if let Some(o) = hit {
-                if let Err(e) = doc.drag_begin(o) {
+        doc.set_selection(set);
+        if response.drag_started_by(primary) && gpu.rect.is_none() && !shift {
+            let points = drag_points && !doc.selection.points.is_empty();
+            if points || !doc.selection.objects.is_empty() {
+                if let Err(e) = doc.drag_begin(points) {
                     doc.notice = Some(e);
                 }
             }
         }
     }
+    if let Some((start, points)) = gpu.rect {
+        if !response.dragged_by(primary) {
+            gpu.rect = None;
+            if let Some(end) = ui.input(|i| i.pointer.interact_pos()) {
+                let r = Rect::from_two_pos(start, end);
+                let quad = [
+                    r.left_top(),
+                    r.right_top(),
+                    r.right_bottom(),
+                    r.left_bottom(),
+                ]
+                .map(to_canvas);
+                let mut set = if shift {
+                    doc.selection.clone()
+                } else if points {
+                    SelectionSet {
+                        objects: doc.selection.objects.clone(),
+                        points: Vec::new(),
+                    }
+                } else {
+                    SelectionSet::default()
+                };
+                if points {
+                    for p in doc.points_in(&quad) {
+                        if !set.points.contains(&p) {
+                            set.points.push(p);
+                        }
+                    }
+                } else {
+                    for o in doc.objects_in(&quad) {
+                        if !set.objects.contains(&o) {
+                            set.objects.push(o);
+                        }
+                    }
+                }
+                doc.set_selection(set);
+            }
+        }
+        return;
+    }
     if doc.is_dragging() {
         if response.dragged_by(primary) {
-            if let (Some(a), Some(b)) = (
-                ui.input(|i| i.pointer.press_origin()),
-                ui.input(|i| i.pointer.interact_pos()),
-            ) {
+            if let (Some(a), Some(b)) = (press, ui.input(|i| i.pointer.interact_pos())) {
                 let (ca, cb) = (to_canvas(a), to_canvas(b));
                 doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]]);
             }
@@ -271,7 +364,7 @@ fn arrow_tool(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect
     }
 }
 
-/// Outline of the selected object over the model.
+/// Outlines of the selected objects, their points, and the selected points.
 fn draw_selection(
     painter: &egui::Painter,
     doc: &Document,
@@ -279,60 +372,71 @@ fn draw_selection(
     tokens: &Tokens,
 ) {
     use crate::document::Selection;
-    let (Some(sel), Some(frame)) = (doc.selection, doc.frame.as_ref()) else {
+    let Some(frame) = doc.frame.as_ref() else {
         return;
     };
     let stroke = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.85));
-    match sel {
-        Selection::ArtMesh(a) => {
-            let (Some(st), Some(mesh)) = (frame.meshes.get(a), doc.model.art_meshes.get(a)) else {
-                return;
-            };
-            let pt = |i: u32| {
-                let i = i as usize;
-                to_screen([
-                    st.positions.get(2 * i).copied().unwrap_or(0.0),
-                    st.positions.get(2 * i + 1).copied().unwrap_or(0.0),
-                ])
-            };
-            for t in mesh.indices.chunks_exact(3) {
-                let (p, q, r) = (pt(t[0]), pt(t[1]), pt(t[2]));
-                painter.line_segment([p, q], stroke);
-                painter.line_segment([q, r], stroke);
-                painter.line_segment([r, p], stroke);
-            }
-        }
-        Selection::Deformer(d) => match frame.deformers.get(d).and_then(|s| s.map.as_ref()) {
-            Some(keyform_eval::DeformerMap::Warp(w)) => {
-                let p = |i: usize, j: usize| {
-                    let k = 2 * (j * (w.cols + 1) + i);
-                    to_screen([w.points[k], w.points[k + 1]])
+    for &sel in &doc.selection.objects {
+        match sel {
+            Selection::ArtMesh(a) => {
+                let (Some(st), Some(mesh)) = (frame.meshes.get(a), doc.model.art_meshes.get(a))
+                else {
+                    return;
                 };
-                for j in 0..=w.rows {
-                    for i in 0..=w.cols {
-                        if i < w.cols {
-                            painter.line_segment([p(i, j), p(i + 1, j)], stroke);
-                        }
-                        if j < w.rows {
-                            painter.line_segment([p(i, j), p(i, j + 1)], stroke);
-                        }
-                        painter.circle_filled(p(i, j), 2.0, tokens.accent);
-                    }
+                let pt = |i: u32| {
+                    let i = i as usize;
+                    to_screen([
+                        st.positions.get(2 * i).copied().unwrap_or(0.0),
+                        st.positions.get(2 * i + 1).copied().unwrap_or(0.0),
+                    ])
+                };
+                for t in mesh.indices.chunks_exact(3) {
+                    let (p, q, r) = (pt(t[0]), pt(t[1]), pt(t[2]));
+                    painter.line_segment([p, q], stroke);
+                    painter.line_segment([q, r], stroke);
+                    painter.line_segment([r, p], stroke);
                 }
             }
-            Some(keyform_eval::DeformerMap::Rotation(r)) => {
-                let o = to_screen(r.origin);
-                let (s, c) = r.angle.to_radians().sin_cos();
-                // Handle pointing along the deformed local "up" (−y).
-                let len = 40.0;
-                let tip = o + egui::vec2(s * len, -c * len);
-                painter.circle_stroke(o, 6.0, stroke);
-                painter.line_segment([o, tip], stroke);
-                painter.circle_filled(tip, 3.0, tokens.accent);
-            }
-            None => {}
-        },
-        Selection::Part(_) | Selection::Glue(_) => {}
+            Selection::Deformer(d) => match frame.deformers.get(d).and_then(|s| s.map.as_ref()) {
+                Some(keyform_eval::DeformerMap::Warp(w)) => {
+                    let p = |i: usize, j: usize| {
+                        let k = 2 * (j * (w.cols + 1) + i);
+                        to_screen([w.points[k], w.points[k + 1]])
+                    };
+                    for j in 0..=w.rows {
+                        for i in 0..=w.cols {
+                            if i < w.cols {
+                                painter.line_segment([p(i, j), p(i + 1, j)], stroke);
+                            }
+                            if j < w.rows {
+                                painter.line_segment([p(i, j), p(i, j + 1)], stroke);
+                            }
+                            painter.circle_filled(p(i, j), 2.0, tokens.accent);
+                        }
+                    }
+                }
+                Some(keyform_eval::DeformerMap::Rotation(r)) => {
+                    let o = to_screen(r.origin);
+                    let (s, c) = r.angle.to_radians().sin_cos();
+                    // Handle pointing along the deformed local "up" (−y).
+                    let len = 40.0;
+                    let tip = o + egui::vec2(s * len, -c * len);
+                    painter.circle_stroke(o, 6.0, stroke);
+                    painter.line_segment([o, tip], stroke);
+                    painter.circle_filled(tip, 3.0, tokens.accent);
+                }
+                None => {}
+            },
+            Selection::Part(_) | Selection::Glue(_) => {}
+        }
+    }
+    // Selected points on top.
+    for &(o, i) in &doc.selection.points {
+        if let Some(p) = doc.object_points(o).get(i) {
+            let c = to_screen(*p);
+            painter.circle_filled(c, 3.5, tokens.accent);
+            painter.circle_stroke(c, 3.5, egui::Stroke::new(1.0, Color32::WHITE));
+        }
     }
 }
 

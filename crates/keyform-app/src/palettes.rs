@@ -47,7 +47,7 @@ pub fn parts_ui(
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let mut sel = doc.selection;
+            let mut sel = doc.primary();
             let mut toggled = Vec::new();
             let draw_orders: Vec<f32> = doc
                 .frame
@@ -70,7 +70,9 @@ pub fn parts_ui(
                 draw_orders: &draw_orders,
             };
             part_children(ui, model, root, &mut t, 0);
-            doc.select(sel);
+            if sel != doc.primary() {
+                doc.select(sel);
+            }
             for s in toggled {
                 doc.edit("Change Visibility", |m| {
                     if let Some(info) = info_mut(m, s) {
@@ -257,13 +259,15 @@ pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
     for (i, a) in m.art_meshes.iter().enumerate() {
         children[slot(a.target)].push(Selection::ArtMesh(i));
     }
-    let mut sel = doc.selection;
+    let mut sel = doc.primary();
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             deformer_children(ui, m, &children, n, &mut sel, 0);
         });
-    doc.select(sel);
+    if sel != doc.primary() {
+        doc.select(sel);
+    }
 }
 
 fn deformer_children(
@@ -311,7 +315,7 @@ fn deformer_children(
 
 /// Key values of the selected object on parameter `p` (key marks, §3).
 fn selected_keys(doc: &Document, p: usize) -> Vec<f32> {
-    match doc.selection {
+    match doc.primary() {
         Some(o) => keyform_edit::keys_of(&doc.model, o, p),
         None => Vec::new(),
     }
@@ -392,7 +396,7 @@ fn run_key_op(doc: &mut Document, op: KeyOp, p: usize, log: &mut Log) {
 
 /// The key operations of a parameter row's context menu (palettes.md §3).
 fn key_menu(ui: &mut egui::Ui, doc: &mut Document, p: usize, log: &mut Log) {
-    let can = doc.editable() && doc.selection.is_some();
+    let can = doc.editable() && doc.primary().is_some();
     for (label, op) in [
         ("Add key", KeyOp::Add),
         ("Delete key", KeyOp::Delete),
@@ -442,7 +446,7 @@ fn param_row(
                     .context_menu(|ui| key_menu(ui, doc, p, log));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Key buttons for the selected object (palettes.md §3).
-                    if doc.editable() && doc.selection.is_some() {
+                    if doc.editable() && doc.primary().is_some() {
                         let on_key = keys
                             .iter()
                             .any(|k| (k - doc.shown_value(p)).abs() < param.snap_epsilon);
@@ -653,7 +657,7 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
 }
 
 pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
-    if let Some(s) = doc.selection {
+    if let Some(s) = doc.primary() {
         common_fields(ui, doc, s, log);
     }
     let m = &doc.model;
@@ -673,7 +677,7 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
             row(ui, "Parameter", format!("{p}  keys {:?}", x.keys));
         }
     };
-    match doc.selection {
+    match doc.primary() {
         None => {
             ui.weak("Select an object in the Parts or Deformer palette.");
             row(ui, "Model", m.name.clone());
