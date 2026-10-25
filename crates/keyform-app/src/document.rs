@@ -984,6 +984,58 @@ impl Document {
         self.drag.is_some()
     }
 
+    /// Like [`Self::edit`], for operations that can fail: the model only
+    /// changes (one undo step) if `f` succeeds.
+    pub fn try_edit<T>(
+        &mut self,
+        name: &str,
+        f: impl FnOnce(&mut Model) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if !self.editable() {
+            return Err("Only projects can be edited.".into());
+        }
+        let mut m = self.model.clone();
+        let r = f(&mut m)?;
+        if !m.same_data(&self.model) {
+            self.model = m;
+            self.selection = SelectionSet::default();
+            self.history
+                .commit(name, StepKind::Real, self.edit_state(), false);
+            self.model_changed();
+        }
+        Ok(r)
+    }
+
+    /// Edit ▸ Delete: deletes the selected deformers (their children move
+    /// to the parent deformer) and empty parts.
+    pub fn delete_selection(&mut self) -> Result<(), String> {
+        let m = &self.model;
+        let mut guids = Vec::new();
+        for &o in &self.selection.objects {
+            match o {
+                Selection::Deformer(d) => guids.push((true, m.deformers[d].info.guid.clone())),
+                Selection::Part(p) => guids.push((false, m.parts[p].info.guid.clone())),
+                _ => return Err("Deleting art meshes and glue is not supported yet.".into()),
+            }
+        }
+        if guids.is_empty() {
+            return Ok(());
+        }
+        let values = self.values.clone();
+        self.try_edit("Delete", |m| {
+            for (deformer, g) in &guids {
+                if *deformer {
+                    if let Some(d) = m.deformers.iter().position(|x| x.info.guid == *g) {
+                        keyform_edit::objects::delete_deformer(m, d, &values)?;
+                    }
+                } else if let Some(p) = m.parts.iter().position(|x| x.info.guid == *g) {
+                    keyform_edit::objects::delete_part(m, p)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The primary (last selected) object.
     pub fn primary(&self) -> Option<Selection> {
         self.selection.objects.last().copied()
@@ -2167,5 +2219,60 @@ mod tests {
             unreachable!()
         };
         assert_eq!(back.points, map0.points);
+    }
+
+    /// Create a deformer around a mesh, delete it, undo/redo, save.
+    #[test]
+    fn create_and_delete_deformer_in_document() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let src = root.join("hiyori_pro_t11.cmo3");
+        if !src.exists() {
+            return;
+        }
+        let scratch = root.join("target/test-scratch/create-delete");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("model.cmo3");
+        std::fs::copy(&src, &path).unwrap();
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        let n0 = doc.model.deformers.len();
+        let a = Selection::ArtMesh(0);
+        let parent = doc.model.art_meshes[0].target;
+        let values = doc.values.clone();
+        let d = doc
+            .try_edit("Create Rotation Deformer", |m| {
+                keyform_edit::objects::create_rotation_deformer(
+                    m,
+                    &keyform_edit::objects::NewDeformer {
+                        name: "R".into(),
+                        part: m.art_meshes[0].info.parent_part,
+                        parent,
+                        children: &[a],
+                        values: &values,
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(doc.model.deformers.len(), n0 + 1);
+        assert_eq!(doc.model.art_meshes[0].target, Some(d));
+        doc.save_project(None).unwrap();
+        doc.select(Some(Selection::Deformer(d)));
+        doc.delete_selection().unwrap();
+        assert_eq!(doc.model.deformers.len(), n0);
+        assert_eq!(doc.model.art_meshes[0].target, parent);
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&doc.model));
+        // Undo brings the deformer back, and that saves too.
+        assert_eq!(doc.undo().as_deref(), Some("Delete"));
+        assert_eq!(doc.model.deformers.len(), n0 + 1);
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert_eq!(back.model.deformers.len(), n0 + 1);
+        // A failing operation changes nothing.
+        let before = doc.history.len();
+        assert!(doc.try_edit("Bad", |_| Err::<(), _>("no".into())).is_err());
+        assert_eq!(doc.history.len(), before);
     }
 }

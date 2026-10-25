@@ -123,6 +123,7 @@ pub struct KeyformApp {
     /// The "Issues on Mask Settings" dialog is open.
     mask_dialog: bool,
     export_image: crate::export_image::ExportImageState,
+    create_deformer: crate::create_deformer::CreateDeformerState,
 }
 
 /// User settings. TODO: an Environment Settings dialog; for now the Show
@@ -209,6 +210,7 @@ impl KeyformApp {
         let mut app = Self {
             settings,
             mask_dialog: false,
+            create_deformer: Default::default(),
             export_image: cc
                 .storage
                 .and_then(|s| eframe::get_value(s, EXPORT_IMAGE_KEY))
@@ -547,6 +549,16 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some(),
+                        egui::Button::new("Delete").shortcut_text("Delete"),
+                    )
+                    .clicked()
+                {
+                    self.delete_active();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        self.active.is_some(),
                         egui::Button::new("Deselect").shortcut_text("Escape"),
                     )
                     .clicked()
@@ -617,6 +629,7 @@ impl KeyformApp {
                     }
                 }
             });
+            ui.menu_button("Modeling", |ui| self.modeling_menu(ui));
             ui.menu_button("Animation", |ui| self.animation_menu(ui));
             ui.menu_button("Window", |ui| {
                 for (tab, name) in Tab::PALETTES {
@@ -640,6 +653,48 @@ impl KeyformApp {
                 ui.label(format!("Keyform {}", env!("CARGO_PKG_VERSION")));
                 ui.weak("Clean-room 2D-mesh rigging and animation editor.");
             });
+        });
+    }
+
+    /// Modeling menu (subset). spec: 50-ui/menus.md "Modeling"
+    fn modeling_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::create_deformer::Kind;
+        let Some(i) = self.active else {
+            ui.weak("No model");
+            return;
+        };
+        let doc = &mut self.slots[i].doc;
+        let ok = doc.editable() && doc.mode == Mode::Modeling;
+        ui.menu_button("Deformer", |ui| {
+            if ui
+                .add_enabled(ok, egui::Button::new("Create Warp Deformer…"))
+                .clicked()
+            {
+                self.create_deformer.show(Kind::Warp, doc);
+                ui.close();
+            }
+            if ui
+                .add_enabled(ok, egui::Button::new("Create rotation deformer…"))
+                .clicked()
+            {
+                self.create_deformer.show(Kind::Rotation, doc);
+                ui.close();
+            }
+        });
+        ui.menu_button("Part", |ui| {
+            if ui.add_enabled(ok, egui::Button::new("New Part")).clicked() {
+                let parent = match doc.primary() {
+                    Some(crate::document::Selection::Part(p)) => Some(p),
+                    _ => None,
+                };
+                let r = doc.try_edit("New Part", |m| {
+                    Ok(keyform_edit::objects::create_part(m, "New Part", parent))
+                });
+                if let Ok(p) = r {
+                    doc.select(Some(crate::document::Selection::Part(p)));
+                }
+                ui.close();
+            }
         });
     }
 
@@ -909,6 +964,14 @@ impl KeyformApp {
         }
     }
 
+    fn delete_active(&mut self) {
+        if let Some(d) = self.active_doc() {
+            if let Err(e) = d.delete_selection() {
+                self.log.warn(e);
+            }
+        }
+    }
+
     fn undo_active(&mut self, redo: bool) {
         let Some(d) = self.active_doc() else { return };
         let name = if redo { d.redo() } else { d.undo() };
@@ -931,6 +994,14 @@ impl KeyformApp {
             self.save_as_active();
         } else if save {
             self.save_active();
+        }
+        // Delete (shortcuts.md: Delete / Backspace).
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| {
+                i.consume_key(M::NONE, Key::Delete) || i.consume_key(M::NONE, Key::Backspace)
+            })
+        {
+            self.delete_active();
         }
         // Edit level keys 1, 2, 3 (main-window.md §1).
         if !ctx.egui_wants_keyboard_input() {
@@ -1336,6 +1407,11 @@ impl eframe::App for KeyformApp {
             self.quit_after_closing = true;
         }
         self.mask_dialog_ui(&ctx);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::create_deformer::dialog(&ctx, &mut self.create_deformer, doc, &mut self.log);
         let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
         crate::export_image::dialog(&ctx, &mut self.export_image, doc, &mut self.log);
         self.closing_step(&ctx);

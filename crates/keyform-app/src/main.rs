@@ -5,6 +5,7 @@
 
 mod app;
 mod canvas;
+mod create_deformer;
 mod document;
 mod export_image;
 mod fonts;
