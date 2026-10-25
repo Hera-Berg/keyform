@@ -237,6 +237,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
         part.info.parent_part =
             opt_index(what, at(what, r.i32s("parts.parent_part"), p)?, n_parts)?;
         part.grid = KeyformGrid {
+            guids: Vec::new(),
             bindings,
             keyforms: draw_orders[kr]
                 .iter()
@@ -325,7 +326,11 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                     cols: cols as u32,
                     rows: rows as u32,
                     quad: r.version >= 2 && w("warps.quad")? != 0,
-                    grid: KeyformGrid { bindings, keyforms },
+                    grid: KeyformGrid {
+                        bindings,
+                        keyforms,
+                        guids: Vec::new(),
+                    },
                     blend_shapes: BlendShapes::default(),
                 })
             }
@@ -387,7 +392,11 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                 }
                 DeformerKind::Rotation(RotationDeformer {
                     base_angle: at(what, r.f32s("rotations.base_angle"), si)?,
-                    grid: KeyformGrid { bindings, keyforms },
+                    grid: KeyformGrid {
+                        bindings,
+                        keyforms,
+                        guids: Vec::new(),
+                    },
                     blend_shapes: BlendShapes::default(),
                 })
             }
@@ -503,7 +512,11 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             alpha_composition: ac,
             user_data: String::new(),
             point_uids: (0..nvu as i64).collect(),
-            grid: KeyformGrid { bindings, keyforms },
+            grid: KeyformGrid {
+                bindings,
+                keyforms,
+                guids: Vec::new(),
+            },
             blend_shapes: BlendShapes::default(),
         }));
     }
@@ -550,6 +563,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             pairs,
             weights,
             grid: KeyformGrid {
+                guids: Vec::new(),
                 bindings,
                 keyforms: gk[kr].iter().map(|&i| GlueForm { intensity: i }).collect(),
             },

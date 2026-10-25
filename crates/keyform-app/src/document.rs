@@ -19,13 +19,27 @@ use keyform_physics::PhysicsSim;
 use crate::log::Log;
 
 /// Which object the user selected (Parts / Deformer palettes).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Selection {
-    Part(usize),
-    Deformer(usize),
-    ArtMesh(usize),
-    Glue(usize),
+pub use keyform_edit::ObjectRef as Selection;
+
+/// Key operations of the Parameter palette. spec: 50-ui/palettes.md §3,
+/// 35-editing/keys.md
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyOp {
+    /// At the current value.
+    Add,
+    /// At the current value.
+    Delete,
+    /// Min and max.
+    AddTwo,
+    /// Min, default and max.
+    AddThree,
+    /// Unbind, keeping the shape at the current value.
+    DeleteAll,
 }
+
+/// Binding more parameters than this to one object shows a warning
+/// (palettes.md §3).
+const BINDING_WARN: usize = 3;
 
 /// Animation menu toggles, persisted per user. spec: 70-advanced/viewer.md §3.7
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -477,6 +491,88 @@ impl Document {
             .commit(name, StepKind::Real, self.edit_state(), false);
         self.model_changed();
         true
+    }
+
+    /// The value the Parameter palette shows for `p`.
+    pub fn shown_value(&self, p: usize) -> f32 {
+        if self.manual.get(p).copied().unwrap_or(false) {
+            self.values[p]
+        } else {
+            self.live.get(p).copied().unwrap_or(0.0)
+        }
+    }
+
+    /// Runs a key operation on the selected object as one undo step.
+    /// Returns a warning to show, or the reason it could not run.
+    pub fn key_op(&mut self, op: KeyOp, p: usize) -> Result<Option<String>, String> {
+        use keyform_edit::{add_key, delete_all_keys, keys_of, remove_key, KeyError};
+        const NO_OBJECT: &str = "Please execute after selecting an object that has keyforms.";
+        let Some(o) = self.selection else {
+            return Err(NO_OBJECT.into());
+        };
+        let Some(param) = self.model.parameters.get(p).cloned() else {
+            return Err("No such parameter.".into());
+        };
+        if param.kind == keyform_model::ParameterKind::BlendShape {
+            return Err("The keyforms for Blend Shape parameters cannot be edited.".into());
+        }
+        let v = param.clamp(self.shown_value(p));
+        let keys = keys_of(&self.model, o, p);
+        let message = |e: KeyError| match e {
+            KeyError::RepeatEnds => {
+                "Unable to delete maximum and minimum key value when Repeat is active.".to_owned()
+            }
+            KeyError::TooClose => "Cannot set an existing value.".to_owned(),
+            KeyError::NoKey => "There is no key at the current value.".to_owned(),
+            KeyError::Missing => NO_OBJECT.to_owned(),
+        };
+        let values: Vec<f32> = match op {
+            KeyOp::Add if keys.contains(&v) => return Err("Cannot set an existing value.".into()),
+            KeyOp::Add | KeyOp::Delete | KeyOp::DeleteAll => vec![v],
+            KeyOp::AddTwo => vec![param.min, param.max],
+            KeyOp::AddThree => vec![param.min, param.default, param.max],
+        };
+        if matches!(op, KeyOp::Delete | KeyOp::DeleteAll) && keys.is_empty() {
+            return Err(NO_OBJECT.into());
+        }
+        // Binding-count note (palettes.md §3). TODO: the reference asks with
+        // OK/Cancel; Keyform proceeds and warns.
+        let bindings = keyform_edit::keys::binding_count(&self.model, o);
+        let warning = (matches!(op, KeyOp::Add | KeyOp::AddTwo | KeyOp::AddThree)
+            && keys.is_empty()
+            && bindings >= BINDING_WARN)
+            .then(|| {
+                format!(
+                    "Notes on Parameter Mapping: You are attempting to map {} parameters to the \
+                     object. It is recommended to map no more than three parameters to a single object.",
+                    bindings + 1
+                )
+            });
+        let name = match op {
+            KeyOp::Add | KeyOp::AddTwo | KeyOp::AddThree => "Add Key",
+            KeyOp::Delete => "Delete Key",
+            KeyOp::DeleteAll => "Delete All Keys",
+        };
+        let mut failure = None;
+        self.edit(name, |m| {
+            for x in values {
+                let r = match op {
+                    KeyOp::Delete => remove_key(m, o, p, x),
+                    KeyOp::DeleteAll => delete_all_keys(m, o, p, x),
+                    _ => add_key(m, o, p, x),
+                };
+                if let Err(e) = r {
+                    // "Add 2/3 keys" skip keys that already exist.
+                    if !(matches!(op, KeyOp::AddTwo | KeyOp::AddThree) && e == KeyError::TooClose) {
+                        failure = Some(message(e));
+                    }
+                }
+            }
+        });
+        match failure {
+            Some(f) => Err(f),
+            None => Ok(warning),
+        }
     }
 
     /// Changes the selection as a selection-only undo step (undo.md §3).
@@ -1006,5 +1102,68 @@ mod tests {
         // Undo after saving marks the document modified again.
         doc.undo();
         assert!(doc.is_modified());
+    }
+
+    /// Parameter palette key operations: undoable, saved, reloaded.
+    #[test]
+    fn key_operations_undo_and_save() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = std::env::var("KEYFORM_SAMPLES").unwrap_or_else(|_| root.display().to_string());
+        let Some(src) = std::env::split_paths(&dirs)
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "cmo3"))
+        else {
+            return;
+        };
+        let scratch = root.join("target/test-scratch/key-ops");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("model.cmo3");
+        std::fs::copy(&src, &path).unwrap();
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        assert!(doc.key_op(KeyOp::Add, 0).is_err(), "nothing selected");
+        // An unbound normal parameter of art mesh 0.
+        doc.select(Some(Selection::ArtMesh(0)));
+        let p = (0..doc.model.parameters.len())
+            .find(|&p| {
+                let q = &doc.model.parameters[p];
+                !q.repeat
+                    && q.kind == keyform_model::ParameterKind::Normal
+                    && keyform_edit::keys_of(&doc.model, Selection::ArtMesh(0), p).is_empty()
+            })
+            .unwrap();
+        let (lo, def, hi) = {
+            let q = &doc.model.parameters[p];
+            (q.min, q.default, q.max)
+        };
+        doc.key_op(KeyOp::AddThree, p).unwrap();
+        let keys = keyform_edit::keys_of(&doc.model, Selection::ArtMesh(0), p);
+        let mut want = vec![lo, def, hi];
+        want.dedup();
+        assert_eq!(keys, want);
+        assert_eq!(doc.history.undo_name(), Some("Add Key"));
+        // At the default value a key exists: Add refuses, Delete works.
+        doc.set_manual(p, def);
+        assert_eq!(
+            doc.key_op(KeyOp::Add, p),
+            Err("Cannot set an existing value.".into())
+        );
+        doc.key_op(KeyOp::Delete, p).unwrap();
+        assert_eq!(
+            keyform_edit::keys_of(&doc.model, Selection::ArtMesh(0), p).len(),
+            want.len() - 1
+        );
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&doc.model));
+        // Undo both steps: the original grid comes back and saves too.
+        doc.undo();
+        doc.undo();
+        assert!(keyform_edit::keys_of(&doc.model, Selection::ArtMesh(0), p).is_empty());
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&doc.model));
     }
 }

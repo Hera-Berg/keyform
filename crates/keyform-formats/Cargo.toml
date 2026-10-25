@@ -19,3 +19,6 @@ serde.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+keyform-edit.workspace = true

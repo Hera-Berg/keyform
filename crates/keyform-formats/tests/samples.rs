@@ -299,3 +299,64 @@ fn cmo3_save_after_edits() {
         assert_eq!(doc.xml.write(), before);
     }
 }
+
+/// Keys added and removed (keys.md) survive a save and reload: new keyforms,
+/// new bindings and dropped keyforms are written into the grid.
+#[test]
+fn cmo3_save_after_key_edits() {
+    use keyform_edit::{add_key, keys_of, remove_key, ObjectRef};
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        // A mesh bound to one parameter with ≥ 2 keys: add the midpoint key.
+        let pick = (0..m.art_meshes.len()).find(|&i| {
+            let g = &m.art_meshes[i].grid;
+            g.bindings.len() == 1 && g.bindings[0].keys.len() >= 2
+        });
+        let Some(a) = pick else { continue };
+        let o = ObjectRef::ArtMesh(a);
+        let p = m.art_meshes[a].grid.bindings[0].parameter;
+        let k = keys_of(m, o, p);
+        let mid = (k[0] + k[1]) / 2.0;
+        assert_eq!(add_key(m, o, p, mid), Ok(true));
+        // Bind a second, unrelated parameter with two keys.
+        let q = (0..m.parameters.len())
+            .find(|&q| {
+                q != p
+                    && !m.parameters[q].repeat
+                    && m.parameters[q].kind == keyform_model::ParameterKind::Normal
+            })
+            .unwrap();
+        let (lo, hi) = (m.parameters[q].min, m.parameters[q].max);
+        assert_eq!(add_key(m, o, q, lo), Ok(true));
+        assert_eq!(add_key(m, o, q, hi), Ok(true));
+        // Another object: remove a key.
+        let other = (0..m.art_meshes.len()).find(|&i| {
+            i != a
+                && m.art_meshes[i]
+                    .grid
+                    .bindings
+                    .iter()
+                    .any(|b| b.keys.len() >= 3)
+        });
+        if let Some(b) = other {
+            let bind = &m.art_meshes[b].grid.bindings;
+            let j = bind.iter().position(|x| x.keys.len() >= 3).unwrap();
+            let (pp, kk) = (bind[j].parameter, bind[j].keys[1]);
+            if !m.parameters[pp].repeat {
+                assert_eq!(remove_key(m, ObjectRef::ArtMesh(b), pp, kk), Ok(true));
+            }
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}: keys after reload");
+        assert_eq!(keys_of(&back.model, o, q), vec![lo, hi]);
+        // Saving again without changes keeps the bytes.
+        let mut again = back;
+        assert_eq!(again.save_bytes().unwrap(), bytes);
+        eprintln!("{path:?}: key edits saved and reloaded");
+    }
+}

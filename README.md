@@ -50,7 +50,7 @@ Open (or drop) a model, drive parameters, play motions and expressions with
 physics and pose (Animation menu: expression, eye blink, physics, pose,
 breath, cursor tracking by dragging over the view, idle motion, old fading
 and old playback methods). Projects (`.cmo3`) can be edited (Inspector name/ID/
-visibility/lock, Parts palette eye) with undo/redo (Ctrl+Z, Ctrl+Y) and
+visibility/lock, Parts palette eye, Parameter palette keys) with undo/redo (Ctrl+Z, Ctrl+Y) and
 saved in place (Ctrl+S, Save as Ctrl+Shift+S): only changed fields are
 rewritten. For runtime models, Save writes the viewer settings
 (`model3.json` motions/expressions/pose/hit areas/eye-blink and lip-sync
@@ -63,7 +63,7 @@ sessions. Debug options:
     kf info model.cmo3
     kf roundtrip in.cmo3 out.cmo3
     kf xml model.cmo3 main.xml                   # extract the project document
-    kf set in.cmo3 out.cmo3 part:PartArmB.visible=false param:ParamAngleX.max=40 …
+    kf set in.cmo3 out.cmo3 part:PartArmB.visible=false mesh:ArtMesh1.addkey=ParamAngleX:30 …
     kf export model.cmo3 out-dir [version]       # moc3 + textures + cdi3 + model3.json
     kf export model.cmo3 model.moc3 [version]    # moc3 only
     kf render model.cmo3|.moc3|.model3.json out.png [--size N | --scale S] [--ss N] [--bg] [--gpu] [ParamId=value …]

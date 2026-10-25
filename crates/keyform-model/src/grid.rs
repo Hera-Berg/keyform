@@ -1,6 +1,6 @@
 //! Keyform grids and blend shapes. spec: 20-model/object-model.md §5–6
 
-use crate::ParamIndex;
+use crate::{Guid, ParamIndex};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExtendedInterpolationKind {
@@ -44,6 +44,10 @@ pub struct KeyformGrid<F> {
     pub bindings: Vec<Binding>,
     /// Exactly [`Self::cell_count`] keyforms, in cell order.
     pub keyforms: Vec<F>,
+    /// Stored identity of each cell's keyform (`.cmo3` form GUID), parallel
+    /// to `keyforms`; cells sharing a GUID share one stored keyform. Empty
+    /// when the source has no keyform identities (runtime models).
+    pub guids: Vec<Guid>,
 }
 
 impl<F> KeyformGrid<F> {
@@ -52,6 +56,7 @@ impl<F> KeyformGrid<F> {
         Self {
             bindings: Vec::new(),
             keyforms: vec![form],
+            guids: Vec::new(),
         }
     }
 
@@ -130,6 +135,7 @@ mod tests {
     #[test]
     fn cell_addressing_first_binding_fastest() {
         let g = KeyformGrid {
+            guids: Vec::new(),
             bindings: vec![
                 Binding::new(0, vec![-1.0, 0.0, 1.0]),
                 Binding::new(1, vec![0.0, 1.0]),

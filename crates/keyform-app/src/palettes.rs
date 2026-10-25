@@ -4,7 +4,7 @@
 use eframe::egui::{self, Color32, RichText, Sense};
 use keyform_model::{DeformerKind, Model, ObjectInfo, ParamEntry, PartChild};
 
-use crate::document::{Document, Selection};
+use crate::document::{Document, KeyOp, Selection};
 use crate::icons::{self, Icon};
 use crate::log::{Level, Log};
 use crate::theme::Tokens;
@@ -311,42 +311,19 @@ fn deformer_children(
 
 /// Key values of the selected object on parameter `p` (key marks, §3).
 fn selected_keys(doc: &Document, p: usize) -> Vec<f32> {
-    let m = &doc.model;
-    let keys = |b: &[keyform_model::Binding]| {
-        b.iter()
-            .filter(|b| b.parameter == p)
-            .flat_map(|b| b.keys.clone())
-            .collect::<Vec<_>>()
-    };
     match doc.selection {
-        Some(Selection::ArtMesh(a)) => m
-            .art_meshes
-            .get(a)
-            .map(|x| keys(&x.grid.bindings))
-            .unwrap_or_default(),
-        Some(Selection::Part(i)) => m
-            .parts
-            .get(i)
-            .map(|x| keys(&x.grid.bindings))
-            .unwrap_or_default(),
-        Some(Selection::Glue(g)) => m
-            .glues
-            .get(g)
-            .map(|x| keys(&x.grid.bindings))
-            .unwrap_or_default(),
-        Some(Selection::Deformer(d)) => m
-            .deformers
-            .get(d)
-            .map(|x| match &x.kind {
-                DeformerKind::Warp(w) => keys(&w.grid.bindings),
-                DeformerKind::Rotation(r) => keys(&r.grid.bindings),
-            })
-            .unwrap_or_default(),
+        Some(o) => keyform_edit::keys_of(&doc.model, o, p),
         None => Vec::new(),
     }
 }
 
-pub fn parameter_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, filter: &mut String) {
+pub fn parameter_ui(
+    ui: &mut egui::Ui,
+    doc: &mut Document,
+    tokens: &Tokens,
+    filter: &mut String,
+    log: &mut Log,
+) {
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(filter)
@@ -367,7 +344,7 @@ pub fn parameter_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, filt
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let entries = doc.model.root_parameter_entries.clone();
-            param_entries(ui, doc, tokens, &entries, &filter, 0);
+            param_entries(ui, doc, tokens, &entries, &filter, 0, log);
         });
 }
 
@@ -378,11 +355,12 @@ fn param_entries(
     entries: &[ParamEntry],
     filter: &str,
     depth: usize,
+    log: &mut Log,
 ) {
     for e in entries {
         match *e {
             ParamEntry::Parameter(p) if p < doc.model.parameters.len() => {
-                param_row(ui, doc, tokens, p, filter)
+                param_row(ui, doc, tokens, p, filter, log)
             }
             ParamEntry::Group(g) if g < doc.model.parameter_groups.len() && depth < 64 => {
                 let name = doc.model.parameter_groups[g].name.clone();
@@ -397,14 +375,46 @@ fn param_entries(
                     icons::icon(ui, Icon::Folder);
                     ui.label(RichText::new(name).strong());
                 })
-                .body(|ui| param_entries(ui, doc, tokens, &children, filter, depth + 1));
+                .body(|ui| param_entries(ui, doc, tokens, &children, filter, depth + 1, log));
             }
             _ => {}
         }
     }
 }
 
-fn param_row(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, p: usize, filter: &str) {
+fn run_key_op(doc: &mut Document, op: KeyOp, p: usize, log: &mut Log) {
+    match doc.key_op(op, p) {
+        Ok(Some(w)) => log.warn(w),
+        Ok(None) => {}
+        Err(e) => log.warn(e),
+    }
+}
+
+/// The key operations of a parameter row's context menu (palettes.md §3).
+fn key_menu(ui: &mut egui::Ui, doc: &mut Document, p: usize, log: &mut Log) {
+    let can = doc.editable() && doc.selection.is_some();
+    for (label, op) in [
+        ("Add key", KeyOp::Add),
+        ("Delete key", KeyOp::Delete),
+        ("Add 2 keys", KeyOp::AddTwo),
+        ("Add 3 keys", KeyOp::AddThree),
+        ("Delete all keys", KeyOp::DeleteAll),
+    ] {
+        if ui.add_enabled(can, egui::Button::new(label)).clicked() {
+            run_key_op(doc, op, p, log);
+            ui.close();
+        }
+    }
+}
+
+fn param_row(
+    ui: &mut egui::Ui,
+    doc: &mut Document,
+    tokens: &Tokens,
+    p: usize,
+    filter: &str,
+    log: &mut Log,
+) {
     let param = doc.model.parameters[p].clone();
     if !filter.is_empty()
         && !param.name.to_lowercase().contains(filter)
@@ -427,8 +437,23 @@ fn param_row(ui: &mut egui::Ui, doc: &mut Document, tokens: &Tokens, p: usize, f
                 if param.kind == keyform_model::ParameterKind::BlendShape {
                     icons::icon(ui, Icon::BlendShape).on_hover_text("Blend Shape parameter");
                 }
-                ui.label(&param.name).on_hover_text(&param.id);
+                ui.label(&param.name)
+                    .on_hover_text(&param.id)
+                    .context_menu(|ui| key_menu(ui, doc, p, log));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Key buttons for the selected object (palettes.md §3).
+                    if doc.editable() && doc.selection.is_some() {
+                        let on_key = keys
+                            .iter()
+                            .any(|k| (k - doc.shown_value(p)).abs() < param.snap_epsilon);
+                        if on_key {
+                            if icons::icon_button(ui, Icon::KeyDelete, "Delete key").clicked() {
+                                run_key_op(doc, KeyOp::Delete, p, log);
+                            }
+                        } else if icons::icon_button(ui, Icon::KeyAdd, "Add key").clicked() {
+                            run_key_op(doc, KeyOp::Add, p, log);
+                        }
+                    }
                     ui.weak(format!(
                         "{:.*}",
                         param.decimal_places.clamp(0, 6) as usize,

@@ -45,6 +45,9 @@ pub fn insert_key<F: Blend>(
     };
 
     let mut out = Vec::with_capacity(cells);
+    // Keyform identities follow their cells; new cells get new GUIDs.
+    let track = grid.guids.len() == grid.keyforms.len() && !grid.guids.is_empty();
+    let mut guids = Vec::with_capacity(if track { cells } else { 0 });
     let mut idx = vec![0usize; new_dims.len()];
     for cell in 0..cells {
         // Decode `cell` into per-binding indices (first binding fastest).
@@ -65,10 +68,16 @@ pub fn insert_key<F: Blend>(
             }
             let mut f = acc?;
             f.finish();
+            if track {
+                guids.push(keyform_model::new_guid());
+            }
             f
         } else {
             let mut o = idx.clone();
             o[j] = if ij > pos { ij - 1 } else { ij };
+            if track {
+                guids.push(grid.guids.get(old_cell(&o))?.clone());
+            }
             grid.keyforms.get(old_cell(&o))?.clone()
         };
         out.push(form);
@@ -76,6 +85,9 @@ pub fn insert_key<F: Blend>(
     let b = &mut grid.bindings[j];
     b.keys.insert(pos, value);
     grid.keyforms = out;
+    if track {
+        grid.guids = guids;
+    }
     Some(pos)
 }
 
@@ -92,6 +104,7 @@ mod tests {
     fn inserts_interpolated_keyform_in_2d_grid() {
         let p0 = Parameter::new("A", -10.0, 10.0, 0.0);
         let mut g = KeyformGrid {
+            guids: Vec::new(),
             bindings: vec![
                 Binding::new(0, vec![0.0, 10.0]),
                 Binding::new(1, vec![0.0, 1.0]),
@@ -115,6 +128,7 @@ mod tests {
         let mut p = Parameter::new("R", -180.0, 180.0, 0.0);
         p.repeat = true;
         let mut g = KeyformGrid {
+            guids: Vec::new(),
             bindings: vec![Binding::new(0, vec![-90.0, 90.0])],
             keyforms: vec![f(0.0), f(1.0)],
         };

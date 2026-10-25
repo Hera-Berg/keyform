@@ -926,9 +926,13 @@ impl TabViewer for Viewer<'_> {
                     .and_then(|i| self.slots.get_mut(i))
                     .map(|s| &mut s.doc);
                 match doc {
-                    Some(d) => {
-                        palettes::parameter_ui(ui, d, &tokens, &mut self.palettes.param_filter)
-                    }
+                    Some(d) => palettes::parameter_ui(
+                        ui,
+                        d,
+                        &tokens,
+                        &mut self.palettes.param_filter,
+                        self.log,
+                    ),
                     None => {
                         ui.weak("No model");
                     }

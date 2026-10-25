@@ -2,8 +2,10 @@
 //! model edit operations.
 
 pub mod history;
+pub mod keys;
 
 pub use history::{History, StepKind};
+pub use keys::{add_key, delete_all_keys, keys_of, remove_key, KeyError, ObjectRef};
 
 /// Object and parameter ID rules: letters, digits and underscores only, at
 /// most 63 characters, not starting with a digit. spec: 50-ui/dialogs.md §2

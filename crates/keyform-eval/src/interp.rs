@@ -523,6 +523,7 @@ mod tests {
     fn two_binding_tensor_product() {
         let params = vec![param(0.0, 1.0), param(0.0, 1.0)];
         let grid = KeyformGrid {
+            guids: Vec::new(),
             bindings: vec![
                 Binding::new(0, vec![0.0, 1.0]),
                 Binding::new(1, vec![0.0, 1.0]),
@@ -546,6 +547,7 @@ mod tests {
         bs.kind = ParameterKind::BlendShape;
         let params = vec![param(-1.0, 1.0), bs, param(0.0, 1.0)];
         let grid = KeyformGrid {
+            guids: Vec::new(),
             bindings: vec![Binding::new(0, vec![-1.0, 1.0])],
             keyforms: vec![mesh_form(-10.0, 500.0), mesh_form(10.0, 500.0)],
         };

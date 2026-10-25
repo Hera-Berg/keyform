@@ -1691,6 +1691,7 @@ dependencies = [
 name = "keyform-cli"
 version = "0.1.0"
 dependencies = [
+ "keyform-edit",
  "keyform-eval",
  "keyform-formats",
  "keyform-model",
@@ -1702,7 +1703,9 @@ dependencies = [
 name = "keyform-edit"
 version = "0.1.0"
 dependencies = [
+ "keyform-eval",
  "keyform-model",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1718,6 +1721,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "flate2",
+ "keyform-edit",
  "keyform-eval",
  "keyform-model",
  "keyform-physics",

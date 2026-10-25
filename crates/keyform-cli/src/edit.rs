@@ -8,7 +8,9 @@
 //! - `part`, `mesh`, `deformer`: `opacity` (every keyform);
 //! - `mesh`, warp `deformer`: `move=DX,DY` (every keyform position);
 //! - rotation `deformer`: `angle+=DEG` (every keyform);
-//! - `mesh`: `culling`.
+//! - `mesh`: `culling`;
+//! - every kind with keyforms: `addkey=PARAM_ID:VALUE`, `removekey=PARAM_ID:VALUE`
+//!   (keys.md §1–2).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -50,10 +52,46 @@ fn shift(positions: &mut [f32], d: [f32; 2]) {
     }
 }
 
+/// `addkey` / `removekey` on any object with keyforms.
+fn key_edit(
+    m: &mut Model,
+    kind: &str,
+    id: &str,
+    field: &str,
+    value: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use keyform_edit::ObjectRef;
+    if field != "addkey" && field != "removekey" {
+        return Ok(false);
+    }
+    let o = match kind {
+        "part" => ObjectRef::Part(find(&m.parts, id, |p| &p.info.id)?),
+        "mesh" => ObjectRef::ArtMesh(find(&m.art_meshes, id, |a| &a.info.id)?),
+        "deformer" => ObjectRef::Deformer(find(&m.deformers, id, |d| &d.info.id)?),
+        "glue" => ObjectRef::Glue(find(&m.glues, id, |g| &g.info.id)?),
+        _ => return Err(format!("{kind}: no keyforms").into()),
+    };
+    let (pid, v) = value.split_once(':').ok_or("expected PARAM_ID:VALUE")?;
+    let p = find(&m.parameters, pid, |p| &p.id)?;
+    let v: f32 = v.parse()?;
+    let changed = if field == "addkey" {
+        keyform_edit::add_key(m, o, p, v)?
+    } else {
+        keyform_edit::remove_key(m, o, p, v)?
+    };
+    if !changed {
+        return Err("no change".into());
+    }
+    Ok(true)
+}
+
 fn apply(m: &mut Model, edit: &str) -> R {
     let (target, value) = edit.split_once('=').ok_or("expected KIND:ID.FIELD=VALUE")?;
     let (kind, rest) = target.split_once(':').ok_or("expected KIND:ID.FIELD")?;
     let (id, field) = rest.rsplit_once('.').ok_or("expected ID.FIELD")?;
+    if key_edit(m, kind, id, field, value)? {
+        return Ok(());
+    }
     let unknown = || format!("{kind}: unknown field {field:?}");
     match kind {
         "param" => {

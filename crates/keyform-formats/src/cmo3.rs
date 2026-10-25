@@ -59,6 +59,27 @@ pub struct Cmo3Document {
     pub saved: Model,
 }
 
+/// Loads the typed model and its element sources from a parsed document.
+pub(crate) fn load_model(
+    archive: &CaffArchive,
+    xml: &XmlDocument,
+    warnings: &mut Vec<String>,
+) -> Result<(Model, SourceMap)> {
+    let g = ObjectGraph::new(xml)?;
+    let paths = element_paths(&xml.root);
+    let mut l = Loader {
+        g: &g,
+        archive,
+        warnings,
+        idx: Index::default(),
+        paths: &paths,
+        sources: SourceMap::default(),
+        pending: ObjectSource::default(),
+    };
+    let m = l.load()?;
+    Ok((m, l.sources))
+}
+
 /// Maps every element (by address) to its path, for recording sources.
 fn element_paths(root: &crate::xml::Element) -> HashMap<*const crate::xml::Element, ElementPath> {
     let mut map = HashMap::new();
@@ -86,21 +107,7 @@ impl Cmo3Document {
         if !archive.guard_ok {
             warnings.push("archive guard bytes missing".into());
         }
-        let (model, sources) = {
-            let g = ObjectGraph::new(&xml)?;
-            let paths = element_paths(&xml.root);
-            let mut l = Loader {
-                g: &g,
-                archive: &archive,
-                warnings: &mut warnings,
-                idx: Index::default(),
-                paths: &paths,
-                sources: SourceMap::default(),
-                pending: ObjectSource::default(),
-            };
-            let m = l.load()?;
-            (m, l.sources)
-        };
+        let (model, sources) = load_model(&archive, &xml, &mut warnings)?;
         Ok(Self {
             archive,
             xml,
@@ -706,6 +713,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
         let mut grid = KeyformGrid {
+            guids: Vec::new(),
             bindings,
             keyforms: Vec::new(),
         };
@@ -717,6 +725,7 @@ impl<'a, 'd> Loader<'a, 'd> {
         }
         let mut slots: Vec<Option<F>> = vec![None; cells];
         let mut cell_paths: Vec<Option<ElementPath>> = vec![None; cells];
+        let mut cell_guids: Vec<Guid> = vec![String::new(); cells];
         if let Some(gs) = grid_src {
             for kog in gs.list("keyformsOnGrid")? {
                 let mut idx = vec![usize::MAX; grid.bindings.len()];
@@ -736,6 +745,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 };
                 let fg = kog.guid("keyformGuid")?.unwrap_or_default();
                 cell_paths[cell] = form_paths.get(fg).cloned();
+                cell_guids[cell] = fg.to_owned();
                 match forms.get(fg) {
                     Some(f) => slots[cell] = Some(f.clone()),
                     None => return invalid(format!("{what}: grid names unknown keyform {fg}")),
@@ -752,6 +762,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             .into_iter()
             .map(|s| s.unwrap_or_else(|| first.clone()))
             .collect();
+        grid.guids = cell_guids;
 
         let mut blend = BlendShapes::default();
         let mut blend_paths = Vec::new();

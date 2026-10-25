@@ -16,6 +16,10 @@ pub enum Icon {
     BlendShape,
     Play,
     Stop,
+    /// Key diamond with a plus: add a key.
+    KeyAdd,
+    /// Key diamond with a minus: delete a key.
+    KeyDelete,
 }
 
 pub const ICON_COLOR: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xa8);
@@ -110,6 +114,14 @@ pub fn paint(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Stop => {
             p.rect_filled(Rect::from_min_max(at(3.5, 3.5), at(12.5, 12.5)), 1.0, color);
+        }
+        Icon::KeyAdd | Icon::KeyDelete => {
+            // Key mark (diamond) at the left, sign at the right.
+            line(&[(5.0, 3.5), (9.5, 8.0), (5.0, 12.5), (0.5, 8.0), (5.0, 3.5)]);
+            line(&[(11.0, 8.0), (15.5, 8.0)]);
+            if icon == Icon::KeyAdd {
+                line(&[(13.25, 5.75), (13.25, 10.25)]);
+            }
         }
     }
 }

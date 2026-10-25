@@ -4,15 +4,21 @@
 //! and only fields whose value changed are rewritten, in place, where the
 //! loader found them (an attribute or a child on the `super` chain). Every
 //! other byte of `main.xml` stays as it was. A change this module cannot
-//! write yet (adding or removing objects, rebinding keyforms, re-parenting,
-//! mesh topology…) fails the whole sync with `Unsupported` and leaves the
-//! document untouched, so an edit is never silently dropped.
+//! write yet (adding or removing objects, re-parenting, mesh topology…)
+//! fails the whole sync with `Unsupported` and leaves the document
+//! untouched, so an edit is never silently dropped. Grids whose keys changed
+//! are rewritten by [`grid`]; after such structural changes the document is
+//! reloaded and must give back exactly the edited model before it is kept.
 //! spec: 10-formats/xml-object-graph.md §2, §6
 
 use std::path::Path;
 use std::sync::Arc;
 
 use keyform_model::*;
+
+mod grid;
+
+use grid::Ctx;
 
 use super::{Cmo3Document, ElementPath, ObjectSource};
 use crate::error::{invalid, FormatError, Result};
@@ -42,6 +48,8 @@ impl Cmo3Document {
         let mut root = self.xml.root.clone();
         let s = &self.sources;
         let (old, new) = (&self.saved, &self.model);
+        let mut ctx = Ctx::new(&root, &new.parameters, &s.parameters);
+        let ctx = &mut ctx;
         sync_list(
             &mut root,
             &old.parameters,
@@ -52,24 +60,49 @@ impl Cmo3Document {
             },
         )?;
         sync_list(&mut root, &old.parts, &new.parts, |root, i, o, n| {
-            write_part(root, source(&s.parts, i)?, o, n)
+            write_part(root, ctx, source(&s.parts, i)?, o, n)
         })?;
         sync_list(
             &mut root,
             &old.deformers,
             &new.deformers,
-            |root, i, o, n| write_deformer(root, source(&s.deformers, i)?, o, n),
+            |root, i, o, n| write_deformer(root, ctx, source(&s.deformers, i)?, o, n),
         )?;
         sync_list(
             &mut root,
             &old.art_meshes,
             &new.art_meshes,
-            |root, i, o, n| write_art_mesh(root, source(&s.art_meshes, i)?, o, n),
+            |root, i, o, n| write_art_mesh(root, ctx, source(&s.art_meshes, i)?, o, n),
         )?;
         sync_list(&mut root, &old.glues, &new.glues, |root, i, o, n| {
-            write_glue(root, source(&s.glues, i)?, o, n)
+            write_glue(root, ctx, source(&s.glues, i)?, o, n)
         })?;
-        self.xml.root = root;
+        if !ctx.structural {
+            self.xml.root = root;
+            self.saved = self.model.clone();
+            return Ok(());
+        }
+        grid::remove_orphans(&mut root, &ctx.orphans)?;
+        let mut xml = self.xml.clone();
+        xml.root = root;
+        for name in grid::GRID_IMPORTS {
+            ensure_import(&mut xml, name);
+        }
+        // Debugging aid: keep the candidate document.
+        if let Some(p) = std::env::var_os("KEYFORM_DEBUG_SAVE") {
+            let _ = std::fs::write(p, xml.write());
+        }
+        // The rewritten document must load back as exactly the edited model.
+        let mut warnings = Vec::new();
+        let (loaded, sources) = super::load_model(&self.archive, &xml, &mut warnings)?;
+        if !loaded.same_data(&self.model) {
+            return invalid(format!(
+                "the rewritten document does not reload as the edited model ({})",
+                first_difference(&loaded, &self.model)
+            ));
+        }
+        self.xml = xml;
+        self.sources = sources;
         self.saved = self.model.clone();
         Ok(())
     }
@@ -87,6 +120,80 @@ impl Cmo3Document {
         write_atomic(path, &bytes)?;
         Ok(())
     }
+}
+
+/// Names the first object that differs between two models (diagnostics).
+fn first_difference(a: &Model, b: &Model) -> String {
+    fn diff<T: PartialEq + std::fmt::Debug>(
+        kind: &str,
+        x: &[Arc<T>],
+        y: &[Arc<T>],
+        id: impl Fn(&T) -> String,
+    ) -> Option<String> {
+        if x.len() != y.len() {
+            return Some(format!("{kind} count"));
+        }
+        let (p, q) = x.iter().zip(y).find(|(p, q)| p != q)?;
+        // Where the debug texts part, with a little context.
+        let (dp, dq) = (format!("{p:?}"), format!("{q:?}"));
+        let at = dp
+            .char_indices()
+            .zip(dq.chars())
+            .find(|((_, a), b)| a != b)
+            .map_or(dp.len().min(dq.len()), |((i, _), _)| i);
+        let lo = dp[..at].char_indices().rev().nth(60).map_or(0, |(i, _)| i);
+        let snippet = |t: &str| t[lo..].chars().take(140).collect::<String>();
+        Some(format!(
+            "{kind} {}: reloaded …{}… vs edited …{}…",
+            id(p),
+            snippet(&dp),
+            snippet(&dq)
+        ))
+    }
+    diff("parameter", &a.parameters, &b.parameters, |p| p.id.clone())
+        .or_else(|| diff("part", &a.parts, &b.parts, |p| p.info.id.clone()))
+        .or_else(|| {
+            diff("deformer", &a.deformers, &b.deformers, |p| {
+                p.info.id.clone()
+            })
+        })
+        .or_else(|| {
+            diff("art mesh", &a.art_meshes, &b.art_meshes, |p| {
+                p.info.id.clone()
+            })
+        })
+        .or_else(|| diff("glue", &a.glues, &b.glues, |p| p.info.id.clone()))
+        .unwrap_or_else(|| "model-level data".into())
+}
+
+/// Adds `<?import name?>` unless present, keeping the imports sorted.
+fn ensure_import(xml: &mut crate::xml::XmlDocument, name: &str) {
+    use crate::xml::Pi;
+    if xml
+        .pis
+        .iter()
+        .any(|p| p.target == "import" && p.data == name)
+    {
+        return;
+    }
+    let at = xml
+        .pis
+        .iter()
+        .position(|p| p.target == "import" && p.data.as_str() > name)
+        .or_else(|| {
+            xml.pis
+                .iter()
+                .rposition(|p| p.target == "import")
+                .map(|i| i + 1)
+        })
+        .unwrap_or(xml.pis.len());
+    xml.pis.insert(
+        at,
+        Pi {
+            target: "import".into(),
+            data: name.into(),
+        },
+    );
 }
 
 /// Writes `bytes` to `path` through a temporary sibling file and a rename,
@@ -261,6 +368,7 @@ fn set_scalar(e: &mut Element, name: &str, tag: &str, text: String) {
                 if c.name == "null" {
                     c.name = tag.to_owned();
                 }
+                c.attrs.retain(|(k, _)| k != "xs.ref");
                 c.children.clear();
                 c.text = text;
             }
@@ -312,6 +420,8 @@ fn set_field_attrs(e: &mut Element, name: &str, tag: &str, attrs: &[(&str, Strin
     if field.name == "null" {
         field.name = tag.to_owned();
     }
+    // A shared value changed for this object only: write it inline.
+    field.attrs.retain(|(k, _)| k != "xs.ref");
     for (k, v) in attrs {
         field.set_attr(k, v.clone());
     }
@@ -337,6 +447,8 @@ fn set_array(e: &mut Element, name: &str, tag: &str, values: &[f32]) {
     };
     let c = &mut h.children[i];
     c.name = tag.to_owned();
+    // Arrays can be shared (`xs.ref`); the new values belong to this object.
+    c.attrs.retain(|(k, _)| k != "xs.ref");
     c.set_attr("count", values.len().to_string());
     c.text = text;
 }
@@ -524,13 +636,19 @@ impl FormFields for GlueForm {
 /// shapes' parameters and keys must be unchanged.
 fn write_forms<F: FormFields>(
     root: &mut Element,
+    ctx: &mut Ctx,
     src: &ObjectSource,
     what: &str,
     (og, ob): (&KeyformGrid<F>, &BlendShapes<F>),
     (ng, nb): (&KeyformGrid<F>, &BlendShapes<F>),
 ) -> Result<()> {
-    if og.bindings != ng.bindings || og.keyforms.len() != ng.keyforms.len() {
-        return unsupported(format!("{what}: keyform bindings"));
+    if og.bindings != ng.bindings || og.guids != ng.guids || og.keyforms.len() != ng.keyforms.len()
+    {
+        // Keys changed: the grid is rewritten (blend shapes must stay as they are).
+        if ob != nb {
+            return unsupported(format!("{what}: blend shapes together with keys"));
+        }
+        return grid::rebuild_grid(root, ctx, src, what, og, ng);
     }
     let same_shapes = ob.constraints == nb.constraints
         && ob.shapes.len() == nb.shapes.len()
@@ -576,7 +694,13 @@ fn write_forms<F: FormFields>(
     Ok(())
 }
 
-fn write_part(root: &mut Element, src: &ObjectSource, o: &Part, n: &Part) -> Result<()> {
+fn write_part(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    o: &Part,
+    n: &Part,
+) -> Result<()> {
     let rest_same = Part {
         info: o.info.clone(),
         draw_order_group: o.draw_order_group,
@@ -595,6 +719,7 @@ fn write_part(root: &mut Element, src: &ObjectSource, o: &Part, n: &Part) -> Res
     }
     write_forms(
         root,
+        ctx,
         src,
         &o.info.id,
         (&o.grid, &o.blend_shapes),
@@ -642,6 +767,7 @@ fn write_compositions(
 
 fn write_deformer(
     root: &mut Element,
+    ctx: &mut Ctx,
     src: &ObjectSource,
     o: &Deformer,
     n: &Deformer,
@@ -657,6 +783,7 @@ fn write_deformer(
             }
             write_forms(
                 root,
+                ctx,
                 src,
                 id,
                 (&ow.grid, &ow.blend_shapes),
@@ -671,6 +798,7 @@ fn write_deformer(
         (DeformerKind::Rotation(or), DeformerKind::Rotation(nr)) => {
             write_forms(
                 root,
+                ctx,
                 src,
                 id,
                 (&or.grid, &or.blend_shapes),
@@ -687,7 +815,13 @@ fn write_deformer(
     Ok(())
 }
 
-fn write_art_mesh(root: &mut Element, src: &ObjectSource, o: &ArtMesh, n: &ArtMesh) -> Result<()> {
+fn write_art_mesh(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    o: &ArtMesh,
+    n: &ArtMesh,
+) -> Result<()> {
     let rest_same = ArtMesh {
         info: o.info.clone(),
         invert_clip: o.invert_clip,
@@ -707,6 +841,7 @@ fn write_art_mesh(root: &mut Element, src: &ObjectSource, o: &ArtMesh, n: &ArtMe
     }
     write_forms(
         root,
+        ctx,
         src,
         &o.info.id,
         (&o.grid, &o.blend_shapes),
@@ -727,7 +862,13 @@ fn write_art_mesh(root: &mut Element, src: &ObjectSource, o: &ArtMesh, n: &ArtMe
     Ok(())
 }
 
-fn write_glue(root: &mut Element, src: &ObjectSource, o: &Glue, n: &Glue) -> Result<()> {
+fn write_glue(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    o: &Glue,
+    n: &Glue,
+) -> Result<()> {
     let rest_same = Glue {
         info: o.info.clone(),
         grid: o.grid.clone(),
@@ -739,6 +880,7 @@ fn write_glue(root: &mut Element, src: &ObjectSource, o: &Glue, n: &Glue) -> Res
     }
     write_forms(
         root,
+        ctx,
         src,
         &o.info.id,
         (&o.grid, &o.blend_shapes),

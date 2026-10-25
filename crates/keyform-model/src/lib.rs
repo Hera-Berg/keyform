@@ -21,6 +21,42 @@ pub const SCREEN_DEFAULT: Color = [0.0, 0.0, 0.0, 1.0];
 /// GUID text (UUID). Compared by value, never by identity.
 pub type Guid = String;
 
+/// A new random (version 4) UUID for objects and keyforms created by
+/// editing. Uses the standard library's randomly keyed hasher, the clock
+/// and a counter as entropy (no cryptographic strength needed).
+pub fn new_guid() -> Guid {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let half = |salt: u64| {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u64(salt);
+        h.write_u64(n);
+        h.write_u64(t);
+        h.finish()
+    };
+    let (a, b) = (half(0x5157), half(0xA11CE));
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&a.to_le_bytes());
+    bytes[8..].copy_from_slice(&b.to_le_bytes());
+    bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3F) | 0x80; // RFC 4122 variant
+    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
+
 /// Target deformer of every deformer, art mesh, art path and glue attached
 /// to the canvas root. Writers must use it for root-attached objects.
 /// spec: 20-model/object-model.md §1

@@ -10,6 +10,7 @@ name = "kf"
 path = "src/main.rs"
 
 [dependencies]
+keyform-edit.workspace = true
 keyform-model.workspace = true
 keyform-eval.workspace = true
 keyform-formats.workspace = true
