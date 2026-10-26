@@ -761,9 +761,71 @@ impl KeyformApp {
             ui.close();
         }
         ui.separator();
-        let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) else {
+        let Some(d) = self.active_doc() else { return };
+        let canvas = [d.model.canvas.width as f32, d.model.canvas.height as f32];
+        let Some(s) = d.mesh_edit.as_mut() else {
             return;
         };
+        let mut notice = None;
+        if ui.button("Edge swap").clicked() {
+            notice = s.swap_edge().err();
+            ui.close();
+        }
+        if ui
+            .button("4 Division")
+            .on_hover_text("Divide one triangle into four triangles")
+            .clicked()
+        {
+            notice = s.divide4().err();
+            ui.close();
+        }
+        if ui.button("Merge Vertices").clicked() {
+            let n = s.merge();
+            notice = Some(if n > 0 {
+                format!("Overlapping vertices are merged. ({n})")
+            } else {
+                "No overlapping vertices.".to_owned()
+            });
+            ui.close();
+        }
+        ui.menu_button("Mirror Edit", |ui| {
+            let mut on = s.mirror.is_some();
+            if ui.checkbox(&mut on, "Mirror Edit").changed() {
+                s.mirror = on.then(|| crate::mesh_edit::Mirror {
+                    axis: s.centre(false).map_or(canvas[0] / 2.0, |c| c[0]),
+                    vertical: true,
+                });
+            }
+            if let Some(m) = s.mirror.as_mut() {
+                ui.radio_value(&mut m.vertical, true, "Axis: vertical");
+                ui.radio_value(&mut m.vertical, false, "Axis: horizontal");
+            }
+            let k = usize::from(!s.mirror.is_some_and(|m| m.vertical));
+            let centre = s.centre(false);
+            let selected = s.centre(true);
+            if let Some(m) = s.mirror.as_mut() {
+                if ui.button("Reset Axis Position").clicked() {
+                    if let Some(c) = centre {
+                        m.axis = c[k];
+                    }
+                }
+                if ui.button("Center of Canvas").clicked() {
+                    m.axis = canvas[k] / 2.0;
+                }
+                if ui
+                    .add_enabled(
+                        selected.is_some(),
+                        egui::Button::new("Center of Selected Vertices"),
+                    )
+                    .clicked()
+                {
+                    if let Some(c) = selected {
+                        m.axis = c[k];
+                    }
+                }
+            }
+        });
+        ui.separator();
         if ui
             .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
             .clicked()
@@ -786,6 +848,7 @@ impl KeyformApp {
                 (MeshTool::Select, "Select Arrow"),
                 (MeshTool::AddPoint, "Add Point Tool"),
                 (MeshTool::Erase, "Eraser"),
+                (MeshTool::Brush, "Deform brushes"),
             ] {
                 if ui.selectable_label(s.tool == t, name).clicked() {
                     s.tool = t;
@@ -793,6 +856,9 @@ impl KeyformApp {
                 }
             }
         });
+        if let Some(n) = notice {
+            self.log.info(n);
+        }
     }
 
     /// Automatic Mesh generator (dialog, or the popup in mesh edit mode).
@@ -939,6 +1005,11 @@ impl KeyformApp {
                         "Eraser",
                         "Delete vertices and edges (Alt: edges only)",
                     ),
+                    (
+                        MeshTool::Brush,
+                        "Brush",
+                        "Drag the vertices under a soft brush",
+                    ),
                 ] {
                     if ui
                         .add(egui::Button::selectable(s.tool == t, name))
@@ -948,12 +1019,37 @@ impl KeyformApp {
                         s.tool = t;
                     }
                 }
+                if s.tool == MeshTool::Brush {
+                    ui.add(
+                        egui::DragValue::new(&mut s.brush_radius)
+                            .range(2.0..=2000.0)
+                            .prefix("size ")
+                            .suffix(" px"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut s.brush_hardness)
+                            .range(0.0..=1.0)
+                            .speed(0.01)
+                            .prefix("hardness "),
+                    );
+                }
                 if ui
                     .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
                     .on_hover_text("Connect the selected vertices with edges")
                     .clicked()
                 {
                     s.connect();
+                }
+                let mut mirror = s.mirror.is_some();
+                if ui
+                    .checkbox(&mut mirror, "Mirror")
+                    .on_hover_text("Mirror Edit: vertex moves are mirrored across the axis")
+                    .changed()
+                {
+                    s.mirror = mirror.then(|| crate::mesh_edit::Mirror {
+                        axis: s.centre(false).map_or(0.0, |c| c[0]),
+                        vertical: true,
+                    });
                 }
                 if s.unresolved > 0 {
                     ui.colored_label(

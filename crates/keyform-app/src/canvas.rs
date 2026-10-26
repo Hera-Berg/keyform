@@ -451,7 +451,7 @@ fn mesh_tool(
                     }
                     s.set_selected(sel);
                     if response.drag_started_by(primary) && !shift {
-                        s.drag_begin();
+                        s.drag_begin(radius);
                     }
                 } else if response.drag_started_by(primary) {
                     gpu.rect = Some((press, true));
@@ -499,7 +499,14 @@ fn mesh_tool(
                     }
                 }
                 if response.drag_started_by(primary) {
-                    s.drag_begin();
+                    s.drag_begin(radius);
+                }
+            }
+        }
+        MeshTool::Brush => {
+            if response.drag_started_by(primary) {
+                if let Some(press) = press {
+                    s.brush_begin(to_canvas(press), radius);
                 }
             }
         }
@@ -581,6 +588,33 @@ fn draw_mesh_edit(
         painter.line_segment([p[0], p[1]], thin);
         painter.line_segment([p[1], p[2]], thin);
         painter.line_segment([p[2], p[0]], thin);
+    }
+    // Brush outline at the cursor.
+    if s.tool == crate::mesh_edit::MeshTool::Brush {
+        if let Some(c) = ctx
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| rect.contains(*p))
+        {
+            let o = to_screen([0.0, 0.0]);
+            let r = (to_screen([s.brush_radius, 0.0]) - o).length();
+            painter.circle_stroke(c, r, egui::Stroke::new(1.0, tokens.accent));
+            painter.circle_stroke(
+                c,
+                r * s.brush_hardness,
+                egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.4)),
+            );
+        }
+    }
+    // Mirror Edit axis.
+    if let Some(m) = s.mirror {
+        let stroke = egui::Stroke::new(1.0, tokens.warning);
+        let far = 1e6;
+        let (a, b) = if m.vertical {
+            ([m.axis, -far], [m.axis, far])
+        } else {
+            ([-far, m.axis], [far, m.axis])
+        };
+        painter.line_segment([to_screen(a), to_screen(b)], stroke);
     }
     let edge = egui::Stroke::new(1.0, tokens.accent);
     for (e, &pr) in g.mesh.edges.iter().zip(&g.mesh.edge_priority) {

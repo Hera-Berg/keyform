@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use keyform_model::{
-    ArtMesh, EditableMesh, Model, EDGE_AUTO_TRIANGULATION, EDGE_NORMAL, POINT_NORMAL,
+    ArtMesh, EditableMesh, Model, EDGE_AUTO_TRIANGULATION, EDGE_NORMAL, EDGE_USER_TRIANGULATION,
+    POINT_NORMAL,
 };
 use spade::handles::FixedVertexHandle;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
@@ -180,6 +181,158 @@ impl MeshGraph {
         for e in &mut self.mesh.edges {
             *e = [new_index[e[0] as usize], new_index[e[1] as usize]];
         }
+    }
+
+    /// Edge swap: the edge a–b shared by two triangles of `tris` is
+    /// replaced by the quad's other diagonal, kept as a user-triangulation
+    /// edge (spec: canvas-and-tools.md §5 "Edge swap"). Fails when a–b is
+    /// not an inner edge or the quad is not convex.
+    pub fn swap_edge(&mut self, a: u32, b: u32, tris: &[u32]) -> Result<(), &'static str> {
+        let opposite: Vec<u32> = tris
+            .chunks_exact(3)
+            .filter(|t| t.contains(&a) && t.contains(&b))
+            .filter_map(|t| t.iter().copied().find(|&v| v != a && v != b))
+            .collect();
+        let [c, d] = opposite[..] else {
+            return Err("Select an edge between two triangles.");
+        };
+        // Convex: a and b lie on opposite sides of c–d.
+        let p = |v: u32| self.point(v as usize);
+        let side = |x: [f32; 2]| {
+            let (pc, pd) = (p(c), p(d));
+            (pd[0] - pc[0]) * (x[1] - pc[1]) - (pd[1] - pc[1]) * (x[0] - pc[0])
+        };
+        if side(p(a)) * side(p(b)) >= 0.0 {
+            return Err("The edge can't be swapped (the quadrilateral is not convex).");
+        }
+        if let Some(e) = self.edge_index(a, b) {
+            self.delete_edges(&HashSet::from([e]));
+        }
+        self.add_edge(c, d, EDGE_USER_TRIANGULATION);
+        Ok(())
+    }
+
+    /// 4 Division: every triangle of `tris` whose corners are all in
+    /// `selected` is split into four by its edge midpoints (shared
+    /// midpoints for shared edges; new edges are normal). Returns how many
+    /// triangles were divided.
+    pub fn divide4(&mut self, tris: &[u32], selected: &HashSet<usize>) -> usize {
+        let chosen: Vec<[u32; 3]> = tris
+            .chunks_exact(3)
+            .filter(|t| t.iter().all(|&v| selected.contains(&(v as usize))))
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let mut mid: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in &chosen {
+            let mut m = [0u32; 3];
+            for (k, (a, b)) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]
+                .into_iter()
+                .enumerate()
+            {
+                let key = (a.min(b), a.max(b));
+                m[k] = match mid.get(&key) {
+                    Some(&v) => v,
+                    None => {
+                        let (pa, pb) = (self.point(a as usize), self.point(b as usize));
+                        let c = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+                        let v = match self.edge_index(a, b) {
+                            Some(e) if self.mesh.edge_priority[e] != EDGE_AUTO_TRIANGULATION => {
+                                self.split_edge(e, c) as u32
+                            }
+                            other => {
+                                if let Some(e) = other {
+                                    self.delete_edges(&HashSet::from([e]));
+                                }
+                                let v = self.add_point(c) as u32;
+                                self.add_edge(a, v, EDGE_NORMAL);
+                                self.add_edge(v, b, EDGE_NORMAL);
+                                v
+                            }
+                        };
+                        mid.insert(key, v);
+                        v
+                    }
+                };
+            }
+            self.add_edge(m[0], m[1], EDGE_NORMAL);
+            self.add_edge(m[1], m[2], EDGE_NORMAL);
+            self.add_edge(m[2], m[0], EDGE_NORMAL);
+        }
+        chosen.len()
+    }
+
+    /// Merge Vertices: points within `eps` of each other (among `among`, or
+    /// all points) become one; the lowest index is kept and takes over the
+    /// others' edges. Returns how many points were removed.
+    pub fn merge_overlapping(&mut self, among: Option<&HashSet<usize>>, eps: f32) -> usize {
+        let n = self.len();
+        let cand: Vec<usize> = (0..n)
+            .filter(|k| among.is_none_or(|s| s.contains(k)))
+            .collect();
+        let mut target: Vec<usize> = (0..n).collect();
+        for (x, &i) in cand.iter().enumerate() {
+            if target[i] != i {
+                continue;
+            }
+            for &j in &cand[x + 1..] {
+                if target[j] == j {
+                    let (p, q) = (self.point(i), self.point(j));
+                    if (p[0] - q[0]).hypot(p[1] - q[1]) <= eps {
+                        target[j] = i;
+                    }
+                }
+            }
+        }
+        let gone: HashSet<usize> = (0..n).filter(|&k| target[k] != k).collect();
+        if gone.is_empty() {
+            return 0;
+        }
+        // Redirect edges, dropping loops and duplicates.
+        let old: Vec<([u32; 2], i8)> = self
+            .mesh
+            .edges
+            .iter()
+            .copied()
+            .zip(self.mesh.edge_priority.iter().copied())
+            .collect();
+        self.mesh.edges.clear();
+        self.mesh.edge_priority.clear();
+        for (e, p) in old {
+            let (a, b) = (target[e[0] as usize] as u32, target[e[1] as usize] as u32);
+            if a != b && self.edge_index(a, b).is_none() {
+                self.mesh.edges.push([a, b]);
+                self.mesh.edge_priority.push(p);
+            }
+        }
+        self.delete_points(&gone);
+        gone.len()
+    }
+
+    /// Mirror Edit partner of point `k`: the other point nearest to `k`'s
+    /// reflection across the axis (x = `axis` when `vertical`, else
+    /// y = `axis`), within `tolerance`.
+    pub fn mirror_partner(
+        &self,
+        k: usize,
+        axis: f32,
+        vertical: bool,
+        tolerance: f32,
+    ) -> Option<usize> {
+        let p = self.point(k);
+        let r = if vertical {
+            [2.0 * axis - p[0], p[1]]
+        } else {
+            [p[0], 2.0 * axis - p[1]]
+        };
+        (0..self.len())
+            .filter(|&j| j != k)
+            .map(|j| {
+                let q = self.point(j);
+                (j, (q[0] - r[0]).hypot(q[1] - r[1]))
+            })
+            .filter(|&(_, d)| d <= tolerance)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(j, _)| j)
     }
 
     /// Whether `other` has the same points (by UID, in order) and edges:
@@ -923,6 +1076,44 @@ mod tests {
         g.mesh.edge_priority[4] = EDGE_AUTO_TRIANGULATION;
         set_mesh(&mut m, 0, &g).unwrap();
         assert_eq!(m.art_meshes[0].indices.len(), 6);
+    }
+
+    #[test]
+    fn swap_divide_merge_mirror() {
+        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        let mut g = graph(&pts, &[[0, 1], [1, 2], [2, 3], [3, 0]]);
+        let t = g.triangulate().unwrap();
+        // Swap whichever diagonal the triangulation chose.
+        let diag = if tri_set(&t.indices).contains(&[0, 1, 2]) {
+            (0, 2)
+        } else {
+            (1, 3)
+        };
+        g.swap_edge(diag.0, diag.1, &t.indices).unwrap();
+        let t = g.triangulate().unwrap();
+        let other = if diag == (0, 2) { (1, 3) } else { (0, 2) };
+        let e = g.edge_index(other.0, other.1).unwrap();
+        assert_eq!(g.mesh.edge_priority[e], EDGE_USER_TRIANGULATION);
+        assert!(g.edge_index(diag.0, diag.1).is_none());
+        // A boundary edge has one triangle: refused.
+        assert!(g.swap_edge(0, 1, &t.indices).is_err());
+
+        // 4 division of both triangles: 4 corners + 5 midpoints, 8 triangles.
+        let all: HashSet<usize> = (0..4).collect();
+        assert_eq!(g.divide4(&t.indices, &all), 2);
+        assert_eq!(g.len(), 9);
+        assert_eq!(g.triangulate().unwrap().indices.len() / 3, 8);
+
+        // Merge: a duplicate of point 2 takes over its edges.
+        let d = g.add_point([10.0, 10.0]);
+        g.add_edge(d as u32, 0, EDGE_NORMAL);
+        assert_eq!(g.merge_overlapping(None, 0.01), 1);
+        assert_eq!(g.len(), 9);
+        assert!(g.edge_index(2, 0).is_some());
+
+        // Mirror partner across x = 5.
+        assert_eq!(g.mirror_partner(0, 5.0, true, 0.5), Some(1));
+        assert_eq!(g.mirror_partner(0, 5.0, false, 0.5), Some(3));
     }
 
     #[test]

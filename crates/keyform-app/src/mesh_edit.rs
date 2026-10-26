@@ -20,7 +20,32 @@ pub enum MeshTool {
     AddPoint,
     /// Deletes vertices and edges under the cursor; Alt deletes edges only.
     Erase,
+    /// Drags the vertices under a soft brush.
+    Brush,
 }
+
+/// Mirror Edit: vertex moves are mirrored across an axis (TODO(Q-0017):
+/// partner rule and default axis provisional)
+/// (canvas-and-tools.md §5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mirror {
+    /// x of a vertical axis, or y of a horizontal one (canvas pixels).
+    pub axis: f32,
+    pub vertical: bool,
+}
+
+/// A point being dragged: start position and the factors applied to the
+/// drag's x and y movement (brush weight, mirroring).
+#[derive(Clone, Copy, Debug)]
+struct DragPoint {
+    k: usize,
+    start: [f32; 2],
+    factor: [f32; 2],
+}
+
+/// Overlapping vertices closer than this (canvas px) are merged
+/// (TODO(Q-0017): threshold unspecified).
+pub const MERGE_DISTANCE: f32 = 0.5;
 
 type Snapshot = (MeshGraph, Vec<usize>);
 
@@ -47,7 +72,11 @@ pub struct MeshEdit {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// Points being dragged, with their positions at the press.
-    drag: Option<Vec<(usize, [f32; 2])>>,
+    drag: Option<Vec<DragPoint>>,
+    pub mirror: Option<Mirror>,
+    /// Brush radius (canvas px) and hardness (0 = soft … 1 = hard).
+    pub brush_radius: f32,
+    pub brush_hardness: f32,
     /// State before a live preview (automatic generation popup).
     preview_base: Option<Snapshot>,
     /// Generator settings to store on the mesh when editing finishes.
@@ -76,6 +105,9 @@ impl MeshEdit {
             undo: Vec::new(),
             redo: Vec::new(),
             drag: None,
+            mirror: None,
+            brush_radius: 60.0,
+            brush_hardness: 0.5,
             preview_base: None,
             generator: None,
         };
@@ -255,22 +287,74 @@ impl MeshEdit {
     }
 
     /// Starts moving the selected points (one undo step until released).
-    pub fn drag_begin(&mut self) {
-        let start = self
-            .selected
-            .iter()
-            .map(|&k| (k, self.graph.point(k)))
+    pub fn drag_begin(&mut self, tolerance: f32) {
+        let points = self.selected.iter().map(|&k| (k, 1.0)).collect();
+        self.drag_points(points, tolerance);
+    }
+
+    /// Brush (TODO(Q-0017): falloff provisional): starts dragging the
+    /// points within the brush around `at`,
+    /// weighted by a falloff from 1 at the centre (flat out to `hardness`
+    /// of the radius) to 0 at the edge.
+    pub fn brush_begin(&mut self, at: [f32; 2], tolerance: f32) {
+        let (r, hard) = (
+            self.brush_radius.max(1.0),
+            self.brush_hardness.clamp(0.0, 0.99),
+        );
+        let points = (0..self.graph.len())
+            .filter_map(|k| {
+                let p = self.graph.point(k);
+                let d = (p[0] - at[0]).hypot(p[1] - at[1]) / r;
+                if d >= 1.0 {
+                    return None;
+                }
+                let t = ((d - hard) / (1.0 - hard)).clamp(0.0, 1.0);
+                // Smoothstep from 1 down to 0.
+                Some((k, 1.0 - t * t * (3.0 - 2.0 * t)))
+            })
             .collect();
+        self.drag_points(points, tolerance);
+    }
+
+    fn drag_points(&mut self, points: Vec<(usize, f32)>, tolerance: f32) {
+        let mut drag: Vec<DragPoint> = points
+            .iter()
+            .map(|&(k, w)| DragPoint {
+                k,
+                start: self.graph.point(k),
+                factor: [w, w],
+            })
+            .collect();
+        // Mirror Edit: partners across the axis move mirrored.
+        if let Some(m) = self.mirror {
+            for &(k, w) in &points {
+                if let Some(j) = self.graph.mirror_partner(k, m.axis, m.vertical, tolerance) {
+                    if drag.iter().all(|d| d.k != j) {
+                        drag.push(DragPoint {
+                            k: j,
+                            start: self.graph.point(j),
+                            factor: if m.vertical { [-w, w] } else { [w, -w] },
+                        });
+                    }
+                }
+            }
+        }
         self.undo.push((self.graph.clone(), self.selected.clone()));
         self.redo.clear();
-        self.drag = Some(start);
+        self.drag = Some(drag);
     }
 
     pub fn drag_update(&mut self, delta: [f32; 2]) {
-        let Some(start) = &self.drag else { return };
-        for &(k, p) in start {
-            if k < self.graph.len() {
-                self.graph.set_point(k, [p[0] + delta[0], p[1] + delta[1]]);
+        let Some(drag) = &self.drag else { return };
+        for d in drag {
+            if d.k < self.graph.len() {
+                self.graph.set_point(
+                    d.k,
+                    [
+                        d.start[0] + delta[0] * d.factor[0],
+                        d.start[1] + delta[1] * d.factor[1],
+                    ],
+                );
             }
         }
         self.refresh();
@@ -290,6 +374,62 @@ impl MeshEdit {
 
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// Edge swap on the two selected vertices' edge.
+    pub fn swap_edge(&mut self) -> Result<(), String> {
+        let [a, b] = self.selected[..] else {
+            return Err("Select the two vertices of an edge.".into());
+        };
+        let tris = self.preview.clone();
+        let mut r = Ok(());
+        self.change(|g, _| r = g.swap_edge(a as u32, b as u32, &tris));
+        r.map_err(str::to_owned)
+    }
+
+    /// 4 Division of the triangles whose corners are all selected.
+    pub fn divide4(&mut self) -> Result<(), String> {
+        let sel: HashSet<usize> = self.selected.iter().copied().collect();
+        let tris = self.preview.clone();
+        let mut n = 0;
+        self.change(|g, _| n = g.divide4(&tris, &sel));
+        if n == 0 {
+            return Err("Select the vertices of the triangles to divide.".into());
+        }
+        Ok(())
+    }
+
+    /// Merge Vertices: overlapping selected vertices (or all, with fewer
+    /// than two selected). Returns how many were merged away.
+    pub fn merge(&mut self) -> usize {
+        let sel: HashSet<usize> = self.selected.iter().copied().collect();
+        let mut n = 0;
+        self.change(|g, s| {
+            n = g.merge_overlapping((sel.len() >= 2).then_some(&sel), MERGE_DISTANCE);
+            if n > 0 {
+                s.clear();
+            }
+        });
+        n
+    }
+
+    /// Mirror Edit axis positions (canvas-and-tools.md §5): the mesh's
+    /// centre ("Reset Axis Position") or the selected vertices' centre.
+    pub fn centre(&self, selected_only: bool) -> Option<[f32; 2]> {
+        let pts: Vec<[f32; 2]> = if selected_only {
+            self.selected.iter().map(|&k| self.graph.point(k)).collect()
+        } else {
+            (0..self.graph.len()).map(|k| self.graph.point(k)).collect()
+        };
+        if pts.is_empty() {
+            return None;
+        }
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in &pts {
+            lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+            hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+        }
+        Some([(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0])
     }
 
     /// Shows `g` as a live preview; [`Self::end_preview`] commits it as one
@@ -403,7 +543,7 @@ mod tests {
         s.add_point([3.0, 7.0], 0.5);
         assert_eq!(s.preview.len() / 3, 5);
         // Move it.
-        s.drag_begin();
+        s.drag_begin(0.5);
         s.drag_update([1.0, 1.0]);
         s.drag_end();
         assert_eq!(s.graph.point(5), [4.0, 8.0]);
@@ -419,6 +559,31 @@ mod tests {
         // Undo everything: back to the start.
         while s.undo() {}
         assert!(!s.changed());
+    }
+
+    #[test]
+    fn mirror_and_brush() {
+        let mut s = MeshEdit::start(0, &square()).unwrap();
+        s.mirror = Some(Mirror {
+            axis: 5.0,
+            vertical: true,
+        });
+        s.set_selected(vec![0]);
+        s.drag_begin(0.5);
+        s.drag_update([1.0, 2.0]);
+        s.drag_end();
+        assert_eq!(s.graph.point(0), [1.0, 2.0]);
+        assert_eq!(s.graph.point(1), [9.0, 2.0]);
+        s.mirror = None;
+        // A hard brush on a corner moves it fully, the far corner not at all.
+        s.brush_radius = 4.0;
+        s.brush_hardness = 0.9;
+        s.brush_begin([10.0, 10.0], 0.5);
+        s.drag_update([1.0, 0.0]);
+        s.drag_end();
+        assert_eq!(s.graph.point(2), [11.0, 10.0]);
+        assert_eq!(s.graph.point(3), [0.0, 10.0]);
+        assert_eq!(s.centre(false), Some([5.5, 6.0]));
     }
 
     #[test]
