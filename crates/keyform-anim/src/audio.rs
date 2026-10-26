@@ -95,6 +95,66 @@ pub fn read_wav(data: &[u8]) -> Result<Pcm, AnimError> {
     Err(bad("no data chunk"))
 }
 
+/// Sample rate the analysis engine works at (motion-sync.md §3 step 1).
+pub const ENGINE_RATE: u32 = 16_000;
+/// Analysis rows per second (motion-sync.md §3 step 2).
+pub const ENGINE_FPS: f32 = 100.0;
+
+/// Converts a sound to the engine's input: 16 kHz, mono, 16-bit signed
+/// samples read back as s/32768 (motion-sync.md §3 step 1). Resampling is
+/// linear interpolation after a moving-average low-pass when the source
+/// rate is higher.
+pub fn to_engine_pcm(pcm: &Pcm) -> Pcm {
+    let quantise = |x: f32| (x * 32768.0).round().clamp(-32768.0, 32767.0) / 32768.0;
+    if pcm.rate == 0 || pcm.samples.is_empty() {
+        return Pcm {
+            rate: ENGINE_RATE,
+            samples: Vec::new(),
+        };
+    }
+    let ratio = f64::from(pcm.rate) / f64::from(ENGINE_RATE);
+    let src: std::borrow::Cow<[f32]> = if ratio > 1.0 {
+        // Box filter about one output sample wide against aliasing.
+        let w = ratio.round().max(1.0) as usize;
+        let mut acc = 0.0f64;
+        let mut out = Vec::with_capacity(pcm.samples.len());
+        for (i, &x) in pcm.samples.iter().enumerate() {
+            acc += f64::from(x);
+            if i >= w {
+                acc -= f64::from(pcm.samples[i - w]);
+            }
+            out.push((acc / (i + 1).min(w) as f64) as f32);
+        }
+        out.into()
+    } else {
+        pcm.samples.as_slice().into()
+    };
+    let n = ((src.len() as f64) / ratio).floor() as usize;
+    let samples = (0..n)
+        .map(|k| {
+            let t = k as f64 * ratio;
+            let i = t.floor() as usize;
+            let u = (t - i as f64) as f32;
+            let a = src[i.min(src.len() - 1)];
+            let b = src[(i + 1).min(src.len() - 1)];
+            quantise(a + (b - a) * u)
+        })
+        .collect();
+    Pcm {
+        rate: ENGINE_RATE,
+        samples,
+    }
+}
+
+/// One analysis frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Analysis {
+    /// Element weights: Silence, A, I, U, E, O (sum 1).
+    pub weights: [f32; 6],
+    /// Loudness 0…1 (the voicing of the level gate).
+    pub level: f32,
+}
+
 /// The audio elements of the default mouth preset (motion-sync.md §1).
 pub const ELEMENTS: [&str; 6] = ["Silence", "A", "I", "U", "E", "O"];
 
@@ -113,8 +173,9 @@ const VOWELS: [(f32, f32); 5] = [
 const SILENCE_DB: f32 = -45.0;
 const VOICE_RAMP_DB: f32 = 15.0;
 
-/// Element weights (Silence, A, I, U, E, O) at `rate` frames per second.
-pub fn analyse(pcm: &Pcm, rate: f32) -> Vec<[f32; 6]> {
+/// Element weights (Silence, A, I, U, E, O) and loudness at `rate` frames
+/// per second.
+pub fn analyse(pcm: &Pcm, rate: f32) -> Vec<Analysis> {
     if pcm.samples.is_empty() || rate <= 0.0 || pcm.rate == 0 {
         return Vec::new();
     }
@@ -172,7 +233,10 @@ pub fn analyse(pcm: &Pcm, rate: f32) -> Vec<[f32; 6]> {
                 w[0] = 1.0;
             }
         }
-        out.push(w);
+        out.push(Analysis {
+            weights: w,
+            level: voiced,
+        });
     }
     out
 }
@@ -305,7 +369,10 @@ mod tests {
         assert_eq!(pcm.rate, rate);
         assert_eq!(pcm.samples.len(), s.len());
         let w = analyse(&pcm, 30.0);
-        let argmax = |f: &[f32; 6]| (0..6).max_by(|&a, &b| f[a].total_cmp(&f[b])).unwrap();
+        let argmax = |a: &Analysis| {
+            let f = a.weights;
+            (0..6).max_by(|&a, &b| f[a].total_cmp(&f[b])).unwrap()
+        };
         assert_eq!(argmax(&w[2]), 0, "silence: {:?}", w[2]);
         assert_eq!(argmax(&w[15]), 1, "a: {:?}", w[15]);
         assert_eq!(argmax(&w[30]), 2, "i: {:?}", w[30]);
@@ -318,6 +385,33 @@ mod tests {
             let w = analyse(&pcm, 30.0);
             assert_eq!(argmax(&w[7]), k + 1, "{}: {:?}", ELEMENTS[k + 1], w[7]);
         }
+    }
+
+    #[test]
+    fn engine_conversion() {
+        // 48 kHz → 16 kHz keeps the duration and the vowel.
+        let pcm = Pcm {
+            rate: 48000,
+            samples: vowel(48000, 0.5, 750.0, 1200.0),
+        };
+        let e = to_engine_pcm(&pcm);
+        assert_eq!(e.rate, ENGINE_RATE);
+        assert_eq!(e.samples.len(), 8000);
+        assert!(e.samples.iter().all(|s| (s * 32768.0).fract() == 0.0));
+        let w = analyse(&e, ENGINE_FPS);
+        assert_eq!(w.len(), 50);
+        let f = w[25].weights;
+        assert_eq!(
+            (0..6).max_by(|&a, &b| f[a].total_cmp(&f[b])),
+            Some(1),
+            "{f:?}"
+        );
+        assert!(to_engine_pcm(&Pcm {
+            rate: 0,
+            samples: vec![1.0]
+        })
+        .samples
+        .is_empty());
     }
 
     #[test]

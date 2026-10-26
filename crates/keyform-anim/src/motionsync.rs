@@ -41,9 +41,12 @@ pub struct Setting {
     pub cubism: Vec<CubismParameter>,
     pub audio: Vec<AudioParameter>,
     pub mappings: Vec<Mapping>,
-    /// Percent.
+    /// Percent. Used by Keyform's analysis engine (motion-sync.md §4).
     pub blend_ratio: f32,
+    /// 0–100. Used by Keyform's analysis engine.
     pub smoothing: i32,
+    /// Percent. Used by Keyform's analysis engine.
+    pub audio_level_effect_ratio: f32,
     /// Analysis frames per second (default 60, viewer.md §3.8).
     pub sample_rate: f32,
 }
@@ -120,6 +123,7 @@ pub fn parse(json: &str) -> Result<Vec<Setting>, AnimError> {
                 .collect(),
             blend_ratio: num(&s["PostProcessing"], "BlendRatio", 50.0),
             smoothing: num(&s["PostProcessing"], "Smoothing", 0.0) as i32,
+            audio_level_effect_ratio: num(&s["PostProcessing"], "AudioLevelEffectRatio", 0.0),
             sample_rate: num(&s["PostProcessing"], "SampleRate", 60.0).max(1.0),
         });
     }
@@ -128,64 +132,167 @@ pub fn parse(json: &str) -> Result<Vec<Setting>, AnimError> {
 
 impl Setting {
     /// Analyses `pcm` into one parameter map per frame at `sample_rate`
-    /// (motion-sync.md §3).
+    /// (motion-sync.md §3): engine input conversion, 100 fps engine rows,
+    /// resampling, then the per-parameter post-processing. A parameter
+    /// missing from a frame is not written in that frame.
     pub fn frames(&self, pcm: &Pcm) -> Vec<FrameMap> {
-        let weights = audio::analyse(pcm, self.sample_rate);
-        // Element index of each audio parameter, by id.
+        let input = audio::to_engine_pcm(pcm);
+        let analysis = audio::analyse(&input, audio::ENGINE_FPS);
+        let rows = self.engine(&analysis);
+        let rows = resample(&rows, audio::ENGINE_FPS / self.sample_rate);
+        self.post_process(&rows)
+    }
+
+    /// The Silence element's target for each Cubism parameter.
+    fn silence_targets(&self) -> Vec<Option<f32>> {
+        let silence = self
+            .mappings
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case("Silence"));
+        self.cubism
+            .iter()
+            .map(|p| silence.and_then(|m| m.targets.iter().find(|(t, _)| *t == p.id).map(|t| t.1)))
+            .collect()
+    }
+
+    /// Keyform's analysis engine: one row per analysis frame with a value
+    /// per Cubism parameter (NaN = no value). The blending, `Smoothing` and
+    /// `AudioLevelEffectRatio` rules are Keyform's own design
+    /// (motion-sync.md §4, docs/motion-sync-analyser.md).
+    fn engine(&self, analysis: &[audio::Analysis]) -> Vec<Vec<f32>> {
         let elem = |id: &str| {
             audio::ELEMENTS
                 .iter()
                 .position(|e| e.eq_ignore_ascii_case(id))
         };
+        // Enabled elements with a mapping: (element index, Scale, mapping).
+        // Audio Min/Max are not engine inputs.
+        let elements: Vec<(usize, f32, &Mapping)> = self
+            .audio
+            .iter()
+            .filter(|a| a.enabled)
+            .filter_map(|a| {
+                let m = self.mappings.iter().find(|m| m.id == a.id)?;
+                Some((elem(&a.id)?, a.scale, m))
+            })
+            .collect();
+        let silence = self.silence_targets();
+        let r = (self.blend_ratio / 100.0).clamp(0.0, 1.0);
+        let level_effect = (self.audio_level_effect_ratio / 100.0).clamp(0.0, 1.0);
+        let smoothing = self.smoothing.clamp(0, 100) as f32;
         let mut state: Vec<Option<f32>> = vec![None; self.cubism.len()];
-        let mut out = Vec::with_capacity(weights.len());
-        for w in &weights {
-            // 1. Scaled, clamped element weights (disabled ones ignored).
-            let ws: Vec<(f32, &Mapping)> = self
-                .audio
-                .iter()
-                .filter(|a| a.enabled)
-                .filter_map(|a| {
-                    let raw = w[elem(&a.id)?];
-                    let m = self.mappings.iter().find(|m| m.id == a.id)?;
-                    Some(((raw * a.scale).clamp(a.min.min(a.max), a.max.max(a.min)), m))
-                })
-                .collect();
-            let target = |m: &Mapping, id: &str| {
-                m.targets.iter().find(|(t, _)| t == id).map_or(0.0, |t| t.1)
-            };
-            let total: f32 = ws.iter().map(|(x, _)| x).sum();
-            let strongest = ws
-                .iter()
-                .max_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, m)| *m);
-            let r = (self.blend_ratio / 100.0).clamp(0.0, 1.0);
-            let mut frame = Vec::with_capacity(self.cubism.len());
+        let mut rows = Vec::with_capacity(analysis.len());
+        for a in analysis {
+            let mut row = Vec::with_capacity(self.cubism.len());
             for (k, p) in self.cubism.iter().enumerate() {
-                // 2. TODO(Q-0014): blend between the strongest element's
-                // shape and the weighted mix.
-                let one = strongest.map_or(0.0, |m| target(m, &p.id));
-                let mix = if total > 0.0 {
-                    ws.iter().map(|(x, m)| x * target(m, &p.id)).sum::<f32>() / total
+                // (weight, target) of the elements with a target here.
+                let ws: Vec<(f32, f32)> = elements
+                    .iter()
+                    .filter_map(|&(e, scale, m)| {
+                        let t = m.targets.iter().find(|(t, _)| *t == p.id)?.1;
+                        Some(((a.weights[e] * scale).max(0.0), t))
+                    })
+                    .collect();
+                let total: f32 = ws.iter().map(|w| w.0).sum();
+                let mut x = if ws.is_empty() {
+                    f32::NAN
+                } else if total <= 0.0 {
+                    silence[k].unwrap_or(f32::NAN)
                 } else {
-                    one
+                    let mix = ws.iter().map(|(w, t)| w * t).sum::<f32>() / total;
+                    let one = ws
+                        .iter()
+                        .max_by(|a, b| a.0.total_cmp(&b.0))
+                        .map_or(mix, |w| w.1);
+                    one + (mix - one) * r
                 };
-                let x = one + (mix - one) * r;
-                // 3. TODO(Q-0014): smoothing and damper.
-                let s = (self.smoothing + p.smooth).max(0) as f32;
-                let y = match state[k] {
-                    None => x,
-                    Some(prev) if (x - prev).abs() < p.damper => prev,
-                    Some(prev) => prev + (x - prev) / (1.0 + s),
+                // Quiet frames pull the shape toward Silence.
+                if let Some(s0) = silence[k] {
+                    x = s0 + (x - s0) * (1.0 - level_effect + level_effect * a.level);
+                }
+                if x.is_nan() {
+                    state[k] = None;
+                } else {
+                    let y = state[k].map_or(x, |prev| {
+                        ((100.0 - smoothing) * x + smoothing * prev) / 100.0
+                    });
+                    state[k] = Some(y);
+                    x = y;
+                }
+                row.push(x);
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
+    /// Per-parameter post-processing (motion-sync.md §3 step 4): row 0 is
+    /// the Silence targets; later rows are smoothed by `Smooth` and held by
+    /// the `Damper` dead band; "no value" writes nothing and resets.
+    pub fn post_process(&self, rows: &[Vec<f32>]) -> Vec<FrameMap> {
+        let silence = self.silence_targets();
+        let mut smoothed = silence.clone();
+        let mut output = silence.clone();
+        let mut out = Vec::with_capacity(rows.len());
+        for (r, row) in rows.iter().enumerate() {
+            let mut frame = FrameMap::new();
+            for (k, p) in self.cubism.iter().enumerate() {
+                if r == 0 {
+                    if let Some(v) = silence[k] {
+                        frame.push((p.id.clone(), v));
+                    }
+                    continue;
+                }
+                let x = row.get(k).copied().unwrap_or(f32::NAN);
+                if x.is_nan() {
+                    smoothed[k] = None;
+                    output[k] = None;
+                    continue;
+                }
+                let v = match (smoothed[k], output[k]) {
+                    (Some(prev), Some(last)) => {
+                        let s = p.smooth.clamp(0, 100) as f32;
+                        let v = ((100.0 - s) * x + s * prev) / 100.0;
+                        smoothed[k] = Some(v);
+                        if (v - last).abs() < p.damper {
+                            last
+                        } else {
+                            v
+                        }
+                    }
+                    _ => {
+                        smoothed[k] = Some(x);
+                        x
+                    }
                 };
-                let y = y.clamp(p.min.min(p.max), p.max.max(p.min));
-                state[k] = Some(y);
-                frame.push((p.id.clone(), y));
+                output[k] = Some(v);
+                frame.push((p.id.clone(), v));
             }
             out.push(frame);
         }
         out
     }
+}
+
+/// Resamples engine rows (100 fps) by step `q` = 100 / SampleRate:
+/// ⌊rows / q⌋ rows, row k blending source rows ⌊kq⌋ and the next one
+/// (motion-sync.md §3 step 3).
+pub fn resample(rows: &[Vec<f32>], q: f32) -> Vec<Vec<f32>> {
+    if rows.is_empty() || q.is_nan() || q <= 0.0 {
+        return Vec::new();
+    }
+    let q = f64::from(q);
+    let n = (rows.len() as f64 / q).floor() as usize;
+    let last = rows.len() - 1;
+    (0..n)
+        .map(|k| {
+            let t = k as f64 * q;
+            let i = (t.floor() as usize).min(last);
+            let u = (t - t.floor()) as f32;
+            let (a, b) = (&rows[i], &rows[(i + 1).min(last)]);
+            a.iter().zip(b).map(|(x, y)| x + (y - x) * u).collect()
+        })
+        .collect()
 }
 
 /// Applies the analysed frames at audio position `t_us` (µs since the
@@ -290,7 +397,49 @@ mod tests {
             samples: vec![0.0; 8000],
         };
         let f = s.frames(&pcm);
+        // 0.5 s → 50 engine rows → 15 rows at 30 fps.
         assert_eq!(f.len(), 15);
         assert!(f.iter().all(|m| m[0].1 == 0.0));
+    }
+
+    #[test]
+    fn resampling() {
+        let rows: Vec<Vec<f32>> = (0..10).map(|i| vec![i as f32]).collect();
+        // 100 → 30 fps: q = 10/3, ⌊10 / q⌋ = 3 rows at 0, 3.33, 6.67.
+        let r = resample(&rows, 100.0 / 30.0);
+        assert_eq!(r.len(), 3);
+        assert!((r[1][0] - 10.0 / 3.0).abs() < 1e-5);
+        assert!((r[2][0] - 20.0 / 3.0).abs() < 1e-5);
+        // Upsampling holds the last row at the end.
+        let r = resample(&rows, 0.5);
+        assert_eq!(r.len(), 20);
+        assert_eq!(r[19][0], 9.0);
+        assert_eq!(r[3][0], 1.5);
+    }
+
+    #[test]
+    fn post_processing_formulas() {
+        let mut s = parse(JSON).unwrap().remove(0);
+        s.cubism[0].smooth = 50;
+        s.cubism[0].damper = 0.1;
+        let rows: Vec<Vec<f32>> = [9.0, 1.0, 1.0, 1.0, f32::NAN, 0.6, 0.62]
+            .iter()
+            .map(|&v| vec![v])
+            .collect();
+        let f = s.post_process(&rows);
+        let v = |r: usize| f[r].first().map(|x| x.1);
+        // Row 0: the Silence target, whatever the row says.
+        assert_eq!(v(0), Some(0.0));
+        // Smooth 50 from the Silence state: 0.5, then 0.75 and 0.875.
+        assert_eq!(v(1), Some(0.5));
+        assert_eq!(v(2), Some(0.75));
+        // 0.875 − 0.75 ≥ 0.1 → written.
+        assert_eq!(v(3), Some(0.875));
+        // No value: nothing written, state reset.
+        assert_eq!(v(4), None);
+        // After a reset the first value is taken as is.
+        assert_eq!(v(5), Some(0.6));
+        // Smoothed 0.61 is within the 0.1 dead band of 0.6: held.
+        assert_eq!(v(6), Some(0.6));
     }
 }
