@@ -5,7 +5,7 @@ use std::fmt::Display;
 
 use keyform_model::ArtMesh;
 
-use super::grid::{field_path, find_shared};
+use super::grid::{field_path, find_shared, set_count, stub, uuid_of, Ctx};
 use super::{element_at, set_array, set_array_text, unsupported};
 use crate::error::Result;
 use crate::xml::Element;
@@ -175,5 +175,62 @@ pub(super) fn write_generator(root: &mut Element, path: &[u32], n: &ArtMesh) -> 
     };
     children.extend(e.children.iter().filter(|c| !known(c)).cloned());
     e.children = children;
+    Ok(())
+}
+
+/// GUIDs of `a`'s clip sources in `m`.
+pub(super) fn clip_guids(m: &keyform_model::Model, a: &ArtMesh) -> Vec<String> {
+    a.clip
+        .iter()
+        .filter_map(|&k| m.art_meshes.get(k))
+        .map(|x| x.info.guid.clone())
+        .collect()
+}
+
+/// Rewrites `clipGuidList` (spec: 40-rendering/clipping.md, 50-ui/dialogs.md
+/// §21). While the mesh still references a deleted mask (`clip_missing`),
+/// the unresolved entries stay, and masks deleted in this edit are added
+/// as such, like the reference does.
+pub(super) fn write_clip_list(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    path: &[u32],
+    o: &ArtMesh,
+    n: &ArtMesh,
+) -> Result<()> {
+    let (old, new) = (ctx.old_model, ctx.new_model);
+    let live = |u: &str| new.art_meshes.iter().any(|a| a.info.guid == u);
+    let was = |u: &str| old.art_meshes.iter().any(|a| a.info.guid == u);
+    let list = field_path(root, path, "clipGuidList")?;
+    let existing = element_at(root, Some(&list))?.children.clone();
+    let mut entries = Vec::new();
+    for g in clip_guids(new, n) {
+        let note = new
+            .art_meshes
+            .iter()
+            .find(|a| a.info.guid == g)
+            .map_or(String::new(), |a| a.info.display_name().to_owned());
+        let id = super::objects::guid_id(root, ctx, &g, "CDrawableGuid", &note)?;
+        entries.push(stub("CDrawableGuid", None, &id));
+    }
+    if n.clip_missing {
+        // Entries that were already unresolved.
+        for e in &existing {
+            if uuid_of(root, e).is_none_or(|u| !was(&u) && !live(&u)) {
+                entries.push(e.clone());
+            }
+        }
+        // Masks deleted now.
+        for g in clip_guids(old, o) {
+            if !live(&g) {
+                let id = super::objects::guid_id(root, ctx, &g, "CDrawableGuid", "")?;
+                entries.push(stub("CDrawableGuid", None, &id));
+            }
+        }
+    }
+    let l = element_at(root, Some(&list))?;
+    l.children = entries;
+    set_count(l);
+    ctx.structural = true;
     Ok(())
 }

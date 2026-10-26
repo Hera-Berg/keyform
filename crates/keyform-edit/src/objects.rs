@@ -756,3 +756,60 @@ mod tests {
         );
     }
 }
+
+/// Message when clip IDs are dropped. spec: 50-ui/palettes.md §4
+pub const CLIP_IDS_CANCELLED: &str = "IDs that cannot be designated as a mask are cancelled.";
+
+/// Whether art mesh `from`'s clip chain reaches `to` (`from` is clipped by
+/// … by `to`).
+fn clips_through(m: &Model, from: usize, to: usize) -> bool {
+    let mut seen = vec![false; m.art_meshes.len()];
+    let mut stack = vec![from];
+    while let Some(k) = stack.pop() {
+        if k == to {
+            return true;
+        }
+        if std::mem::replace(&mut seen[k], true) {
+            continue;
+        }
+        stack.extend(
+            m.art_meshes[k]
+                .clip
+                .iter()
+                .copied()
+                .filter(|&c| c < seen.len()),
+        );
+    }
+    false
+}
+
+/// Sets art mesh `i`'s clipping mask IDs. IDs that aren't art meshes, the
+/// mesh itself and masks that would make a clipping cycle are dropped and
+/// returned (spec: palettes.md §4 "Clipping mask IDs", 40-rendering/
+/// clipping.md §3). A deleted-mask reference is cleared (dialogs.md §21).
+pub fn set_clip_ids(m: &mut Model, i: usize, ids: &[&str]) -> Vec<String> {
+    let mut clip = Vec::new();
+    let mut dropped = Vec::new();
+    for &id in ids {
+        let j = m.art_meshes.iter().position(|a| a.info.id == id);
+        match j {
+            Some(j) if j != i && !clip.contains(&j) && !clips_through(m, j, i) => clip.push(j),
+            Some(j) if clip.contains(&j) => {}
+            _ => dropped.push(id.to_owned()),
+        }
+    }
+    if let Some(a) = m.art_meshes.get_mut(i) {
+        let a = Arc::make_mut(a);
+        a.clip = clip;
+        a.clip_missing = false;
+    }
+    dropped
+}
+
+/// Reverse Clipping ID Lookup: the art meshes that use `i` as a mask.
+/// spec: palettes.md §1
+pub fn clip_users(m: &Model, i: usize) -> Vec<usize> {
+    (0..m.art_meshes.len())
+        .filter(|&k| m.art_meshes[k].clip.contains(&i))
+        .collect()
+}

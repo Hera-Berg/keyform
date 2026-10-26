@@ -948,16 +948,25 @@ fn write_art_mesh(
         point_uids: o.point_uids.clone(),
         mesh: o.mesh.clone(),
         generator: o.generator,
+        clip: o.clip.clone(),
+        clip_missing: o.clip_missing,
         ..n.clone()
     } == *o;
     if !rest_same {
-        return unsupported(format!("art mesh {}: texture or clipping", o.info.id));
+        return unsupported(format!("art mesh {}: texture", o.info.id));
     }
     if mesh::topology_changed(o, n) {
         let Some(path) = src.element.clone() else {
             return invalid("art mesh has no element");
         };
         mesh::write_topology(root, &path, n)?;
+    }
+    let (om, nm) = (ctx.old_model, ctx.new_model);
+    if mesh::clip_guids(om, o) != mesh::clip_guids(nm, n) || o.clip_missing != n.clip_missing {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        mesh::write_clip_list(root, ctx, &path, o, n)?;
     }
     if o.generator != n.generator {
         let Some(path) = src.element.clone() else {

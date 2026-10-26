@@ -49,6 +49,7 @@ pub fn parts_ui(
         .show(ui, |ui| {
             let mut sel = doc.primary();
             let mut toggled = Vec::new();
+            let mut reverse_lookup = None;
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -68,9 +69,17 @@ pub fn parts_ui(
                 deformers: *show_deformers,
                 filter: &filter,
                 draw_orders: &draw_orders,
+                reverse_lookup: &mut reverse_lookup,
             };
             part_children(ui, model, root, &mut t, 0);
-            if sel != doc.primary() {
+            if let Some(a) = reverse_lookup {
+                // Select the art meshes that use `a` as a clipping mask.
+                let users = keyform_edit::objects::clip_users(&doc.model, a);
+                doc.set_selection(crate::document::SelectionSet {
+                    objects: users.into_iter().map(Selection::ArtMesh).collect(),
+                    points: Vec::new(),
+                });
+            } else if sel != doc.primary() {
                 doc.select(sel);
             }
             for s in toggled {
@@ -152,6 +161,8 @@ struct TreeCtx<'a> {
     deformers: bool,
     filter: &'a str,
     draw_orders: &'a [f32],
+    /// "Reverse Clipping ID Lookup" requested on this art mesh.
+    reverse_lookup: &'a mut Option<usize>,
 }
 
 fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
@@ -193,13 +204,25 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                         t.toggled.push(Selection::ArtMesh(a));
                     }
                     icons::icon(ui, Icon::ArtMesh);
-                    if selectable(
-                        ui,
+                    let r = ui.selectable_label(
                         *t.sel == Some(Selection::ArtMesh(a)),
                         info.display_name(),
-                    ) {
+                    );
+                    if r.clicked() {
                         *t.sel = Some(Selection::ArtMesh(a));
                     }
+                    r.context_menu(|ui| {
+                        if ui
+                            .button("Reverse Clipping ID Lookup")
+                            .on_hover_text(
+                                "Select the ArtMeshes that use this one as a clipping mask",
+                            )
+                            .clicked()
+                        {
+                            *t.reverse_lookup = Some(a);
+                            ui.close();
+                        }
+                    });
                     if let Some(d) = dos.get(a) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.weak(format!("{d:.0}"));
@@ -667,8 +690,93 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
                 std::sync::Arc::make_mut(&mut m.art_meshes[a]).culling = culling;
             });
         }
+        clipping_fields(ui, doc, a, log);
     }
     ui.separator();
+}
+
+/// Clipping mask IDs (comma-separated, with a picker) and Invert Mask.
+/// spec: 50-ui/palettes.md §4, 50-ui/dialogs.md §21
+fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Log) {
+    let editable = doc.editable();
+    let m = &doc.model;
+    let x = &m.art_meshes[a];
+    let mut ids: Vec<String> = x
+        .clip
+        .iter()
+        .filter_map(|&k| m.art_meshes.get(k))
+        .map(|c| c.info.id.clone())
+        .collect();
+    let text = ids.join(", ");
+    let missing = x.clip_missing;
+    let mut new_ids = None;
+    ui.horizontal(|ui| {
+        ui.weak("Clipping");
+        if let Some(t) = commit_text(ui, ("insp-clip", a), &text, editable) {
+            new_ids = Some(
+                t.split([',', ' ', ';'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            );
+        }
+    });
+    if missing {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Referencing a deleted mask. Fix the clipping field.",
+        );
+    }
+    ui.add_enabled_ui(editable, |ui| {
+        ui.menu_button("Add mask…", |ui| {
+            ui.weak("Select the clipping mask objects.");
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .show(ui, |ui| {
+                    for (k, c) in doc.model.art_meshes.iter().enumerate() {
+                        if k == a || ids.contains(&c.info.id) {
+                            continue;
+                        }
+                        if ui
+                            .button(format!("{}  ({})", c.info.display_name(), c.info.id))
+                            .clicked()
+                        {
+                            ids.push(c.info.id.clone());
+                            new_ids = Some(ids.clone());
+                            ui.close();
+                        }
+                    }
+                });
+        });
+    });
+    let mut invert = doc.model.art_meshes[a].invert_clip;
+    if ui
+        .add_enabled(editable, egui::Checkbox::new(&mut invert, "Invert Mask"))
+        .changed()
+    {
+        let v = doc.model.target_version;
+        if invert && v != 0 && v < 4_000_000 {
+            log.warn("Inverted masks can only be used in Cubism 4.0 or later.");
+        }
+        doc.edit("Invert Mask", |m| {
+            std::sync::Arc::make_mut(&mut m.art_meshes[a]).invert_clip = invert;
+        });
+    }
+    if let Some(list) = new_ids {
+        let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+        let mut dropped = Vec::new();
+        doc.edit("Change Clipping", |m| {
+            dropped = keyform_edit::objects::set_clip_ids(m, a, &refs);
+        });
+        if !dropped.is_empty() {
+            log.warn(format!(
+                "{} ({})",
+                keyform_edit::objects::CLIP_IDS_CANCELLED,
+                dropped.join(", ")
+            ));
+        }
+    }
 }
 
 pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {

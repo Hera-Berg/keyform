@@ -766,3 +766,38 @@ fn automesh_on_samples() {
         );
     }
 }
+
+/// Clipping edits (palettes.md §4): new mask lists, cleared lists and
+/// invert survive a save and reload; invalid IDs are dropped.
+#[test]
+fn cmo3_save_after_clip_edits() {
+    use keyform_edit::objects::{clip_users, set_clip_ids};
+    use keyform_formats::cmo3::Cmo3Document;
+    use std::sync::Arc;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        if m.art_meshes.len() < 4 {
+            continue;
+        }
+        let ids: Vec<String> = m.art_meshes.iter().map(|a| a.info.id.clone()).collect();
+        // Mesh 0 clipped by meshes 1 and 2; mesh 1 can't then be clipped by 0.
+        let dropped = set_clip_ids(m, 0, &[&ids[1], &ids[2], "NoSuchMesh", &ids[0]]);
+        assert_eq!(dropped, vec!["NoSuchMesh".to_owned(), ids[0].clone()]);
+        assert_eq!(set_clip_ids(m, 1, &[&ids[0]]), vec![ids[0].clone()]);
+        assert_eq!(clip_users(m, 2), vec![0]);
+        Arc::make_mut(&mut m.art_meshes[0]).invert_clip = true;
+        // Clear an existing clip list, if any.
+        let cleared = (0..m.art_meshes.len()).find(|&k| k > 2 && !m.art_meshes[k].clip.is_empty());
+        if let Some(k) = cleared {
+            set_clip_ids(m, k, &[]);
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}");
+        assert_eq!(back.model.art_meshes[0].clip, vec![1, 2]);
+        eprintln!("{path:?}: clip edits saved (cleared {cleared:?})");
+    }
+}
