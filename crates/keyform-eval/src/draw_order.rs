@@ -105,6 +105,8 @@ mod tests {
             user_data: String::new(),
             point_uids: vec![],
             mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
             grid: KeyformGrid::single(ArtMeshForm::default()),
             blend_shapes: BlendShapes::default(),
         };

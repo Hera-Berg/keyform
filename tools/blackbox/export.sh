@@ -7,8 +7,11 @@ $B move 100 294; sleep 0.5
 $B move 330 294; sleep 0.3
 $B click 335 294
 $B wait "PNG Image Output Settings" 10
-$B click 218 103; $B key ctrl+a; $B type "$1"; $B key Tab; sleep 0.5
-$B click 180 334
+# Dialog client origin (window managers place it differently).
+XY=$($B windows | grep "'PNG Image Output Settings'" | sed 's/.*+\([0-9-]*\)+\([0-9-]*\)$/\1 \2/')
+X=${XY% *}; Y=${XY#* }
+$B click $((X + 180)) $((Y + 45)); $B key ctrl+a; $B type "$1"; $B key Tab; sleep 0.5
+$B click $((X + 142)) $((Y + 275))
 $B wait "Save" 10
 $B filename "Save"; $B key ctrl+a; $B type "$2"; $B key Return
 $B waitgone "Save" 10

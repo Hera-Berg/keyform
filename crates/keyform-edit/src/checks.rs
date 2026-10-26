@@ -337,6 +337,8 @@ mod tests {
             user_data: String::new(),
             point_uids: Vec::new(),
             mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
             grid,
             blend_shapes: Default::default(),
         }

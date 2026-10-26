@@ -48,6 +48,10 @@ pub struct MeshEdit {
     redo: Vec<Snapshot>,
     /// Points being dragged, with their positions at the press.
     drag: Option<Vec<(usize, [f32; 2])>>,
+    /// State before a live preview (automatic generation popup).
+    preview_base: Option<Snapshot>,
+    /// Generator settings to store on the mesh when editing finishes.
+    pub generator: Option<keyform_model::MeshGenerateSetting>,
 }
 
 impl MeshEdit {
@@ -72,6 +76,8 @@ impl MeshEdit {
             undo: Vec::new(),
             redo: Vec::new(),
             drag: None,
+            preview_base: None,
+            generator: None,
         };
         s.refresh();
         Ok(s)
@@ -79,7 +85,7 @@ impl MeshEdit {
 
     /// Whether the graph differs from the mesh at entry.
     pub fn changed(&self) -> bool {
-        self.graph != self.start
+        self.graph != self.start || self.generator.is_some()
     }
 
     /// Re-triangulates the preview after edge changes and recomputes the
@@ -286,6 +292,38 @@ impl MeshEdit {
         self.drag.is_some()
     }
 
+    /// Shows `g` as a live preview; [`Self::end_preview`] commits it as one
+    /// step or restores the graph from before the first preview.
+    pub fn set_preview(&mut self, g: MeshGraph) {
+        if self.preview_base.is_none() {
+            self.preview_base = Some((self.graph.clone(), self.selected.clone()));
+        }
+        self.graph = g;
+        self.selected.clear();
+        self.drag = None;
+        self.refresh();
+    }
+
+    pub fn end_preview(&mut self, commit: bool) {
+        let Some(base) = self.preview_base.take() else {
+            return;
+        };
+        if commit {
+            if base.0 != self.graph {
+                self.undo.push(base);
+                self.redo.clear();
+            }
+        } else {
+            (self.graph, self.selected) = base;
+            self.refresh();
+        }
+    }
+
+    /// The graph the preview started from (or the current one).
+    pub fn preview_base(&self) -> &MeshGraph {
+        self.preview_base.as_ref().map_or(&self.graph, |b| &b.0)
+    }
+
     /// Replaces the selection (an undoable step of the mesh editor).
     pub fn set_selected(&mut self, sel: Vec<usize>) {
         self.change(|_, s| *s = sel);
@@ -344,6 +382,8 @@ mod tests {
             user_data: String::new(),
             point_uids: vec![0, 1, 2, 3],
             mesh,
+            model_image: None,
+            generator: Default::default(),
             blend_shapes: Default::default(),
         }
     }

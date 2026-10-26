@@ -157,6 +157,7 @@ struct Index {
     /// CImageResource identity → texture index.
     texture_images: HashMap<*const crate::xml::Element, usize>,
     textures_by_guid: HashMap<String, usize>,
+    model_images_by_guid: HashMap<String, usize>,
     /// Sampling of each texture page, from the first mesh that uses it.
     sampling: HashMap<usize, TextureSampling>,
 }
@@ -195,6 +196,36 @@ fn color(o: Option<O>, default: Color) -> Result<Color> {
         o.f32("blue")?.unwrap_or(default[2]),
         o.f32("alpha")?.unwrap_or(default[3]),
     ])
+}
+
+/// Generator settings; out-of-range values are clamped to the UI ranges.
+/// Older files store one `polygonDensity` for both intervals
+/// (TODO(Q-0016)). spec: 70-advanced/auto-mesh.md §2
+fn mesh_generate_setting(g: &O) -> Result<MeshGenerateSetting> {
+    let d = MeshGenerateSetting::default();
+    let int = |name: &str, lo: i32, hi: i32, def: i32| -> Result<i32> {
+        Ok(g.i32(name)?.unwrap_or(def).clamp(lo, hi))
+    };
+    let legacy = g.i32("polygonDensity")?;
+    Ok(MeshGenerateSetting {
+        outer_density: int(
+            "polygonOuterDensity",
+            10,
+            200,
+            legacy.unwrap_or(d.outer_density),
+        )?,
+        inner_density: int(
+            "polygonInnerDensity",
+            10,
+            200,
+            legacy.unwrap_or(d.inner_density),
+        )?,
+        margin: int("polygonMargin", 0, 50, d.margin)?,
+        inner_margin: int("polygonInnerMargin", 0, 50, d.inner_margin)?,
+        min_margin: int("polygonMinMargin", 1, 10, d.min_margin)?,
+        min_bounds_pt: int("polygonMinBoundsPt", 3, 20, d.min_bounds_pt)?,
+        threshold_alpha: int("thresholdAlpha", 0, 254, d.threshold_alpha)?,
+    })
 }
 
 impl<'a, 'd> Loader<'a, 'd> {
@@ -503,6 +534,39 @@ impl<'a, 'd> Loader<'a, 'd> {
                 png,
                 locked: atlas.bool("lockCachedAtlasImage")?.unwrap_or(false),
             }));
+        }
+        // Model images (per-mesh source rasters), grouped per PSD.
+        for group in tm.list("_modelImageGroups")? {
+            for mi in group.list("_modelImages")? {
+                let Some(guid) = mi.guid("guid")? else {
+                    continue;
+                };
+                let guid = guid.to_owned();
+                let png = match mi.field("_filteredImage")? {
+                    Some(img) => self.image_payload(&img)?,
+                    None => None,
+                };
+                let mut local_to_canvas = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+                if let Some(a) = mi.field("_materialLocalToCanvasTransform")? {
+                    for (k, name) in ["m00", "m01", "m02", "m10", "m11", "m12"]
+                        .iter()
+                        .enumerate()
+                    {
+                        if let Some(v) = a.attr(name).and_then(parse_f32) {
+                            local_to_canvas[k] = v;
+                        }
+                    }
+                }
+                self.idx
+                    .model_images_by_guid
+                    .insert(guid.clone(), m.model_images.len());
+                m.model_images.push(std::sync::Arc::new(ModelImage {
+                    guid,
+                    name: mi.string("name")?.unwrap_or_default(),
+                    png,
+                    local_to_canvas,
+                }));
+            }
         }
         Ok(())
     }
@@ -1025,6 +1089,8 @@ impl<'a, 'd> Loader<'a, 'd> {
         let mut mesh = EditableMesh::default();
         let mut observed = false;
         let mut texture = None;
+        let mut model_image = None;
+        let mut generator = MeshGenerateSetting::default();
         for ext in o.list("_extensions")? {
             match ext.tag() {
                 "CEditableMeshExtension" => {
@@ -1046,6 +1112,16 @@ impl<'a, 'd> Loader<'a, 'd> {
                         if let Some(g) = cur.guid("textureAtlasGuid")? {
                             texture = self.idx.textures_by_guid.get(g).copied();
                         }
+                    }
+                    for input in ext.list("_textureInputs")? {
+                        if let Some(g) = input.guid("_modelImageGuid")? {
+                            model_image = self.idx.model_images_by_guid.get(g).copied();
+                        }
+                    }
+                }
+                "CMeshGeneratorExtension" => {
+                    if let Some(g) = ext.field("meshGenerateSetting")? {
+                        generator = mesh_generate_setting(&g)?;
                     }
                 }
                 _ => {}
@@ -1101,6 +1177,8 @@ impl<'a, 'd> Loader<'a, 'd> {
             user_data: o.string("userData")?.unwrap_or_default(),
             point_uids,
             mesh,
+            model_image,
+            generator,
             grid,
             blend_shapes,
         })

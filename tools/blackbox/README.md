@@ -10,7 +10,12 @@ Never point them at the reference's installation files.
     WINEPREFIX=~/.wine-cubism wineboot -i
     WINEPREFIX=~/.wine-cubism wine Live2D_Cubism_Setup_5.3.04.exe /S
 
-    # A private headless display, so nothing opens on the desktop:
+    # Everything below in one memory-capped user service (default 6G, set
+    # KEYFORM_BB_MEMORY); the editor's launcher otherwise lets Java size
+    # its heap from all of RAM:
+    tools/blackbox/start.sh            # stop: systemctl --user stop keyform-bb
+
+    # Or by hand. A private headless display, so nothing opens on the desktop:
     weston --backend=headless --socket=cubism-bb --xwayland --width=1920 --height=1080 &
     # (Xwayland listens on the next free display, e.g. :2 — see weston's log)
 

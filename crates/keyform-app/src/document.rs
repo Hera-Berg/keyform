@@ -1081,8 +1081,13 @@ impl Document {
         }
         let a = s.mesh;
         let graph = s.graph;
+        let generator = s.generator;
         let t = self.try_edit("Mesh Edit", |m| {
-            keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())
+            let t = keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())?;
+            if let Some(g) = generator {
+                std::sync::Arc::make_mut(&mut m.art_meshes[a]).generator = g;
+            }
+            Ok(t)
         });
         let t = match t {
             Ok(t) => t,

@@ -110,6 +110,8 @@ pub struct KeyformApp {
     pub initial_select: Option<String>,
     /// Start mesh editing on that object (`--mesh-edit`).
     pub initial_mesh_edit: bool,
+    /// Then open the Automatic Mesh generator (`--auto-mesh`).
+    pub initial_auto_mesh: bool,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
     /// first (main-window.md §5).
     closing: Vec<u64>,
@@ -126,6 +128,7 @@ pub struct KeyformApp {
     mask_dialog: bool,
     export_image: crate::export_image::ExportImageState,
     create_deformer: crate::create_deformer::CreateDeformerState,
+    auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
     param_dialog: crate::param_dialog::ParamDialog,
 }
 
@@ -214,6 +217,7 @@ impl KeyformApp {
             settings,
             mask_dialog: false,
             create_deformer: Default::default(),
+            auto_mesh: Default::default(),
             param_dialog: Default::default(),
             export_image: cc
                 .storage
@@ -238,6 +242,7 @@ impl KeyformApp {
             initial_motion: None,
             initial_select: None,
             initial_mesh_edit: false,
+            initial_auto_mesh: false,
             closing: Vec::new(),
             quit_after_closing: false,
             allow_quit: false,
@@ -708,6 +713,18 @@ impl KeyformApp {
                 }
                 ui.close();
             }
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Automatic Mesh generator…").shortcut_text("Ctrl+Shift+A"),
+                )
+                .clicked()
+            {
+                if let Err(e) = self.auto_mesh.show(doc) {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
         });
         ui.menu_button("Part", |ui| {
             if ui.add_enabled(ok, egui::Button::new("New Part")).clicked() {
@@ -734,6 +751,13 @@ impl KeyformApp {
             .clicked()
         {
             self.toggle_mesh_edit();
+            ui.close();
+        }
+        if ui
+            .button("Automatically Generate Meshes(Mesh Editing Mode)")
+            .clicked()
+        {
+            self.open_auto_mesh();
             ui.close();
         }
         ui.separator();
@@ -769,6 +793,18 @@ impl KeyformApp {
                 }
             }
         });
+    }
+
+    /// Automatic Mesh generator (dialog, or the popup in mesh edit mode).
+    fn open_auto_mesh(&mut self) {
+        let Some(i) = self.active else { return };
+        let doc = &self.slots[i].doc;
+        if !doc.editable() || doc.mode != Mode::Modeling {
+            return;
+        }
+        if let Err(e) = self.auto_mesh.show(doc) {
+            self.log.warn(e);
+        }
     }
 
     /// Mesh edit [Ctrl+E]: starts or finishes mesh editing.
@@ -1156,6 +1192,12 @@ impl KeyformApp {
         {
             self.delete_active();
         }
+        // Automatic Mesh generator [Ctrl+Shift+A] (menus.md "ArtMesh").
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::A)))
+        {
+            self.open_auto_mesh();
+        }
         // Mesh edit [Ctrl+E] (menus.md "ArtMesh", "Mesh Edit mode").
         if ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::E))) {
             self.toggle_mesh_edit();
@@ -1530,6 +1572,11 @@ impl eframe::App for KeyformApp {
                     Err(e) => self.log.warn(e),
                 }
             }
+            if self.initial_auto_mesh {
+                if let Err(e) = self.auto_mesh.show(&s.doc) {
+                    self.log.warn(e);
+                }
+            }
         }
 
         // Playback clock.
@@ -1591,6 +1638,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::create_deformer::dialog(&ctx, &mut self.create_deformer, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::auto_mesh_dialog::dialog(&ctx, &mut self.auto_mesh, doc, &mut self.log);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

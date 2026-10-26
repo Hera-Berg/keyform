@@ -947,6 +947,7 @@ fn write_art_mesh(
         indices: o.indices.clone(),
         point_uids: o.point_uids.clone(),
         mesh: o.mesh.clone(),
+        generator: o.generator,
         ..n.clone()
     } == *o;
     if !rest_same {
@@ -957,6 +958,12 @@ fn write_art_mesh(
             return invalid("art mesh has no element");
         };
         mesh::write_topology(root, &path, n)?;
+    }
+    if o.generator != n.generator {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        mesh::write_generator(root, &path, n)?;
     }
     write_parents(
         root,

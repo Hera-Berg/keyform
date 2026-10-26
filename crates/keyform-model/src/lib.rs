@@ -89,6 +89,8 @@ pub struct Model {
     pub art_meshes: Vec<Arc<ArtMesh>>,
     pub glues: Vec<Arc<Glue>>,
     pub textures: Vec<Arc<Texture>>,
+    /// Per-mesh source rasters (texture manager model images).
+    pub model_images: Vec<Arc<ModelImage>>,
     pub physics: PhysicsRig,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
@@ -112,6 +114,7 @@ impl Model {
             && same(&self.art_meshes, &other.art_meshes)
             && same(&self.glues, &other.glues)
             && same(&self.textures, &other.textures)
+            && same(&self.model_images, &other.model_images)
             && self.guid == other.guid
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
@@ -140,6 +143,7 @@ impl Model {
             && same(&self.art_meshes, &other.art_meshes)
             && same(&self.glues, &other.glues)
             && same(&self.textures, &other.textures)
+            && same(&self.model_images, &other.model_images)
             && self.guid == other.guid
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
@@ -592,6 +596,10 @@ pub struct ArtMesh {
     pub point_uids: Vec<i64>,
     /// The mesh editor's point/edge graph.
     pub mesh: EditableMesh,
+    /// Index into [`Model::model_images`]: the mesh's model image.
+    pub model_image: Option<usize>,
+    /// Automatic mesh generator settings (mesh-generator extension).
+    pub generator: MeshGenerateSetting,
     pub grid: KeyformGrid<ArtMeshForm>,
     pub blend_shapes: BlendShapes<ArtMeshForm>,
 }
@@ -637,6 +645,54 @@ impl Default for EditableMesh {
             observed: false,
         }
     }
+}
+
+/// Automatic mesh generation settings. spec: 70-advanced/auto-mesh.md §2
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshGenerateSetting {
+    /// Vertices interval (outside), 10–200.
+    pub outer_density: i32,
+    /// Vertices interval (inside), 10–200.
+    pub inner_density: i32,
+    /// Boundary margin (outside), 0–50.
+    pub margin: i32,
+    /// Boundary margin (inside), 0–50.
+    pub inner_margin: i32,
+    /// Minimum boundary margin, 1–10.
+    pub min_margin: i32,
+    /// Minimum number of points on a boundary, 3–20.
+    pub min_bounds_pt: i32,
+    /// Alpha value (transparency), 0–254.
+    pub threshold_alpha: i32,
+}
+
+/// `polygonDensityScale`: not shown and not stored per mesh; presets set
+/// it. spec: auto-mesh.md §2
+pub const DEFAULT_DENSITY_SCALE: f32 = 2.0;
+
+impl Default for MeshGenerateSetting {
+    fn default() -> Self {
+        Self {
+            outer_density: 100,
+            inner_density: 100,
+            margin: 20,
+            inner_margin: 20,
+            min_margin: 5,
+            min_bounds_pt: 5,
+            threshold_alpha: 0,
+        }
+    }
+}
+
+/// A model image: the source raster of one art mesh, before atlas packing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelImage {
+    pub guid: Guid,
+    pub name: String,
+    /// Straight-alpha PNG data (the filtered image), if stored.
+    pub png: Option<Vec<u8>>,
+    /// Image pixels → canvas pixels, row-major [m00, m01, m02, m10, m11, m12].
+    pub local_to_canvas: [f32; 6],
 }
 
 pub const POINT_LOCKED: i8 = 30;

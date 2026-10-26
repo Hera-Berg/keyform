@@ -517,6 +517,8 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
             user_data: String::new(),
             point_uids: (0..nvu as i64).collect(),
             mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
             grid: KeyformGrid {
                 bindings,
                 keyforms,

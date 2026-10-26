@@ -720,3 +720,49 @@ fn cmo3_save_after_mesh_edits() {
         );
     }
 }
+
+/// Automatic mesh generation from the model images (auto-mesh.md):
+/// generated meshes and their settings survive a save and reload.
+#[test]
+fn automesh_on_samples() {
+    use keyform_edit::automesh::{auto_mesh, is_glued, presets, AlphaImage};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::image::RgbaImage;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        let with_image = m
+            .art_meshes
+            .iter()
+            .filter(|a| a.model_image.is_some())
+            .count();
+        let picks: Vec<usize> = (0..m.art_meshes.len())
+            .filter(|&i| {
+                let a = &m.art_meshes[i];
+                a.model_image.is_some() && !a.mesh.observed && !is_glued(m, i)
+            })
+            .take(3)
+            .collect();
+        let (_, setting, scale) = presets()[1];
+        for &i in &picks {
+            let mi = &m.model_images[m.art_meshes[i].model_image.unwrap()];
+            let img = RgbaImage::decode_png(mi.png.as_ref().unwrap()).unwrap();
+            let img = AlphaImage {
+                width: img.width,
+                height: img.height,
+                alpha: img.data.chunks_exact(4).map(|p| p[3]).collect(),
+            };
+            auto_mesh(m, i, &setting, scale, &img).unwrap();
+            assert_eq!(m.art_meshes[i].generator, setting);
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.model.same_data(&edited), "{path:?}");
+        eprintln!(
+            "{path:?}: {with_image}/{} meshes have a model image; {} regenerated",
+            edited.art_meshes.len(),
+            picks.len()
+        );
+    }
+}

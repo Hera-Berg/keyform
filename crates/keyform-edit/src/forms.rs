@@ -288,6 +288,8 @@ mod tests {
             user_data: String::new(),
             point_uids: vec![0, 1],
             mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
             grid: KeyformGrid {
                 bindings: vec![Binding::new(0, vec![-1.0, 1.0])],
                 keyforms: vec![

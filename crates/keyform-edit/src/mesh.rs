@@ -868,6 +868,8 @@ mod tests {
             user_data: String::new(),
             point_uids: vec![0, 1, 2, 3],
             mesh,
+            model_image: None,
+            generator: Default::default(),
             grid: KeyformGrid::single(form),
             blend_shapes: Default::default(),
         }

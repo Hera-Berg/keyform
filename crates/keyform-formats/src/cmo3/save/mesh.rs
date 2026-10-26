@@ -115,3 +115,65 @@ pub(super) fn write_topology(root: &mut Element, path: &[u32], n: &ArtMesh) -> R
     set_array_text(em, "pointUid", "int-array", nv, join(uids.iter()));
     Ok(())
 }
+
+/// Writes changed automatic-mesh settings into the art mesh's
+/// `CMeshGeneratorExtension` (auto-mesh.md §2). Older files hold one
+/// `polygonDensity`; it is replaced by the two current fields
+/// (TODO(Q-0016)).
+pub(super) fn write_generator(root: &mut Element, path: &[u32], n: &ArtMesh) -> Result<()> {
+    let list = field_path(root, path, "_extensions")?;
+    let items = element_at(root, Some(&list))?.children.clone();
+    let Some((k, c)) = items
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.name == "CMeshGeneratorExtension")
+    else {
+        return unsupported(format!("{}: art mesh has no mesh generator", n.info.id));
+    };
+    let ext = match c.attr("xs.ref") {
+        Some(id) => find_shared(root, id)?,
+        None => {
+            let mut p = list.clone();
+            p.push(k as u32);
+            element_at(root, Some(&p))?
+        }
+    };
+    let Some(i) = ext
+        .children
+        .iter()
+        .position(|c| c.field_name() == Some("meshGenerateSetting"))
+    else {
+        return unsupported(format!("{}: art mesh has no mesh generator", n.info.id));
+    };
+    if ext.children[i].attr("xs.ref").is_some() {
+        return unsupported(format!("{}: shared mesh generator settings", n.info.id));
+    }
+    let e = &mut ext.children[i];
+    let g = &n.generator;
+    // Fields in schema order.
+    let fields = [
+        ("polygonOuterDensity", g.outer_density),
+        ("polygonInnerDensity", g.inner_density),
+        ("polygonMargin", g.margin),
+        ("polygonInnerMargin", g.inner_margin),
+        ("polygonMinMargin", g.min_margin),
+        ("polygonMinBoundsPt", g.min_bounds_pt),
+        ("thresholdAlpha", g.threshold_alpha),
+    ];
+    let mut children: Vec<Element> = fields
+        .iter()
+        .map(|(name, v)| {
+            let mut c = Element::new("i").with_attr("xs.n", *name);
+            c.text = v.to_string();
+            c
+        })
+        .collect();
+    // Keep anything else the element holds.
+    let known = |c: &Element| {
+        c.field_name()
+            .is_some_and(|f| f == "polygonDensity" || fields.iter().any(|(n, _)| *n == f))
+    };
+    children.extend(e.children.iter().filter(|c| !known(c)).cloned());
+    e.children = children;
+    Ok(())
+}

@@ -52,6 +52,8 @@ fn quad(id: &str, x: f32, y: f32, s: f32, draw_order: f32, mirrored: bool) -> Ar
         user_data: String::new(),
         point_uids: vec![],
         mesh: EditableMesh::default(),
+        model_image: None,
+        generator: Default::default(),
         grid: KeyformGrid::single(ArtMeshForm {
             positions,
             draw_order,

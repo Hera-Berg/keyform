@@ -279,6 +279,8 @@ mod tests {
             user_data: String::new(),
             point_uids: vec![0],
             mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
             grid: KeyformGrid::single(form(0.0)),
             blend_shapes: Default::default(),
         };

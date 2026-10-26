@@ -4,6 +4,7 @@
 //! [--select OBJECT_ID] [ID=VALUE …]`
 
 mod app;
+mod auto_mesh_dialog;
 mod canvas;
 mod create_deformer;
 mod document;
@@ -28,6 +29,7 @@ fn main() -> eframe::Result<()> {
     let mut play = None;
     let mut select = None;
     let mut mesh_edit = false;
+    let mut auto_mesh = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -35,6 +37,7 @@ fn main() -> eframe::Result<()> {
             "--play" => play = args.next().and_then(|n| n.parse::<usize>().ok()),
             "--select" => select = args.next(),
             "--mesh-edit" => mesh_edit = true,
+            "--auto-mesh" => auto_mesh = true,
             "--frames" => frames = args.next().and_then(|n| n.parse().ok()).unwrap_or(frames),
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
@@ -87,6 +90,7 @@ fn main() -> eframe::Result<()> {
             a.initial_motion = play;
             a.initial_select = select;
             a.initial_mesh_edit = mesh_edit;
+            a.initial_auto_mesh = auto_mesh;
             Ok(Box::new(a))
         }),
     )
