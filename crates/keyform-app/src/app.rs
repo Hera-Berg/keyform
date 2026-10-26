@@ -726,6 +726,18 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        ui.menu_button("Glue", |ui| {
+            if ui
+                .add_enabled(ok, egui::Button::new("Generate and Register Glue"))
+                .on_hover_text("Glue the selected vertex of each of two ArtMeshes")
+                .clicked()
+            {
+                if let Err(e) = doc.glue_selected_vertices() {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+        });
         ui.menu_button("Part", |ui| {
             if ui.add_enabled(ok, egui::Button::new("New Part")).clicked() {
                 let parent = match doc.primary() {
@@ -1244,8 +1256,10 @@ impl KeyformApp {
             return;
         }
         if let Some(d) = self.active_doc() {
-            if let Err(e) = d.delete_selection() {
-                self.log.warn(e);
+            match d.delete_selection() {
+                Ok(Some(note)) => self.log.info(note),
+                Ok(None) => {}
+                Err(e) => self.log.warn(e),
             }
         }
     }

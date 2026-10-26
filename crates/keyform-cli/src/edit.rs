@@ -14,7 +14,10 @@
 //!   (keys.md §1–2);
 //! - `mesh` topology (re-triangulated, keyforms remapped): `addpoint=X,Y`
 //!   (canvas pixels; on an edge it splits the edge), `movepoint=K:DX,DY`,
-//!   `deletepoint=K`.
+//!   `deletepoint=K`;
+//! - `mesh`: `delete=1` (its glue goes too), `clip=ID,ID…` (empty clears),
+//!   `glueto=OTHER_ID:VA:VB` (glue vertex VA to OTHER's VB);
+//!   `glue`: `delete=1`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -164,6 +167,45 @@ fn structural(
             if t.unresolved > 0 {
                 eprintln!("{id}: {} crossing edges left out", t.unresolved);
             }
+            Ok(true)
+        }
+        ("mesh", "delete") => {
+            let a = find(&m.art_meshes, id, |x| &x.info.id)?;
+            for g in keyform_edit::objects::delete_art_mesh(m, a)? {
+                eprintln!("{id}: glue {g} deleted with it");
+            }
+            Ok(true)
+        }
+        ("glue", "delete") => {
+            let g = find(&m.glues, id, |x| &x.info.id)?;
+            keyform_edit::objects::delete_glue(m, g)?;
+            Ok(true)
+        }
+        ("mesh", "clip") => {
+            let a = find(&m.art_meshes, id, |x| &x.info.id)?;
+            let ids: Vec<&str> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .collect();
+            let dropped = keyform_edit::objects::set_clip_ids(m, a, &ids);
+            if !dropped.is_empty() {
+                eprintln!(
+                    "{id}: {} ({})",
+                    keyform_edit::objects::CLIP_IDS_CANCELLED,
+                    dropped.join(", ")
+                );
+            }
+            Ok(true)
+        }
+        ("mesh", "glueto") => {
+            let a = find(&m.art_meshes, id, |x| &x.info.id)?;
+            let mut it = value.split(':');
+            let (Some(other), Some(va), Some(vb)) = (it.next(), it.next(), it.next()) else {
+                return Err("expected OTHER_ID:VA:VB".into());
+            };
+            let b = find(&m.art_meshes, other, |x| &x.info.id)?;
+            keyform_edit::objects::bind_vertices(m, (a, va.parse()?), (b, vb.parse()?))?;
             Ok(true)
         }
         ("part", "newpart") => {

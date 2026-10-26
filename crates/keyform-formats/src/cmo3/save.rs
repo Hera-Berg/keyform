@@ -11,6 +11,7 @@
 //! reloaded and must give back exactly the edited model before it is kept.
 //! spec: 10-formats/xml-object-graph.md §2, §6
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -35,6 +36,20 @@ const MAX_ATTR_STRING: usize = 66;
 /// Longest `super` chain followed when looking for a field.
 const MAX_SUPER_DEPTH: usize = 64;
 
+/// What saved deletions removed from the document, so that an object that
+/// comes back (undo after save) can be written as it was.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Retired {
+    /// Removed shared elements by `xs.id`.
+    elements: HashMap<String, Element>,
+    /// Deleted objects by GUID: (set list, tag, element id, set-list
+    /// position).
+    objects: HashMap<String, (String, String, String, usize)>,
+    /// Ids are never reused: new ones start above these.
+    next_id: u64,
+    next_idx: u64,
+}
+
 impl Cmo3Document {
     /// True if `model` has changes not yet written to the document.
     pub fn has_unsynced_changes(&self) -> bool {
@@ -48,10 +63,13 @@ impl Cmo3Document {
             return Ok(());
         }
         check_model_level(&self.saved, &self.model)?;
+        self.revive()?;
         let mut root = self.xml.root.clone();
         let s = &self.sources;
         let (old, new) = (&self.saved, &self.model);
         let mut ctx = Ctx::new(&root, old, new, s);
+        ctx.next_id = ctx.next_id.max(self.retired.next_id);
+        ctx.next_idx = ctx.next_idx.max(self.retired.next_idx);
         let ctx = &mut ctx;
         params::sync_parameters(&mut root, ctx, s, old, new)?;
         params::sync_physics(&mut root, ctx, old, new)?;
@@ -95,6 +113,7 @@ impl Cmo3Document {
                 objects::delete_object(
                     &mut root,
                     ctx,
+                    &o.info.guid,
                     path.as_deref().unwrap_or_default(),
                     "partSourceSet",
                 )?;
@@ -106,30 +125,85 @@ impl Cmo3Document {
                 objects::delete_object(
                     &mut root,
                     ctx,
+                    &o.info.guid,
                     path.as_deref().unwrap_or_default(),
                     "deformerSourceSet",
                 )?;
             }
         }
-        sync_list(
-            &mut root,
-            &old.art_meshes,
-            &new.art_meshes,
-            |root, i, o, n| write_art_mesh(root, ctx, source(&s.art_meshes, i)?, o, n),
-        )?;
-        sync_list(&mut root, &old.glues, &new.glues, |root, i, o, n| {
-            write_glue(root, ctx, source(&s.glues, i)?, o, n)
-        })?;
+        // Art meshes and glues are matched by GUID too.
+        let old_meshes = objects::index_by_guid(&old.art_meshes, |a| &a.info.guid);
+        let new_meshes = objects::index_by_guid(&new.art_meshes, |a| &a.info.guid);
+        for n in &new.art_meshes {
+            let Some(&i) = old_meshes.get(&n.info.guid) else {
+                return unsupported(format!("creating art mesh {}", n.info.id));
+            };
+            let o = &old.art_meshes[i];
+            if !Arc::ptr_eq(o, n) && **o != **n {
+                write_art_mesh(&mut root, ctx, source(&s.art_meshes, i)?, o, n)?;
+            }
+        }
+        for (i, o) in old.art_meshes.iter().enumerate() {
+            if !new_meshes.contains_key(&o.info.guid) {
+                let path = source(&s.art_meshes, i)?.element.clone();
+                objects::delete_object(
+                    &mut root,
+                    ctx,
+                    &o.info.guid,
+                    path.as_deref().unwrap_or_default(),
+                    "drawableSourceSet",
+                )?;
+            }
+        }
+        let old_glues = objects::index_by_guid(&old.glues, |g| &g.info.guid);
+        let new_glues = objects::index_by_guid(&new.glues, |g| &g.info.guid);
+        for n in &new.glues {
+            match old_glues.get(&n.info.guid) {
+                Some(&i) => {
+                    let o = &old.glues[i];
+                    if !Arc::ptr_eq(o, n) && **o != **n {
+                        write_glue(&mut root, ctx, source(&s.glues, i)?, o, n)?;
+                    }
+                }
+                None => {
+                    objects::create_glue(&mut root, ctx, new, n)?;
+                    ctx.structural = true;
+                }
+            }
+        }
+        for (i, o) in old.glues.iter().enumerate() {
+            if !new_glues.contains_key(&o.info.guid) {
+                let path = source(&s.glues, i)?.element.clone();
+                objects::delete_object(
+                    &mut root,
+                    ctx,
+                    &o.info.guid,
+                    path.as_deref().unwrap_or_default(),
+                    "affecterSourceSet",
+                )?;
+            }
+        }
         if !ctx.structural {
             self.xml.root = root;
             self.saved = self.model.clone();
             return Ok(());
         }
-        grid::remove_orphans(&mut root, &ctx.orphans)?;
+        let removed = grid::remove_orphans(&mut root, &ctx.orphans)?;
+        let deleted = std::mem::take(&mut ctx.deleted);
+        let (next_id, next_idx) = (ctx.next_id, ctx.next_idx);
         let mut xml = self.xml.clone();
         xml.root = root;
         for name in grid::GRID_IMPORTS {
             ensure_import(&mut xml, name);
+        }
+        if new
+            .glues
+            .iter()
+            .any(|g| !old_glues.contains_key(&g.info.guid))
+        {
+            for name in objects::GLUE_IMPORTS {
+                ensure_import(&mut xml, name);
+            }
         }
         // Debugging aid: keep the candidate document.
         if let Some(p) = std::env::var_os("KEYFORM_DEBUG_SAVE") {
@@ -147,6 +221,71 @@ impl Cmo3Document {
         self.xml = xml;
         self.sources = sources;
         self.saved = self.model.clone();
+        let r = &mut self.retired;
+        for e in removed {
+            if let Some(id) = e.attr("xs.id") {
+                r.elements.insert(id.to_owned(), e.clone());
+            }
+        }
+        for (guid, set, tag, id, pos) in deleted {
+            r.objects.insert(guid, (set, tag, id, pos));
+        }
+        r.next_id = r.next_id.max(next_id);
+        r.next_idx = r.next_idx.max(next_idx);
+        Ok(())
+    }
+
+    /// Puts back the elements of retired objects that are in the model
+    /// again, at their old set-list positions, and reloads, so that the
+    /// sync can treat them as existing objects.
+    fn revive(&mut self) -> Result<()> {
+        let old = &self.saved;
+        let known = |g: &str| {
+            old.parts.iter().any(|x| x.info.guid == g)
+                || old.deformers.iter().any(|x| x.info.guid == g)
+                || old.art_meshes.iter().any(|x| x.info.guid == g)
+                || old.glues.iter().any(|x| x.info.guid == g)
+        };
+        let m = &self.model;
+        let mut back: Vec<(String, (String, String, String, usize))> = m
+            .parts
+            .iter()
+            .map(|x| &x.info.guid)
+            .chain(m.deformers.iter().map(|x| &x.info.guid))
+            .chain(m.art_meshes.iter().map(|x| &x.info.guid))
+            .chain(m.glues.iter().map(|x| &x.info.guid))
+            .filter(|g| !known(g))
+            .filter_map(|g| Some((g.clone(), self.retired.objects.get(g)?.clone())))
+            .collect();
+        if back.is_empty() {
+            return Ok(());
+        }
+        back.sort_by_key(|(_, r)| r.3);
+        let mut root = self.xml.root.clone();
+        for (_, (set, tag, id, pos)) in &back {
+            let mut stack = vec![id.clone()];
+            while let Some(x) = stack.pop() {
+                if grid::get_shared(&root, &x).is_some() {
+                    continue;
+                }
+                let Some(e) = self.retired.elements.get(&x) else {
+                    return invalid(format!("revived object needs {x}, which is gone"));
+                };
+                objects::refs_in(e, &mut stack);
+                grid::shared_mut(&mut root)?.children.push(e.clone());
+            }
+            objects::register_at(&mut root, set, tag, id, *pos)?;
+        }
+        let mut xml = self.xml.clone();
+        xml.root = root;
+        let mut warnings = Vec::new();
+        let (loaded, sources) = super::load_model(&self.archive, &xml, &mut warnings)?;
+        self.xml = xml;
+        self.saved = loaded;
+        self.sources = sources;
+        for (g, _) in back {
+            self.retired.objects.remove(&g);
+        }
         Ok(())
     }
 
@@ -306,29 +445,19 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
         (old.guid == new.guid, "model GUID"),
         (old.target_version == new.target_version, "SDK target"),
         (
-            old.art_meshes.len() == new.art_meshes.len(),
-            "art mesh count",
+            old.model_images.len() == new.model_images.len()
+                && old
+                    .model_images
+                    .iter()
+                    .zip(&new.model_images)
+                    .all(|(a, b)| Arc::ptr_eq(a, b) || a == b),
+            "model images",
         ),
-        (old.glues.len() == new.glues.len(), "glue count"),
     ];
     match checks.iter().find(|(ok, _)| !ok) {
         Some((_, what)) => unsupported(*what),
         None => Ok(()),
     }
-}
-
-fn sync_list<T: PartialEq>(
-    root: &mut Element,
-    old: &[Arc<T>],
-    new: &[Arc<T>],
-    mut write: impl FnMut(&mut Element, usize, &T, &T) -> Result<()>,
-) -> Result<()> {
-    for (i, (o, n)) in old.iter().zip(new).enumerate() {
-        if !Arc::ptr_eq(o, n) && **o != **n {
-            write(root, i, o, n)?;
-        }
-    }
-    Ok(())
 }
 
 fn source(list: &[ObjectSource], i: usize) -> Result<&ObjectSource> {
@@ -1011,14 +1140,22 @@ fn write_glue(
     o: &Glue,
     n: &Glue,
 ) -> Result<()> {
-    let rest_same = Glue {
-        info: o.info.clone(),
-        grid: o.grid.clone(),
-        blend_shapes: o.blend_shapes.clone(),
-        ..n.clone()
-    } == *o;
-    if !rest_same {
-        return unsupported(format!("glue {}: meshes or vertex pairs", o.info.id));
+    let (om, nm) = (ctx.old_model, ctx.new_model);
+    let mesh_guid = |m: &Model, k: Option<usize>| {
+        k.and_then(|k| m.art_meshes.get(k))
+            .map(|a| a.info.guid.clone())
+    };
+    if mesh_guid(om, o.mesh_a) != mesh_guid(nm, n.mesh_a)
+        || mesh_guid(om, o.mesh_b) != mesh_guid(nm, n.mesh_b)
+    {
+        return unsupported(format!("glue {}: changing its meshes", o.info.id));
+    }
+    // Pairs compare by vertex UID (vertex indices move with mesh edits).
+    if objects::glue_uids(om, o) != objects::glue_uids(nm, n) || o.weights != n.weights {
+        let Some(path) = src.element.clone() else {
+            return invalid("glue has no element");
+        };
+        objects::write_glue_pairs(root, &path, nm, n)?;
     }
     write_parents(
         root,

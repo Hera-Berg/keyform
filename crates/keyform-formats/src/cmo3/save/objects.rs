@@ -403,7 +403,26 @@ fn common_fields(
 }
 
 /// Adds the new object element to its set list and the cache.
-fn register(root: &mut Element, ctx: &mut Ctx, set: &str, tag: &str, id: &str) -> Result<()> {
+pub(super) fn register(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    set: &str,
+    tag: &str,
+    id: &str,
+) -> Result<()> {
+    let _ = ctx;
+    register_at(root, set, tag, id, usize::MAX)
+}
+
+/// Adds a stub for object `id` to set list `set` at position `pos`
+/// (clamped to the end).
+pub(super) fn register_at(
+    root: &mut Element,
+    set: &str,
+    tag: &str,
+    id: &str,
+    pos: usize,
+) -> Result<()> {
     let main = vec![
         root.children
             .iter()
@@ -421,9 +440,9 @@ fn register(root: &mut Element, ctx: &mut Ctx, set: &str, tag: &str, id: &str) -
     };
     let list = field_path(root, &set_path, "_sources")?;
     let l = element_at(root, Some(&list))?;
-    l.children.push(stub(tag, None, id));
+    let at = pos.min(l.children.len());
+    l.children.insert(at, stub(tag, None, id));
     set_count(l);
-    let _ = ctx;
     Ok(())
 }
 
@@ -757,11 +776,211 @@ fn finish_grid<F: super::FormFields>(
     super::grid::rebuild_grid(root, ctx, &src, what, &first, grid)
 }
 
+/// Classes a new glue element uses (files without glue lack them).
+pub(super) const GLUE_IMPORTS: [&str; 8] = [
+    "com.live2d.cubism.doc.model.affecter.ACAffecterForm",
+    "com.live2d.cubism.doc.model.affecter.ACAffecterSource",
+    "com.live2d.cubism.doc.model.affecter.glue.CGlueForm",
+    "com.live2d.cubism.doc.model.affecter.glue.CGlueSource",
+    "com.live2d.cubism.doc.model.id.CAffecterId",
+    "com.live2d.graphics3d.type.GVector2",
+    "com.live2d.type.CAffecterGuid",
+    "com.live2d.type.CDrawableGuid",
+];
+
+/// Vertex UIDs of glue `g`'s pairs in `m`, interleaved (uidA, uidB).
+pub(super) fn glue_uids(m: &Model, g: &keyform_model::Glue) -> Option<Vec<i64>> {
+    let uid = |mesh: Option<usize>, v: Option<usize>| -> Option<i64> {
+        let a = m.art_meshes.get(mesh?)?;
+        let v = v?;
+        Some(a.point_uids.get(v).copied().unwrap_or(v as i64))
+    };
+    g.pairs
+        .iter()
+        .flat_map(|&(a, b)| [uid(g.mesh_a, a), uid(g.mesh_b, b)])
+        .collect()
+}
+
+fn text_array(tag: &str, name: &str, values: &[String]) -> Element {
+    let mut e = Element::new(tag)
+        .with_attr("xs.n", name)
+        .with_attr("count", values.len().to_string());
+    e.text = values.join(" ");
+    e
+}
+
+/// Writes glue `g`'s pairs and weights (`bindVertexUids`, `weights`).
+pub(super) fn write_glue_pairs(
+    root: &mut Element,
+    path: &[u32],
+    new: &Model,
+    g: &keyform_model::Glue,
+) -> Result<()> {
+    let Some(uids) = glue_uids(new, g) else {
+        return unsupported(format!("{}: a glue pair has an unknown vertex", g.info.id));
+    };
+    let weights: Vec<f32> = g.weights.iter().flatten().copied().collect();
+    let e = element_at(root, Some(path))?;
+    super::set_array(e, "weights", "float-array", &weights);
+    super::set_array_text(
+        e,
+        "bindVertexUids",
+        "long-array",
+        uids.len(),
+        uids.iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    Ok(())
+}
+
+/// Builds the element of a new glue (`CGlueSource`, spec: cmo3-schema.md;
+/// tab position per glue.md "New glue object").
+pub(super) fn create_glue(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    new: &Model,
+    g: &keyform_model::Glue,
+) -> Result<ElementPath> {
+    let mesh_guid = |k: Option<usize>| -> Result<(String, String)> {
+        let a = k
+            .and_then(|k| new.art_meshes.get(k))
+            .ok_or_else(|| crate::error::FormatError::Invalid("glue without its meshes".into()))?;
+        Ok((a.info.guid.clone(), a.info.id.clone()))
+    };
+    let (ga, na) = mesh_guid(g.mesh_a)?;
+    let (gb, nb) = mesh_guid(g.mesh_b)?;
+    let Some(part) = part_uuid(new, g.info.parent_part) else {
+        return unsupported("a glue without a part");
+    };
+    let Some(uids) = glue_uids(new, g) else {
+        return unsupported(format!("{}: a glue pair has an unknown vertex", g.info.id));
+    };
+    let gid = guid_id(root, ctx, &g.info.guid, "CAffecterGuid", &g.info.id)?;
+    let aid = guid_id(root, ctx, &ga, "CDrawableGuid", &na)?;
+    let bid = guid_id(root, ctx, &gb, "CDrawableGuid", &nb)?;
+    let pid = guid_id(root, ctx, &part, "CPartGuid", "")?;
+    let tid = guid_id(root, ctx, &target_uuid(new, None), "CDeformerGuid", "ROOT")?;
+    let fg_uuid = g
+        .grid
+        .guids
+        .first()
+        .cloned()
+        .unwrap_or_else(keyform_model::new_guid);
+    let fg = add_shared(
+        root,
+        ctx,
+        Element::new("CFormGuid")
+            .with_attr("uuid", fg_uuid)
+            .with_attr("note", "(no debug info)"),
+    )?;
+    let me = "#KEYFORM-NEW-GLUE";
+    let f0 = g.grid.keyforms.first().cloned().unwrap_or_default();
+    // Tab: y at the first pair's midpoint, x at the canvas edge on that side.
+    let mid = g.pairs.first().and_then(|&(a, b)| {
+        let p = |k: Option<usize>, v: Option<usize>| -> Option<[f32; 2]> {
+            let m = new.art_meshes.get(k?)?;
+            let v = v?;
+            Some([*m.positions.get(2 * v)?, *m.positions.get(2 * v + 1)?])
+        };
+        let (pa, pb) = (p(g.mesh_a, a)?, p(g.mesh_b, b)?);
+        Some([(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0])
+    });
+    let w = new.canvas.width as f32;
+    let tab = mid.map_or([-100.0, 0.0], |c| {
+        [if c[0] > w / 2.0 { w } else { -100.0 }, c[1]]
+    });
+
+    let empty = |tag: &str, name: &str| {
+        let mut l = Element::new(tag).with_attr("xs.n", name);
+        set_count(&mut l);
+        l
+    };
+    let mut morph =
+        Element::new("KeyFormMorphTargetSet").with_attr("xs.n", "keyformMorphTargetSet");
+    let mut cons = Element::new("MorphTargetBlendWeightConstraintSet")
+        .with_attr("xs.n", "blendWeightConstraintSet");
+    cons.children.push(empty("carray_list", "_constraints"));
+    morph.children = vec![empty("carray_list", "_morphTargets"), cons];
+    let mut pcs = Element::new("ACParameterControllableSource").with_attr("xs.n", "super");
+    pcs.children = vec![
+        scalar("s", "localName", xml_text(&g.info.name)),
+        scalar("b", "isVisible", g.info.visible.to_string()),
+        scalar("b", "isLocked", g.info.locked.to_string()),
+        stub("CPartGuid", Some("parentGuid"), &pid),
+        single_grid_source(&fg),
+        morph,
+        empty("carray_list", "_extensions"),
+        Element::new("null").with_attr("xs.n", "internalColor_direct_argb"),
+        Element::new("null").with_attr("xs.n", "internalColor_indirect_argb"),
+    ];
+    let mut aff = Element::new("ACAffecterSource").with_attr("xs.n", "super");
+    aff.children = vec![
+        pcs,
+        stub("CAffecterGuid", Some("guid"), &gid),
+        Element::new("CAffecterId")
+            .with_attr("xs.n", "id")
+            .with_attr("idstr", xml_text(&g.info.id)),
+        stub("CDeformerGuid", Some("targetDeformerGuid"), &tid),
+        scalar("i", "editVersion", "0"),
+    ];
+    // The keyform.
+    let mut acform = Element::new("ACForm").with_attr("xs.n", "super");
+    acform.children = vec![
+        stub("CFormGuid", Some("guid"), &fg),
+        scalar("b", "isAnimatedForm", "false"),
+        scalar("b", "isLocalAnimatedForm", "false"),
+        stub("CGlueSource", Some("_source"), me),
+        Element::new("null").with_attr("xs.n", "name"),
+        scalar("s", "notes", ""),
+    ];
+    let mut affform = Element::new("ACAffecterForm").with_attr("xs.n", "super");
+    affform.children = vec![acform];
+    let mut form = Element::new("CGlueForm");
+    form.children = vec![affform, scalar("f", "intensity", format_f32(f0.intensity))];
+    let mut forms = Element::new("carray_list").with_attr("xs.n", "keyforms");
+    forms.children.push(form);
+    set_count(&mut forms);
+    let mut tabv = Element::new("GVector2").with_attr("xs.n", "tabPosOnCanvas");
+    tabv.children = vec![
+        scalar("f", "x", format_f32(tab[0])),
+        scalar("f", "y", format_f32(tab[1])),
+    ];
+    let weights: Vec<String> = g.weights.iter().flatten().map(|w| format_f32(*w)).collect();
+    let uid_text: Vec<String> = uids.iter().map(|u| u.to_string()).collect();
+    let mut e = Element::new("CGlueSource");
+    e.children = vec![
+        aff,
+        text_array("float-array", "weights", &weights),
+        forms,
+        stub("CDrawableGuid", Some("targetArtMeshA_guid"), &aid),
+        stub("CDrawableGuid", Some("targetArtMeshB_guid"), &bid),
+        text_array("long-array", "bindVertexUids", &uid_text),
+        tabv,
+    ];
+    let id = add_shared(root, ctx, e)?;
+    let si = shared_index(root)?;
+    let k = shared(root)
+        .and_then(|s| {
+            s.children
+                .iter()
+                .position(|c| c.attr("xs.id") == Some(id.as_str()))
+        })
+        .unwrap_or(0);
+    retarget(&mut shared_mut(root)?.children[k], me, &id);
+    register(root, ctx, "affecterSourceSet", "CGlueSource", &id)?;
+    let path = vec![si, k as u32];
+    finish_grid(root, ctx, &path, &g.info.id, &g.grid, &g.blend_shapes)?;
+    Ok(path)
+}
+
 /// Deletes an object element: its set-list stub goes, and the element and
 /// everything it referred to become orphan candidates.
 pub(super) fn delete_object(
     root: &mut Element,
     ctx: &mut Ctx,
+    guid: &str,
     path: &[u32],
     set: &str,
 ) -> Result<()> {
@@ -786,8 +1005,20 @@ pub(super) fn delete_object(
     };
     let list = field_path(root, &set_path, "_sources")?;
     let l = element_at(root, Some(&list))?;
+    let pos = l
+        .children
+        .iter()
+        .position(|c| c.attr("xs.ref") == Some(id.as_str()))
+        .unwrap_or(l.children.len());
     l.children.retain(|c| c.attr("xs.ref") != Some(id.as_str()));
     set_count(l);
+    ctx.deleted.push((
+        guid.to_owned(),
+        set.to_owned(),
+        e.name.clone(),
+        id.clone(),
+        pos,
+    ));
     ctx.orphans.push(id);
     refs_in(&e, &mut ctx.orphans);
     ctx.structural = true;

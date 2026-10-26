@@ -35,8 +35,11 @@ pub(super) struct Ctx<'a> {
     pub object_paths: HashMap<String, ElementPath>,
     pub old_model: &'a keyform_model::Model,
     pub new_model: &'a keyform_model::Model,
-    next_id: u64,
-    next_idx: u64,
+    pub(super) next_id: u64,
+    pub(super) next_idx: u64,
+    /// Objects deleted by this save: (GUID, set list, tag, element id,
+    /// set-list position).
+    pub(super) deleted: Vec<(String, String, String, String, usize)>,
     /// Shared ids that may have lost their last reference.
     pub orphans: Vec<String>,
     /// Whether any element was added or removed (sources must be reloaded).
@@ -99,6 +102,7 @@ impl<'a> Ctx<'a> {
             new_model,
             next_id: id,
             next_idx: idx,
+            deleted: Vec::new(),
             orphans: Vec::new(),
             structural: false,
         }
@@ -559,7 +563,8 @@ pub(super) fn rebuild_grid<F: FormFields>(
 /// Removes those of `ids` that nothing refers to any more, repeating
 /// while removals free further candidates (a dead binding releases the
 /// parameter GUID it named).
-pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<()> {
+pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<Vec<Element>> {
+    let mut removed = Vec::new();
     let mut left: Vec<String> = ids.to_vec();
     left.sort();
     left.dedup();
@@ -586,12 +591,15 @@ pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<()> {
         if dead.is_empty() {
             break;
         }
-        shared_mut(root)?
-            .children
-            .retain(|c| c.attr("xs.id").is_none_or(|id| !dead.contains(id)));
+        let sh = shared_mut(root)?;
+        let (gone, keep): (Vec<Element>, Vec<Element>) = std::mem::take(&mut sh.children)
+            .into_iter()
+            .partition(|c| c.attr("xs.id").is_some_and(|id| dead.contains(id)));
+        sh.children = keep;
+        removed.extend(gone);
         left.retain(|id| !dead.contains(id));
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// Bindings equal up to parameter renumbering (compared by GUID).

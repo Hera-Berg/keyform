@@ -10,9 +10,9 @@ use std::sync::Arc;
 use keyform_eval::deform::inherited_rotation;
 use keyform_eval::{DeformerMap, Evaluator, Frame};
 use keyform_model::{
-    new_guid, Binding, Deformer, DeformerIndex, DeformerKind, KeyformGrid, Model, ObjectInfo,
-    ParamEntry, ParamIndex, Parameter, Part, PartChild, PartIndex, RotationDeformer, RotationForm,
-    WarpDeformer, WarpForm, DEFAULT_BEZIER_NETS,
+    new_guid, Binding, Deformer, DeformerIndex, DeformerKind, Glue, GlueForm, KeyformGrid, Model,
+    ObjectInfo, ParamEntry, ParamIndex, Parameter, Part, PartChild, PartIndex, RotationDeformer,
+    RotationForm, WarpDeformer, WarpForm, DEFAULT_BEZIER_NETS,
 };
 
 use crate::keys::{delete_all_keys, ObjectRef};
@@ -714,47 +714,213 @@ pub fn delete_part(m: &mut Model, p: PartIndex) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::keys::{add_key, keys_of};
-    use keyform_model::*;
-
-    fn model() -> Model {
-        let mut m = Model::default();
-        add_parameter(&mut m, Parameter::new("A", -1.0, 1.0, 0.0), None);
-        add_parameter(&mut m, Parameter::new("B", 0.0, 1.0, 0.0), None);
-        add_parameter(&mut m, Parameter::new("C", 0.0, 10.0, 5.0), None);
-        let mut part = Part::new("P");
-        part.grid = KeyformGrid::single(PartForm::default());
-        m.parts.push(Arc::new(part));
-        m
+/// Deletes glue `g`. Returns its name.
+pub fn delete_glue(m: &mut Model, g: usize) -> Result<String, String> {
+    let name = m
+        .glues
+        .get(g)
+        .ok_or("no such glue")?
+        .info
+        .display_name()
+        .to_owned();
+    let f = |i: usize| if i > g { i - 1 } else { i };
+    for x in &mut m.parts {
+        if x.children
+            .iter()
+            .any(|c| matches!(c, PartChild::Glue(i) if *i >= g))
+        {
+            let x = Arc::make_mut(x);
+            x.children.retain(|c| *c != PartChild::Glue(g));
+            for c in &mut x.children {
+                if let PartChild::Glue(i) = c {
+                    *i = f(*i);
+                }
+            }
+        }
     }
+    m.glues.remove(g);
+    Ok(name)
+}
 
-    #[test]
-    fn remove_parameter_unbinds_and_renumbers() {
-        let mut m = model();
-        assert!(m.parameters.iter().all(|p| p.guid.len() == 36));
-        let o = ObjectRef::Part(0);
-        add_key(&mut m, o, 0, -1.0).unwrap();
-        add_key(&mut m, o, 0, 1.0).unwrap();
-        add_key(&mut m, o, 2, 10.0).unwrap();
-        // Different opacity at A = 1 so unbinding has a shape to keep.
-        Arc::make_mut(&mut m.parts[0]).grid.keyforms[1].opacity = 0.5;
-        m.eye_blink_parameters = vec![0, 2];
-        assert!(remove_parameter(&mut m, 0));
-        assert_eq!(m.parameters.len(), 2);
-        assert_eq!(m.parameters[1].id, "C");
-        assert_eq!(keys_of(&m, o, 1), vec![10.0], "C's binding renumbered");
-        assert_eq!(m.parts[0].grid.bindings.len(), 1);
-        // The shape at A's default (0) was kept: opacity halfway.
-        assert!((m.parts[0].grid.keyforms[0].opacity - 0.75).abs() < 1e-6);
-        assert_eq!(m.eye_blink_parameters, vec![1]);
-        assert_eq!(
-            m.root_parameter_entries,
-            vec![ParamEntry::Parameter(0), ParamEntry::Parameter(1)]
-        );
+/// Deletes art mesh `i`. Glues joining it go too (their names are
+/// returned); meshes and parts that used it as a clipping mask keep a
+/// deleted-mask reference (spec: 50-ui/dialogs.md §21).
+pub fn delete_art_mesh(m: &mut Model, i: usize) -> Result<Vec<String>, String> {
+    if i >= m.art_meshes.len() {
+        return Err("no such art mesh".into());
     }
+    let mut removed = Vec::new();
+    while let Some(g) = m
+        .glues
+        .iter()
+        .position(|g| g.mesh_a == Some(i) || g.mesh_b == Some(i))
+    {
+        removed.push(delete_glue(m, g)?);
+    }
+    let f = |k: usize| if k > i { k - 1 } else { k };
+    for x in &mut m.parts {
+        let touches = x
+            .children
+            .iter()
+            .any(|c| matches!(c, PartChild::ArtMesh(k) if *k >= i))
+            || x.clip.iter().any(|&k| k >= i);
+        if touches {
+            let x = Arc::make_mut(x);
+            x.children.retain(|c| *c != PartChild::ArtMesh(i));
+            for c in &mut x.children {
+                if let PartChild::ArtMesh(k) = c {
+                    *k = f(*k);
+                }
+            }
+            if x.clip.contains(&i) {
+                x.clip.retain(|&k| k != i);
+                x.clip_missing = true;
+            }
+            for k in &mut x.clip {
+                *k = f(*k);
+            }
+        }
+    }
+    for x in &mut m.art_meshes {
+        if x.clip.iter().any(|&k| k >= i) {
+            let x = Arc::make_mut(x);
+            if x.clip.contains(&i) {
+                x.clip.retain(|&k| k != i);
+                x.clip_missing = true;
+            }
+            for k in &mut x.clip {
+                *k = f(*k);
+            }
+        }
+    }
+    for g in &mut m.glues {
+        if g.mesh_a.is_some_and(|k| k > i) || g.mesh_b.is_some_and(|k| k > i) {
+            let g = Arc::make_mut(g);
+            g.mesh_a = g.mesh_a.map(f);
+            g.mesh_b = g.mesh_b.map(f);
+        }
+    }
+    m.art_meshes.remove(i);
+    Ok(removed)
+}
+
+/// Glue messages. spec: 30-algorithms/glue.md "Editing"
+pub const GLUE_SELECT_TWO: &str = "Please select 2 Vertices you would like to glue then call.";
+pub const GLUE_SAME_POINTS: &str = "It already contains the same points";
+pub const GLUE_NOT_ASSOCIATED: &str = "The Meshes are not associated";
+
+/// The glue joining meshes `a` and `b` (either order), and whether `a` is
+/// its mesh A.
+pub fn glue_between(m: &Model, a: usize, b: usize) -> Option<(usize, bool)> {
+    m.glues.iter().enumerate().find_map(|(g, x)| {
+        if x.mesh_a == Some(a) && x.mesh_b == Some(b) {
+            Some((g, true))
+        } else if x.mesh_a == Some(b) && x.mesh_b == Some(a) {
+            Some((g, false))
+        } else {
+            None
+        }
+    })
+}
+
+/// Glues vertex `va` of mesh `a` to vertex `vb` of mesh `b` with weights
+/// (0.5, 0.5), creating the glue object if the meshes have none
+/// (glue.md "Bind / unbind", "New glue object"). Returns the glue.
+pub fn bind_vertices(
+    m: &mut Model,
+    (a, va): (usize, usize),
+    (b, vb): (usize, usize),
+) -> Result<usize, String> {
+    if a == b || a >= m.art_meshes.len() || b >= m.art_meshes.len() {
+        return Err(GLUE_SELECT_TWO.into());
+    }
+    if va >= m.art_meshes[a].vertex_count() || vb >= m.art_meshes[b].vertex_count() {
+        return Err(GLUE_SELECT_TWO.into());
+    }
+    let (g, a_first) = match glue_between(m, a, b) {
+        Some(x) => x,
+        None => (create_glue(m, a, b), true),
+    };
+    let pair = if a_first {
+        (Some(va), Some(vb))
+    } else {
+        (Some(vb), Some(va))
+    };
+    if m.glues[g].pairs.contains(&pair) {
+        return Err(GLUE_SAME_POINTS.into());
+    }
+    let x = Arc::make_mut(&mut m.glues[g]);
+    x.pairs.push(pair);
+    x.weights.push([0.5, 0.5]);
+    Ok(g)
+}
+
+/// Unbinds vertex `va` of mesh `a` from vertex `vb` of mesh `b`; the glue
+/// object stays. Returns whether a pair was removed.
+pub fn unbind_vertices(
+    m: &mut Model,
+    (a, va): (usize, usize),
+    (b, vb): (usize, usize),
+) -> Result<bool, String> {
+    let (g, a_first) = glue_between(m, a, b).ok_or(GLUE_NOT_ASSOCIATED)?;
+    let pair = if a_first {
+        (Some(va), Some(vb))
+    } else {
+        (Some(vb), Some(va))
+    };
+    let Some(k) = m.glues[g].pairs.iter().position(|p| *p == pair) else {
+        return Ok(false);
+    };
+    let x = Arc::make_mut(&mut m.glues[g]);
+    x.pairs.remove(k);
+    x.weights.remove(k);
+    Ok(true)
+}
+
+/// A new glue between meshes `a` and `b`: name `Glue__<A>__<B>`, ID from
+/// the first 20 characters of both IDs, made unique, in A's parent part at
+/// A's position (glue.md "New glue object").
+fn create_glue(m: &mut Model, a: usize, b: usize) -> usize {
+    let (ma, mb) = (&m.art_meshes[a], &m.art_meshes[b]);
+    let cut = |s: &str| s.chars().take(20).collect::<String>();
+    let base = format!("Glue__{}__{}", cut(&ma.info.id), cut(&mb.info.id));
+    let taken = || {
+        m.glues
+            .iter()
+            .map(|g| g.info.id.as_str())
+            .chain(m.art_meshes.iter().map(|x| x.info.id.as_str()))
+            .chain(m.deformers.iter().map(|x| x.info.id.as_str()))
+            .chain(m.parts.iter().map(|x| x.info.id.as_str()))
+    };
+    let id = if taken().any(|t| t == base) {
+        unique_id(&base, taken())
+    } else {
+        base
+    };
+    let mut info = ObjectInfo::new(&id);
+    info.guid = new_guid();
+    info.name = format!(
+        "Glue__{}__{}",
+        ma.info.display_name(),
+        mb.info.display_name()
+    );
+    info.parent_part = ma.info.parent_part.or(m.root_part);
+    let mut grid = KeyformGrid::single(GlueForm::default());
+    grid.guids = vec![new_guid()];
+    let g = m.glues.len();
+    m.glues.push(Arc::new(Glue {
+        info: info.clone(),
+        mesh_a: Some(a),
+        mesh_b: Some(b),
+        pairs: Vec::new(),
+        weights: Vec::new(),
+        grid,
+        blend_shapes: Default::default(),
+    }));
+    if let Some(p) = info.parent_part {
+        add_to_part(m, p, PartChild::Glue(g), Some(PartChild::ArtMesh(a)));
+    }
+    g
 }
 
 /// Message when clip IDs are dropped. spec: 50-ui/palettes.md §4
@@ -812,4 +978,47 @@ pub fn clip_users(m: &Model, i: usize) -> Vec<usize> {
     (0..m.art_meshes.len())
         .filter(|&k| m.art_meshes[k].clip.contains(&i))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::{add_key, keys_of};
+    use keyform_model::*;
+
+    fn model() -> Model {
+        let mut m = Model::default();
+        add_parameter(&mut m, Parameter::new("A", -1.0, 1.0, 0.0), None);
+        add_parameter(&mut m, Parameter::new("B", 0.0, 1.0, 0.0), None);
+        add_parameter(&mut m, Parameter::new("C", 0.0, 10.0, 5.0), None);
+        let mut part = Part::new("P");
+        part.grid = KeyformGrid::single(PartForm::default());
+        m.parts.push(Arc::new(part));
+        m
+    }
+
+    #[test]
+    fn remove_parameter_unbinds_and_renumbers() {
+        let mut m = model();
+        assert!(m.parameters.iter().all(|p| p.guid.len() == 36));
+        let o = ObjectRef::Part(0);
+        add_key(&mut m, o, 0, -1.0).unwrap();
+        add_key(&mut m, o, 0, 1.0).unwrap();
+        add_key(&mut m, o, 2, 10.0).unwrap();
+        // Different opacity at A = 1 so unbinding has a shape to keep.
+        Arc::make_mut(&mut m.parts[0]).grid.keyforms[1].opacity = 0.5;
+        m.eye_blink_parameters = vec![0, 2];
+        assert!(remove_parameter(&mut m, 0));
+        assert_eq!(m.parameters.len(), 2);
+        assert_eq!(m.parameters[1].id, "C");
+        assert_eq!(keys_of(&m, o, 1), vec![10.0], "C's binding renumbered");
+        assert_eq!(m.parts[0].grid.bindings.len(), 1);
+        // The shape at A's default (0) was kept: opacity halfway.
+        assert!((m.parts[0].grid.keyforms[0].opacity - 0.75).abs() < 1e-6);
+        assert_eq!(m.eye_blink_parameters, vec![1]);
+        assert_eq!(
+            m.root_parameter_entries,
+            vec![ParamEntry::Parameter(0), ParamEntry::Parameter(1)]
+        );
+    }
 }

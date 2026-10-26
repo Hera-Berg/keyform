@@ -1016,33 +1016,95 @@ impl Document {
     }
 
     /// Edit ▸ Delete: deletes the selected deformers (their children move
-    /// to the parent deformer) and empty parts.
-    pub fn delete_selection(&mut self) -> Result<(), String> {
+    /// to the parent), empty parts, art meshes (with the glue joining them)
+    /// and glue. Returns a note about glue removed with its meshes.
+    pub fn delete_selection(&mut self) -> Result<Option<String>, String> {
+        #[derive(PartialEq)]
+        enum K {
+            Deformer,
+            Part,
+            Mesh,
+            Glue,
+        }
         let m = &self.model;
         let mut guids = Vec::new();
         for &o in &self.selection.objects {
             match o {
-                Selection::Deformer(d) => guids.push((true, m.deformers[d].info.guid.clone())),
-                Selection::Part(p) => guids.push((false, m.parts[p].info.guid.clone())),
-                _ => return Err("Deleting art meshes and glue is not supported yet.".into()),
+                Selection::Deformer(d) => {
+                    guids.push((K::Deformer, m.deformers[d].info.guid.clone()))
+                }
+                Selection::Part(p) => guids.push((K::Part, m.parts[p].info.guid.clone())),
+                Selection::ArtMesh(a) => guids.push((K::Mesh, m.art_meshes[a].info.guid.clone())),
+                Selection::Glue(g) => guids.push((K::Glue, m.glues[g].info.guid.clone())),
             }
         }
         if guids.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let values = self.values.clone();
         self.try_edit("Delete", |m| {
-            for (deformer, g) in &guids {
-                if *deformer {
-                    if let Some(d) = m.deformers.iter().position(|x| x.info.guid == *g) {
-                        keyform_edit::objects::delete_deformer(m, d, &values)?;
+            let mut glues = Vec::new();
+            // Glue and meshes first: deformers and parts may then be empty.
+            for (k, g) in &guids {
+                match k {
+                    K::Glue => {
+                        if let Some(i) = m.glues.iter().position(|x| x.info.guid == *g) {
+                            keyform_edit::objects::delete_glue(m, i)?;
+                        }
                     }
-                } else if let Some(p) = m.parts.iter().position(|x| x.info.guid == *g) {
-                    keyform_edit::objects::delete_part(m, p)?;
+                    K::Mesh => {
+                        if let Some(i) = m.art_meshes.iter().position(|x| x.info.guid == *g) {
+                            glues.extend(keyform_edit::objects::delete_art_mesh(m, i)?);
+                        }
+                    }
+                    _ => {}
                 }
             }
-            Ok(())
+            for (k, g) in &guids {
+                match k {
+                    K::Deformer => {
+                        if let Some(d) = m.deformers.iter().position(|x| x.info.guid == *g) {
+                            keyform_edit::objects::delete_deformer(m, d, &values)?;
+                        }
+                    }
+                    K::Part => {
+                        if let Some(p) = m.parts.iter().position(|x| x.info.guid == *g) {
+                            keyform_edit::objects::delete_part(m, p)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok((!glues.is_empty())
+                .then(|| format!("Glue removed with its ArtMesh: {}", glues.join(", "))))
         })
+    }
+
+    /// Generate and Register Glue: binds the one selected vertex on each of
+    /// two art meshes (spec: 30-algorithms/glue.md "Editing").
+    pub fn glue_selected_vertices(&mut self) -> Result<(), String> {
+        let pts: Vec<(usize, usize)> = self
+            .selection
+            .points
+            .iter()
+            .filter_map(|&(o, k)| match o {
+                Selection::ArtMesh(a) => Some((a, k)),
+                _ => None,
+            })
+            .collect();
+        let [p, q] = pts[..] else {
+            return Err(keyform_edit::objects::GLUE_SELECT_TWO.into());
+        };
+        if p.0 == q.0 {
+            return Err(keyform_edit::objects::GLUE_SELECT_TWO.into());
+        }
+        let sel = self.selection.clone();
+        let g = self.try_edit("Glue", |m| keyform_edit::objects::bind_vertices(m, p, q))?;
+        let mut sel = sel;
+        sel.objects.retain(|o| !matches!(o, Selection::Glue(_)));
+        sel.objects.push(Selection::Glue(g));
+        self.set_selection(sel);
+        Ok(())
     }
 
     /// Start Mesh editing on the selected art mesh (canvas-and-tools.md §5).
@@ -2346,5 +2408,55 @@ mod tests {
         let before = doc.history.len();
         assert!(doc.try_edit("Bad", |_| Err::<(), _>("no".into())).is_err());
         assert_eq!(doc.history.len(), before);
+    }
+
+    /// Glue two meshes' selected vertices, delete a mesh (taking its glue),
+    /// undo, save and reopen.
+    #[test]
+    fn glue_and_delete_meshes_in_document() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let src = root.join("taka.cmo3");
+        if !src.exists() {
+            return;
+        }
+        let scratch = root.join("target/test-scratch/glue-delete");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("model.cmo3");
+        std::fs::copy(&src, &path).unwrap();
+        let mut log = Log::default();
+        let mut doc = Document::open(&path, &mut log).unwrap();
+        let (n_glue, n_mesh) = (doc.model.glues.len(), doc.model.art_meshes.len());
+        // One point on one mesh is not enough.
+        doc.set_selection(SelectionSet {
+            objects: vec![Selection::ArtMesh(0), Selection::ArtMesh(1)],
+            points: vec![(Selection::ArtMesh(0), 0)],
+        });
+        assert!(doc.glue_selected_vertices().is_err());
+        doc.set_selection(SelectionSet {
+            objects: vec![Selection::ArtMesh(0), Selection::ArtMesh(1)],
+            points: vec![(Selection::ArtMesh(0), 0), (Selection::ArtMesh(1), 0)],
+        });
+        doc.glue_selected_vertices().unwrap();
+        assert_eq!(doc.model.glues.len(), n_glue + 1);
+        let g = &doc.model.glues[n_glue];
+        assert_eq!(g.pairs, vec![(Some(0), Some(0))]);
+        assert!(g.info.id.starts_with("Glue__"));
+        doc.save_project(None).unwrap();
+        // Deleting mesh 1 takes the glue with it.
+        doc.select(Some(Selection::ArtMesh(1)));
+        let note = doc.delete_selection().unwrap();
+        assert!(note.is_some_and(|n| n.contains("Glue__")));
+        assert_eq!(doc.model.art_meshes.len(), n_mesh - 1);
+        assert_eq!(doc.model.glues.len(), n_glue);
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&doc.model));
+        assert_eq!(doc.undo().as_deref(), Some("Delete"));
+        assert_eq!(doc.model.glues.len(), n_glue + 1);
+        doc.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert_eq!(back.model.art_meshes.len(), n_mesh);
+        assert_eq!(back.model.glues.len(), n_glue + 1);
     }
 }

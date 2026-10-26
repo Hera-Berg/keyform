@@ -801,3 +801,76 @@ fn cmo3_save_after_clip_edits() {
         eprintln!("{path:?}: clip edits saved (cleared {cleared:?})");
     }
 }
+
+/// Deleting art meshes and creating, editing and deleting glue
+/// (glue.md "Editing", dialogs.md §21 deleted masks) survive a save and
+/// reload.
+#[test]
+fn cmo3_save_after_mesh_and_glue_edits() {
+    use keyform_edit::objects::{bind_vertices, delete_art_mesh, delete_glue, unbind_vertices};
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let original = doc.model.clone();
+        let m = &mut doc.model;
+        // A mask that others use: deleting it leaves deleted-mask references.
+        let mask = (0..m.art_meshes.len()).find(|&k| {
+            m.art_meshes.iter().any(|a| a.clip.contains(&k))
+                && !m
+                    .glues
+                    .iter()
+                    .any(|g| g.mesh_a == Some(k) || g.mesh_b == Some(k))
+        });
+        let users = mask.map_or(0, |k| {
+            m.art_meshes.iter().filter(|a| a.clip.contains(&k)).count()
+        });
+        if let Some(k) = mask {
+            delete_art_mesh(m, k).unwrap();
+        }
+        // Glue two unglued meshes, then add and remove a pair.
+        let free: Vec<usize> = (0..m.art_meshes.len())
+            .filter(|&k| m.art_meshes[k].vertex_count() >= 3 && !m.art_meshes[k].mesh.observed)
+            .take(2)
+            .collect();
+        let g = bind_vertices(m, (free[0], 0), (free[1], 1)).unwrap();
+        bind_vertices(m, (free[0], 2), (free[1], 2)).unwrap();
+        assert!(
+            bind_vertices(m, (free[1], 1), (free[0], 0)).is_err(),
+            "same points"
+        );
+        assert!(unbind_vertices(m, (free[0], 2), (free[1], 2)).unwrap());
+        // Delete an existing glue, if any (other than the new one).
+        let old_glue = (0..m.glues.len()).find(|&k| k != g);
+        if let Some(k) = old_glue {
+            delete_glue(m, k).unwrap();
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}: reload differs");
+        let missing = back
+            .model
+            .art_meshes
+            .iter()
+            .filter(|a| a.clip_missing)
+            .count();
+        eprintln!(
+            "{path:?}: deleted mask {mask:?} ({users} users, {missing} now reference a deleted mask); \
+             glue created; old glue deleted: {old_glue:?}"
+        );
+        // Re-saving the reloaded file is stable.
+        let mut again = back;
+        let b2 = again.save_bytes().unwrap();
+        assert_eq!(b2, bytes, "{path:?}: re-save");
+        // Undoing everything after the save: the deleted objects come back
+        // as they were.
+        doc.model = original.clone();
+        let bytes = doc
+            .save_bytes()
+            .unwrap_or_else(|e| panic!("{path:?} undo: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&original), "{path:?}: after undo");
+    }
+}

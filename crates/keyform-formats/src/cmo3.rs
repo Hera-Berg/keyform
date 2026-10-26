@@ -57,6 +57,9 @@ pub struct Cmo3Document {
     /// The model as last loaded or saved: objects that are still the same
     /// `Arc` need no writing.
     pub saved: Model,
+    /// Elements removed by saved deletions, for objects that come back
+    /// (undo after save).
+    pub(crate) retired: save::Retired,
 }
 
 /// Loads the typed model and its element sources from a parsed document.
@@ -115,6 +118,7 @@ impl Cmo3Document {
             model,
             warnings,
             sources,
+            retired: Default::default(),
         })
     }
 
