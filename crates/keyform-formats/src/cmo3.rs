@@ -181,6 +181,39 @@ struct Loader<'a, 'd> {
 
 type O<'g, 'd> = Obj<'g, 'd>;
 
+/// PSD blend keys and the editor's blend classes (`CBlend_<class>`).
+/// spec: 70-advanced/psd-import.md §5.4
+pub(crate) const PSD_BLEND_CLASSES: [(&[u8; 4], &str); 28] = [
+    (b"norm", "Normal"),
+    (b"mul ", "Multiply"),
+    (b"scrn", "Screen"),
+    (b"lddg", "LinearDodge"),
+    (b"dark", "Darken"),
+    (b"lite", "Lighten"),
+    (b"idiv", "ColorBurn"),
+    (b"div ", "ColorDodge"),
+    (b"lbrn", "LinearBurn"),
+    (b"over", "Overray"),
+    (b"sLit", "SoftLight"),
+    (b"hLit", "HardLight"),
+    (b"lLit", "LinearLight"),
+    (b"vLit", "VividLight"),
+    (b"pLit", "PinLight"),
+    (b"hMix", "HardMix"),
+    (b"diff", "Difference"),
+    (b"smud", "Exclusion"),
+    (b"fsub", "Subtract"),
+    (b"fdiv", "Divide"),
+    (b"hue ", "Hue"),
+    (b"sat ", "Saturation"),
+    (b"colr", "Color"),
+    (b"lum ", "Luminosity"),
+    (b"diss", "Dissolve"),
+    (b"dkCl", "DarkerColor"),
+    (b"lgCl", "LighterColor"),
+    (b"pass", "PassThrough"),
+];
+
 /// `GTexture2D` filter settings. spec: 40-rendering/appearance.md §5
 fn texture_sampling(t: &O) -> Result<TextureSampling> {
     let min = match t.field("filterMode")? {
@@ -627,7 +660,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 imported_ms: w.i64("importedTimeMSec")?.unwrap_or(0),
                 modified_ms: w.i64("lastModifiedTimeMSec")?.unwrap_or(0),
                 replaced: w.bool("isReplaced")?.unwrap_or(false),
-                tree: None,
+                tree: self.layer_tree(&img)?,
             }));
         }
         // Model images (per-mesh source rasters), grouped per PSD.
@@ -723,6 +756,66 @@ impl<'a, 'd> Loader<'a, 'd> {
     }
 
     /// PNG bytes of a `CImageResource`. spec: cmo3.md §3
+    /// The stored layer tree of a layered image (`_rootLayer`'s children).
+    /// spec: 70-advanced/psd-import.md §8
+    fn layer_tree(&mut self, img: &O<'a, 'd>) -> Result<Option<std::sync::Arc<Vec<LayerEntry>>>> {
+        let Some(root) = img.field("_rootLayer")? else {
+            return Ok(None);
+        };
+        Ok(Some(std::sync::Arc::new(self.layer_entries(&root, 0)?)))
+    }
+
+    fn layer_entries(&mut self, group: &O<'a, 'd>, depth: usize) -> Result<Vec<LayerEntry>> {
+        if depth > 256 {
+            return invalid("layer groups nested too deeply");
+        }
+        let mut out = Vec::new();
+        for c in group.list("_children")? {
+            let blend = c
+                .field("blend")?
+                .and_then(|b| b.tag().strip_prefix("CBlend_"))
+                .and_then(|class| PSD_BLEND_CLASSES.iter().find(|(_, n)| *n == class))
+                .map_or(*b"norm", |(k, _)| **k);
+            let common = LayerCommon {
+                guid: c.guid("guid")?.unwrap_or_default().to_owned(),
+                name: c.string("name")?.unwrap_or_default(),
+                visible: c.bool("isVisible")?.unwrap_or(true),
+                clipping: c.bool("isClipping")?.unwrap_or(false),
+                opacity: c.i32("opacity255")?.unwrap_or(255).clamp(0, 255) as u8,
+                blend,
+                layer_id: match c.field("layerIdentifier")? {
+                    Some(id) => id.string("layerId")?,
+                    None => None,
+                },
+            };
+            match c.tag() {
+                "CLayerGroup" => {
+                    let children = self.layer_entries(&c, depth + 1)?;
+                    out.push(LayerEntry::Group(LayerGroup { common, children }));
+                }
+                "CLayer" => {
+                    let png = match c.field("imageResource")? {
+                        Some(r) => self.image_payload(&r)?,
+                        None => None,
+                    };
+                    let mut bounds = [0; 4];
+                    if let Some(b) = c.field("boundsOnImageDoc")? {
+                        for (k, f) in ["x", "y", "width", "height"].iter().enumerate() {
+                            bounds[k] = b.i32(f)?.unwrap_or(0);
+                        }
+                    }
+                    out.push(LayerEntry::Layer(ImageLayer {
+                        common,
+                        bounds,
+                        png: std::sync::Arc::new(png.unwrap_or_default()),
+                    }));
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
     fn image_payload(&mut self, img: &O<'a, 'd>) -> Result<Option<Vec<u8>>> {
         let Some(path) = img.field("imageFileBuf")?.and_then(|f| f.attr("path")) else {
             return Ok(None);

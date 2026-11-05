@@ -911,8 +911,26 @@ pub fn log_ui(ui: &mut egui::Ui, log: &mut Log, tokens: &Tokens) {
         });
 }
 
-/// Project palette: open documents and their resources.
-pub fn project_ui(ui: &mut egui::Ui, docs: &[&Document], active: Option<usize>) -> Option<usize> {
+/// What the user picked in the Project palette.
+pub enum ProjectAction {
+    /// Make document `i` active.
+    Activate(usize),
+    /// Layer ▸ Create ArtMesh (layered image `image`, layer GUID `layer`).
+    CreateArtMesh {
+        doc: usize,
+        image: usize,
+        layer: String,
+    },
+}
+
+/// Project palette: open documents and, inside a model, its source images
+/// (PSDs and their layers), model images (grouped) and texture atlases.
+/// spec: 50-ui/palettes.md §6
+pub fn project_ui(
+    ui: &mut egui::Ui,
+    docs: &[&Document],
+    active: Option<usize>,
+) -> Option<ProjectAction> {
     let mut pick = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -929,13 +947,11 @@ pub fn project_ui(ui: &mut egui::Ui, docs: &[&Document], active: Option<usize>) 
                     .sense(Sense::click()),
                 );
                 if r.clicked() {
-                    pick = Some(i);
+                    pick = Some(ProjectAction::Activate(i));
                 }
                 ui.indent(("proj", i), |ui| {
                     ui.weak(d.path.display().to_string());
-                    for t in &d.model.textures {
-                        ui.label(format!("{} ({}×{})", t.name, t.width, t.height));
-                    }
+                    project_model(ui, d, i, &mut pick);
                 });
             }
             if docs.is_empty() {
@@ -943,4 +959,110 @@ pub fn project_ui(ui: &mut egui::Ui, docs: &[&Document], active: Option<usize>) 
             }
         });
     pick
+}
+
+fn project_model(ui: &mut egui::Ui, d: &Document, di: usize, pick: &mut Option<ProjectAction>) {
+    use keyform_model::LayerEntry;
+    let m = &d.model;
+    // Layers some art mesh draws from (through its model image).
+    let used: std::collections::HashSet<&str> = m
+        .art_meshes
+        .iter()
+        .filter_map(|a| m.model_images.get(a.model_image?)?.source.as_ref())
+        .map(|(_, l)| l.as_str())
+        .collect();
+    if !m.layered_images.is_empty() {
+        egui::CollapsingHeader::new("Source images")
+            .id_salt(("src", di))
+            .show(ui, |ui| {
+                for (li, img) in m.layered_images.iter().enumerate() {
+                    egui::CollapsingHeader::new(format!(
+                        "{} ({}×{})",
+                        img.name, img.width, img.height
+                    ))
+                    .id_salt(("psd", di, li))
+                    .show(ui, |ui| {
+                        fn level(
+                            ui: &mut egui::Ui,
+                            entries: &[LayerEntry],
+                            used: &std::collections::HashSet<&str>,
+                            editable: bool,
+                            at: (usize, usize),
+                            pick: &mut Option<ProjectAction>,
+                        ) {
+                            for e in entries {
+                                match e {
+                                    LayerEntry::Group(g) => {
+                                        egui::CollapsingHeader::new(&g.common.name)
+                                            .id_salt(("lg", at, &g.common.guid))
+                                            .show(ui, |ui| {
+                                                level(ui, &g.children, used, editable, at, pick)
+                                            });
+                                    }
+                                    LayerEntry::Layer(l) => {
+                                        let unused = !used.contains(l.common.guid.as_str());
+                                        let text = if unused {
+                                            format!("{}  # Unused #", l.common.name)
+                                        } else {
+                                            l.common.name.clone()
+                                        };
+                                        let r =
+                                            ui.add(egui::Label::new(text).sense(Sense::click()));
+                                        r.context_menu(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    editable,
+                                                    egui::Button::new("Create ArtMesh"),
+                                                )
+                                                .clicked()
+                                            {
+                                                *pick = Some(ProjectAction::CreateArtMesh {
+                                                    doc: at.0,
+                                                    image: at.1,
+                                                    layer: l.common.guid.clone(),
+                                                });
+                                                ui.close();
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        match &img.tree {
+                            Some(t) => level(ui, t, &used, d.editable(), (di, li), pick),
+                            None => {
+                                ui.weak("(layers not loaded)");
+                            }
+                        }
+                    });
+                }
+            });
+    }
+    if !m.model_images.is_empty() {
+        egui::CollapsingHeader::new("Model images")
+            .id_salt(("mi", di))
+            .show(ui, |ui| {
+                for (gi, g) in m.model_image_groups.iter().enumerate() {
+                    egui::CollapsingHeader::new(&g.name)
+                        .id_salt(("mig", di, gi))
+                        .show(ui, |ui| {
+                            for mi in m.model_images.iter().filter(|x| x.group == Some(gi)) {
+                                ui.label(&mi.name);
+                            }
+                        });
+                }
+                for mi in m.model_images.iter().filter(|x| x.group.is_none()) {
+                    ui.label(&mi.name);
+                }
+            });
+    }
+    if !m.textures.is_empty() {
+        egui::CollapsingHeader::new("Texture atlases")
+            .id_salt(("tex", di))
+            .show(ui, |ui| {
+                for t in &m.textures {
+                    ui.label(format!("{} ({}×{})", t.name, t.width, t.height));
+                }
+            });
+    }
 }

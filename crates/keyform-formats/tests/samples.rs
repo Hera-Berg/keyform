@@ -1176,3 +1176,76 @@ fn atlas_create_and_layout_saves() {
     let mut again = back;
     assert_eq!(again.save_bytes().unwrap(), bytes);
 }
+
+/// Project palette ▸ layer ▸ Create ArtMesh on stored PSDs: the layer tree
+/// reloads; a mesh for a layer with a model image reuses it, and on a
+/// registered-only PSD a model image (and group) is made. Both save and
+/// reload. spec: 50-ui/palettes.md §6, psd-import.md §5
+#[test]
+fn create_art_mesh_from_stored_layers() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{
+        create_art_mesh_from_layer, new_model_from_psd, register_psd, ImportOptions,
+    };
+    use keyform_model::LayerEntry;
+    fn first_layer(e: &[LayerEntry]) -> Option<String> {
+        e.iter().find_map(|x| match x {
+            LayerEntry::Layer(l) => Some(l.common.guid.clone()),
+            LayerEntry::Group(g) => first_layer(&g.children),
+        })
+    }
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let o = ImportOptions::default();
+    // (a) New model: every layer already has a model image.
+    let (mut doc, _) = new_model_from_psd("t.psd", &psd, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    let tree = doc.model.layered_images[0]
+        .tree
+        .clone()
+        .expect("stored layer tree");
+    let layer = first_layer(&tree).unwrap();
+    let (ni, nm) = (doc.model.model_images.len(), doc.model.art_meshes.len());
+    let a = create_art_mesh_from_layer(&mut doc.model, 0, &layer, None, &o).unwrap();
+    assert_eq!(doc.model.model_images.len(), ni, "model image reused");
+    assert_eq!(a, nm);
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    // (b) A registered PSD in an existing project: a new model image and
+    // group.
+    let Some(cmo3) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.to_string_lossy().contains("taka"))
+    else {
+        return;
+    };
+    let mut doc = Cmo3Document::read(&std::fs::read(&cmo3).unwrap()).unwrap();
+    let li = register_psd(&mut doc.model, "reg.psd", &psd, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    let tree = doc.model.layered_images[li].tree.clone().unwrap();
+    let layer = first_layer(&tree).unwrap();
+    let ni = doc.model.model_images.len();
+    create_art_mesh_from_layer(&mut doc.model, li, &layer, None, &o).unwrap();
+    assert_eq!(doc.model.model_images.len(), ni + 1);
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    // For a black-box check in the reference editor.
+    if let Some(dir) = std::env::var_os("KEYFORM_BB_OUT") {
+        std::fs::write(Path::new(&dir).join("taka_layer_mesh.cmo3"), &bytes).unwrap();
+    }
+}

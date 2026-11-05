@@ -228,37 +228,10 @@ pub(super) fn icon(
 
 /// Shared instance of a PSD blend class (`CBlend_Normal`, …), found or made.
 fn blend_id(root: &mut Element, ctx: &mut Ctx, key: &[u8; 4]) -> Result<String> {
-    let class = match key {
-        b"norm" => "Normal",
-        b"mul " => "Multiply",
-        b"scrn" => "Screen",
-        b"lddg" => "LinearDodge",
-        b"dark" => "Darken",
-        b"lite" => "Lighten",
-        b"idiv" => "ColorBurn",
-        b"div " => "ColorDodge",
-        b"lbrn" => "LinearBurn",
-        b"over" => "Overray",
-        b"sLit" => "SoftLight",
-        b"hLit" => "HardLight",
-        b"lLit" => "LinearLight",
-        b"vLit" => "VividLight",
-        b"pLit" => "PinLight",
-        b"hMix" => "HardMix",
-        b"diff" => "Difference",
-        b"smud" => "Exclusion",
-        b"fsub" => "Subtract",
-        b"fdiv" => "Divide",
-        b"hue " => "Hue",
-        b"sat " => "Saturation",
-        b"colr" => "Color",
-        b"lum " => "Luminosity",
-        b"diss" => "Dissolve",
-        b"dkCl" => "DarkerColor",
-        b"lgCl" => "LighterColor",
-        b"pass" => "PassThrough",
-        _ => "NotSupported",
-    };
+    let class = crate::cmo3::PSD_BLEND_CLASSES
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or("NotSupported", |(_, c)| *c);
     let tag = format!("CBlend_{class}");
     if let Some(id) = shared(root).and_then(|s| {
         s.children
@@ -676,6 +649,23 @@ pub(super) fn sync_textures(
         push_to(root, &groups_path, stub("CModelImageGroup", None, &id))?;
         group_ids.insert(k, id);
     }
+    // Existing groups that get new model images (groups have no GUID; the
+    // model keeps the list order).
+    for k in old.model_images.len()..new.model_images.len() {
+        let Some(g) = new.model_images[k].group else {
+            continue;
+        };
+        if g >= old.model_image_groups.len() || group_ids.contains_key(&g) {
+            continue;
+        }
+        let mut p = groups_path.clone();
+        p.push(g as u32);
+        if element_at(root, Some(&p)).is_err() {
+            return invalid(format!("model image group {g}: element not found"));
+        }
+        let id = super::grid::share_in_place(root, ctx, &p)?;
+        group_ids.insert(g, id);
+    }
     for k in old.model_images.len()..new.model_images.len() {
         write_model_image(root, ctx, archive, new, k, &group_ids)?;
     }
@@ -1022,8 +1012,14 @@ fn write_model_image(
     let Some((psd, layer)) = &mi.source else {
         return unsupported(format!("model image {}: not from a PSD layer", mi.name));
     };
-    let Some((layer_id, res)) = ctx.tex.layers.get(layer).cloned() else {
-        return unsupported(format!("model image {}: its layer is not new", mi.name));
+    let Some((layer_id, res)) = ctx
+        .tex
+        .layers
+        .get(layer)
+        .cloned()
+        .or_else(|| existing_layer(root, layer))
+    else {
+        return unsupported(format!("model image {}: its layer was not found", mi.name));
     };
     let png = mi.png.clone().unwrap_or_default();
     let img = RgbaImage::decode_png(&png)?;
@@ -1433,4 +1429,42 @@ fn rewrite_atlas(
     }
     ctx.orphans.push(old_res);
     Ok(())
+}
+
+/// The filtered-image resource of the model image with GUID `guid` that is
+/// already in the document (`CModelImage._filteredImage`).
+pub(super) fn existing_model_image_res(root: &Element, guid: &str) -> Option<String> {
+    let mut stack = vec![root];
+    while let Some(e) = stack.pop() {
+        if e.name == "CModelImage" {
+            let g = e.child_field("guid").and_then(|g| uuid_of(root, g));
+            if g.as_deref() == Some(guid) {
+                return e
+                    .child_field("_filteredImage")
+                    .and_then(|r| r.attr("xs.ref"))
+                    .map(str::to_owned);
+            }
+        }
+        stack.extend(e.children.iter());
+    }
+    None
+}
+
+/// The shared `CLayer` with GUID `guid` already in the document, and its
+/// image resource.
+fn existing_layer(root: &Element, guid: &str) -> Option<(String, String)> {
+    let sh = shared(root)?;
+    for c in sh.children.iter().filter(|c| c.name == "CLayer") {
+        let entry = c.child_field("super").and_then(|s| s.child_field("super"));
+        let g = entry
+            .and_then(|e| e.child_field("guid"))
+            .and_then(|g| uuid_of(root, g));
+        if g.as_deref() != Some(guid) {
+            continue;
+        }
+        let id = c.attr("xs.id")?.to_owned();
+        let res = c.child_field("imageResource")?.attr("xs.ref")?.to_owned();
+        return Some((id, res));
+    }
+    None
 }

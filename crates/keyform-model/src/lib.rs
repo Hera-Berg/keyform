@@ -781,8 +781,8 @@ pub struct LayeredImage {
     pub imported_ms: i64,
     pub modified_ms: i64,
     pub replaced: bool,
-    /// The layer tree of an image imported in this session (written when
-    /// saving); `None` for stored images, which are kept as they are.
+    /// The layer tree: written when saving an image imported in this
+    /// session; read back for stored images (which are kept as they are).
     pub tree: Option<Arc<Vec<LayerEntry>>>,
 }
 

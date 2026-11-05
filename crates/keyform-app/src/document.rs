@@ -1141,6 +1141,28 @@ impl Document {
         Ok(())
     }
 
+    /// Project palette ▸ layer ▸ Create ArtMesh: an art mesh for the layer,
+    /// in the selected part (else the root part), then selected.
+    /// spec: 50-ui/palettes.md §6
+    pub fn create_art_mesh_from_layer(&mut self, image: usize, layer: &str) -> Result<(), String> {
+        let part = match self.primary() {
+            Some(Selection::Part(p)) => Some(p),
+            _ => None,
+        };
+        let a = self.try_edit("Create ArtMesh", |m| {
+            keyform_formats::psd_import::create_art_mesh_from_layer(
+                m,
+                image,
+                layer,
+                part,
+                &Default::default(),
+            )
+            .map_err(|e| e.to_string())
+        })?;
+        self.select(Some(Selection::ArtMesh(a)));
+        Ok(())
+    }
+
     /// Unbind Glue Vertices [Ctrl+Shift+G] in the Modeling view: removes
     /// the pair of the one selected vertex on each of two art meshes.
     /// spec: 30-algorithms/glue.md "Bind / unbind"

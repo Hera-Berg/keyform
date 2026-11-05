@@ -9,7 +9,7 @@ use std::sync::Arc;
 use keyform_model::*;
 
 use crate::atlas::{self, Affine, LayoutItem, LayoutSettings};
-use crate::error::Result;
+use crate::error::{FormatError, Result};
 use crate::image::RgbaImage;
 use crate::psd::{Psd, PsdLayer, PsdNode};
 
@@ -481,6 +481,102 @@ fn import_layers(
     // textures" also places the new images on an atlas.
     let _ = images;
     Ok(b.report)
+}
+
+/// The image layer with GUID `guid` in a layer tree.
+fn find_layer<'t>(entries: &'t [LayerEntry], guid: &str) -> Option<&'t ImageLayer> {
+    for e in entries {
+        match e {
+            LayerEntry::Layer(l) if l.common.guid == guid => return Some(l),
+            LayerEntry::Layer(_) => {}
+            LayerEntry::Group(g) => {
+                if let Some(l) = find_layer(&g.children, guid) {
+                    return Some(l);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Project palette ▸ layer ▸ Create ArtMesh: an art mesh for layer
+/// `layer_guid` of layered image `li`, drawing from the layer's model
+/// image (made if the layer has none), as PSD import makes it (§5.3–5.5),
+/// at the top of part `part` (the root part if `None`). Returns the art
+/// mesh index. spec: 50-ui/palettes.md §6, psd-import.md §5
+pub fn create_art_mesh_from_layer(
+    m: &mut Model,
+    li: usize,
+    layer_guid: &str,
+    part: Option<usize>,
+    o: &ImportOptions,
+) -> Result<usize> {
+    let Some(img) = m.layered_images.get(li) else {
+        return Err(FormatError::Invalid("no such source image".into()));
+    };
+    let psd_guid = img.guid.clone();
+    let Some(l) = img
+        .tree
+        .as_ref()
+        .and_then(|t| find_layer(t, layer_guid))
+        .cloned()
+    else {
+        return Err(FormatError::Invalid("no such layer".into()));
+    };
+    let Some(part) = part.or(m.root_part).filter(|&p| p < m.parts.len()) else {
+        return Err(FormatError::Invalid("the model has no part".into()));
+    };
+    let source = Some((psd_guid.clone(), layer_guid.to_owned()));
+    let mi = match m.model_images.iter().position(|x| x.source == source) {
+        Some(k) => k,
+        None => {
+            let group = match m
+                .model_image_groups
+                .iter()
+                .position(|g| g.linked.contains(&psd_guid))
+            {
+                Some(g) => g,
+                None => {
+                    let name = m.layered_images[li].name.clone();
+                    m.model_image_groups.push(Arc::new(ModelImageGroup {
+                        name,
+                        linked: vec![psd_guid.clone()],
+                    }));
+                    m.model_image_groups.len() - 1
+                }
+            };
+            let group = Some(group);
+            m.model_images.push(Arc::new(ModelImage {
+                guid: new_guid(),
+                name: l.common.name.clone(),
+                png: Some((*l.png).clone()),
+                local_to_canvas: translate(l.bounds[0] as f32, l.bounds[1] as f32),
+                group,
+                source,
+            }));
+            m.model_images.len() - 1
+        }
+    };
+    let part_ids: HashSet<String> = m.parts.iter().map(|p| p.info.id.clone()).collect();
+    let mesh_ids: HashSet<String> = m.art_meshes.iter().map(|a| a.info.id.clone()).collect();
+    let legacy = o.legacy_blend || !(m.target_version >= 5_030_000);
+    let mut b = Builder {
+        m,
+        o,
+        legacy,
+        images: vec![mi].into_iter(),
+        report: ImportReport {
+            layered_image: li,
+            ..Default::default()
+        },
+        mesh_ids,
+        part_ids,
+    };
+    let a = b.art_mesh(&l, mi, part);
+    Arc::make_mut(&mut m.parts[part])
+        .children
+        .insert(0, PartChild::ArtMesh(a));
+    Ok(a)
 }
 
 /// The standard parameters of a new model, in order: ID, name, min, max,

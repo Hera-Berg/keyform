@@ -114,6 +114,8 @@ pub struct KeyformApp {
     pub initial_auto_mesh: bool,
     /// Then open Edit Texture Atlas (`--atlas`).
     pub initial_atlas: bool,
+    /// Focus the Project palette (`--project`).
+    pub initial_project: bool,
     /// Then pick a glue tool (`--glue-tool A|B|AB|BA|remerge`, with `--select`).
     pub initial_glue_tool: Option<keyform_edit::glue_brush::GlueBrush>,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
@@ -253,6 +255,7 @@ impl KeyformApp {
             initial_mesh_edit: false,
             initial_auto_mesh: false,
             initial_atlas: false,
+            initial_project: false,
             initial_glue_tool: None,
             closing: Vec::new(),
             quit_after_closing: false,
@@ -1664,8 +1667,17 @@ impl TabViewer for Viewer<'_> {
             }
             Tab::Project => {
                 let docs: Vec<&Document> = self.slots.iter().map(|s| &s.doc).collect();
-                if let Some(i) = palettes::project_ui(ui, &docs, *self.active) {
-                    *self.active = Some(i);
+                match palettes::project_ui(ui, &docs, *self.active) {
+                    Some(palettes::ProjectAction::Activate(i)) => *self.active = Some(i),
+                    Some(palettes::ProjectAction::CreateArtMesh { doc, image, layer }) => {
+                        if let Some(s) = self.slots.get_mut(doc) {
+                            if let Err(e) = s.doc.create_art_mesh_from_layer(image, &layer) {
+                                self.log.warn(e);
+                            }
+                        }
+                        *self.active = Some(doc);
+                    }
+                    None => {}
                 }
             }
             Tab::ModelSettings => {
@@ -1734,6 +1746,11 @@ impl eframe::App for KeyformApp {
 
         if let (Some(n), Some(s)) = (self.initial_motion.take(), self.slots.first_mut()) {
             s.doc.play_motion(n);
+        }
+        if std::mem::take(&mut self.initial_project) {
+            if let Some(at) = self.dock.find_tab(&Tab::Project) {
+                let _ = self.dock.set_active_tab(at);
+            }
         }
         if let (true, Some(s)) = (self.initial_atlas, self.slots.first()) {
             self.initial_atlas = false;

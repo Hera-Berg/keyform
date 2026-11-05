@@ -1002,11 +1002,12 @@ pub(super) fn create_art_mesh(
     let gtex = match &atlas {
         Some((_, g, _)) => g.clone(),
         None => {
-            let Some((_, res)) = mi
+            let res = mi
                 .source
                 .as_ref()
-                .and_then(|(_, layer)| ctx.tex.layers.get(layer).cloned())
-            else {
+                .and_then(|(_, layer)| ctx.tex.layers.get(layer).map(|(_, r)| r.clone()))
+                .or_else(|| super::textures::existing_model_image_res(root, &mi.guid));
+            let Some(res) = res else {
                 return unsupported(format!(
                     "art mesh {}: a model image made earlier",
                     a.info.id
