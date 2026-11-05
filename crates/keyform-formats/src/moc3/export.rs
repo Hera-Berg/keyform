@@ -141,6 +141,10 @@ fn count(n: usize) -> Result<i32> {
 
 /// Exports `m` as moc3 data (write it with [`Moc3Raw::write`]).
 pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportReport)> {
+    // §9 step 1: extended interpolation baked into plain keyforms.
+    if let Some(b) = keyform_eval::extended::bake_extended(m) {
+        return export_moc3(&b, o);
+    }
     let v = o.version;
     if !(1..=super::LATEST_VERSION).contains(&v) {
         return Err(FormatError::Unsupported(format!("moc3 version {v}")));

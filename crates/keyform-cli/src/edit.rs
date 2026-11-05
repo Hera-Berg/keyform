@@ -11,6 +11,7 @@
 //! - rotation `deformer`: `angle+=DEG` (every keyform);
 //! - `mesh`: `culling`;
 //! - every kind with keyforms: `addkey=PARAM_ID:VALUE`, `removekey=PARAM_ID:VALUE`
+//! - mesh: `movekeyform=VALUE:dx,dy` (single binding)
 //!   (keys.md §1–2);
 //! - `mesh` topology (re-triangulated, keyforms remapped): `addpoint=X,Y`
 //!   (canvas pixels; on an edge it splits the edge), `movepoint=K:DX,DY`,
@@ -285,6 +286,23 @@ fn apply(m: &mut Model, edit: &str) -> R {
                             .for_each(|f| shift(&mut f.positions, d));
                     }
                     "culling" => a.culling = value.parse()?,
+                    "movekeyform" => {
+                        // VALUE:dx,dy — the keyform at key VALUE of a
+                        // single-binding mesh.
+                        let (k, d) = value.split_once(':').ok_or("expected VALUE:dx,dy")?;
+                        let k: f32 = k.parse()?;
+                        let d = pair(d)?;
+                        let b = a.grid.bindings.first().ok_or("the mesh has no keys")?;
+                        if a.grid.bindings.len() != 1 {
+                            return Err("movekeyform needs a mesh with one binding".into());
+                        }
+                        let i = b
+                            .keys
+                            .iter()
+                            .position(|x| (x - k).abs() < 1e-4)
+                            .ok_or("no such key")?;
+                        shift(&mut a.grid.keyforms[i].positions, d);
+                    }
                     "multiply" | "screen" => {
                         let c: Vec<f32> = value
                             .split(',')

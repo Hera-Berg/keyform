@@ -12,6 +12,7 @@ use keyform_model::*;
 
 pub use deform::{DeformerMap, RotationMap, WarpMap};
 pub use interp::{interpolate, Blend, Interpolated};
+pub mod extended;
 
 /// Evaluated state of one part.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +120,57 @@ pub struct Evaluator<'m> {
     deformer_order: Vec<DeformerIndex>,
     /// Parent part per part, cycle-safe.
     part_parents: Vec<Option<PartIndex>>,
+    /// Generated extended-interpolation grids, by object index
+    /// (extended-interpolation.md §1; used instead of the source grid).
+    ext: ExtendedGrids,
+}
+
+#[derive(Default)]
+struct ExtendedGrids {
+    parts: std::collections::HashMap<usize, keyform_model::KeyformGrid<PartForm>>,
+    meshes:
+        std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::ArtMeshForm>>,
+    warps: std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::WarpForm>>,
+    rotations:
+        std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::RotationForm>>,
+    glues: std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::GlueForm>>,
+}
+
+impl ExtendedGrids {
+    fn of(m: &Model) -> Self {
+        use extended::extended_grid;
+        let mut e = Self::default();
+        for (i, p) in m.parts.iter().enumerate() {
+            if let Some(g) = extended_grid(&p.grid) {
+                e.parts.insert(i, g);
+            }
+        }
+        for (i, a) in m.art_meshes.iter().enumerate() {
+            if let Some(g) = extended_grid(&a.grid) {
+                e.meshes.insert(i, g);
+            }
+        }
+        for (i, d) in m.deformers.iter().enumerate() {
+            match &d.kind {
+                DeformerKind::Warp(w) => {
+                    if let Some(g) = extended_grid(&w.grid) {
+                        e.warps.insert(i, g);
+                    }
+                }
+                DeformerKind::Rotation(r) => {
+                    if let Some(g) = extended_grid(&r.grid) {
+                        e.rotations.insert(i, g);
+                    }
+                }
+            }
+        }
+        for (i, g) in m.glues.iter().enumerate() {
+            if let Some(x) = extended_grid(&g.grid) {
+                e.glues.insert(i, x);
+            }
+        }
+        e
+    }
 }
 
 impl<'m> Evaluator<'m> {
@@ -154,6 +206,7 @@ impl<'m> Evaluator<'m> {
             model,
             deformer_order: order,
             part_parents,
+            ext: ExtendedGrids::of(model),
         }
     }
 
@@ -204,8 +257,10 @@ impl<'m> Evaluator<'m> {
         let mut parts: Vec<PartState> = m
             .parts
             .iter()
-            .map(|p| {
-                let r = interpolate(params, &values, &p.grid, &p.blend_shapes);
+            .enumerate()
+            .map(|(pi, p)| {
+                let grid = self.ext.parts.get(&pi).unwrap_or(&p.grid);
+                let r = interpolate(params, &values, grid, &p.blend_shapes);
                 PartState {
                     outside: r.as_ref().is_none_or(|r| r.outside),
                     form: r.map(|r| r.form).unwrap_or_default(),
@@ -259,35 +314,41 @@ impl<'m> Evaluator<'m> {
                 None => (1.0, 1.0, [1.0; 3], [0.0; 3]),
             };
             let st = match &d.kind {
-                DeformerKind::Warp(w) => interpolate(params, &values, &w.grid, &w.blend_shapes)
-                    .map(|r| {
-                        let mut points = r.form.positions;
-                        if let Some(pm) = parent_map {
-                            for xy in points.as_chunks_mut::<2>().0 {
-                                let q = pm.map([xy[0], xy[1]]);
-                                xy[0] = q[0];
-                                xy[1] = q[1];
-                            }
+                DeformerKind::Warp(w) => interpolate(
+                    params,
+                    &values,
+                    self.ext.warps.get(&di).unwrap_or(&w.grid),
+                    &w.blend_shapes,
+                )
+                .map(|r| {
+                    let mut points = r.form.positions;
+                    if let Some(pm) = parent_map {
+                        for xy in points.as_chunks_mut::<2>().0 {
+                            let q = pm.map([xy[0], xy[1]]);
+                            xy[0] = q[0];
+                            xy[1] = q[1];
                         }
-                        let ok = w.cols >= 1 && w.rows >= 1 && points.len() == 2 * w.point_count();
-                        (
-                            ok.then_some({
-                                DeformerMap::Warp(WarpMap {
-                                    cols: w.cols as usize,
-                                    rows: w.rows as usize,
-                                    quad: w.quad,
-                                    points,
-                                })
-                            }),
-                            r.outside,
-                            pscale,
-                            r.form.opacity,
-                            r.form.multiply,
-                            r.form.screen,
-                        )
-                    }),
+                    }
+                    let ok = w.cols >= 1 && w.rows >= 1 && points.len() == 2 * w.point_count();
+                    (
+                        ok.then_some({
+                            DeformerMap::Warp(WarpMap {
+                                cols: w.cols as usize,
+                                rows: w.rows as usize,
+                                quad: w.quad,
+                                points,
+                            })
+                        }),
+                        r.outside,
+                        pscale,
+                        r.form.opacity,
+                        r.form.multiply,
+                        r.form.screen,
+                    )
+                }),
                 DeformerKind::Rotation(rd) => {
-                    interpolate(params, &values, &rd.grid, &rd.blend_shapes).map(|r| {
+                    let grid = self.ext.rotations.get(&di).unwrap_or(&rd.grid);
+                    interpolate(params, &values, grid, &rd.blend_shapes).map(|r| {
                         let f = &r.form;
                         // §3.2: origin through the parent, inherited turn.
                         let (origin, delta) = match parent_map {
@@ -340,8 +401,10 @@ impl<'m> Evaluator<'m> {
         let mut meshes: Vec<MeshState> = m
             .art_meshes
             .iter()
-            .map(|a| {
-                let r = interpolate(params, &values, &a.grid, &a.blend_shapes);
+            .enumerate()
+            .map(|(ai, a)| {
+                let grid = self.ext.meshes.get(&ai).unwrap_or(&a.grid);
+                let r = interpolate(params, &values, grid, &a.blend_shapes);
                 let (hidden_parent, outside_parent) = part_hidden_or_outside(a.info.parent_part);
                 let target = a.target.and_then(|t| deformers.get(t));
                 let Some(mut r) = r else {
@@ -413,8 +476,9 @@ impl<'m> Evaluator<'m> {
 
         // Stage 7: glue, in model order, each reading the current forms.
         let mut pre_glue = std::collections::HashMap::new();
-        for g in &m.glues {
-            let Some(r) = interpolate(params, &values, &g.grid, &g.blend_shapes) else {
+        for (gi, g) in m.glues.iter().enumerate() {
+            let grid = self.ext.glues.get(&gi).unwrap_or(&g.grid);
+            let Some(r) = interpolate(params, &values, grid, &g.blend_shapes) else {
                 continue;
             };
             let i = r.form.intensity.clamp(0.0, 1.0) * opts.glue;

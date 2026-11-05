@@ -264,7 +264,7 @@ pub(super) fn scalar(tag: &str, name: &str, text: impl Into<String>) -> Element 
     e
 }
 
-fn extended_name(k: ExtendedInterpolationKind) -> &'static str {
+pub(super) fn extended_name(k: ExtendedInterpolationKind) -> &'static str {
     match k {
         ExtendedInterpolationKind::Linear => "LINEAR",
         ExtendedInterpolationKind::Ellipse => "ELLIPSE",
@@ -301,14 +301,6 @@ pub(super) fn rebuild_grid<F: FormFields>(
     old: &KeyformGrid<F>,
     new: &KeyformGrid<F>,
 ) -> Result<()> {
-    let extended = old
-        .bindings
-        .iter()
-        .chain(&new.bindings)
-        .any(|b| b.extended != ExtendedInterpolationKind::Linear);
-    if extended {
-        return unsupported(format!("{what}: keys on an extended-interpolation binding"));
-    }
     let tracked = |g: &KeyformGrid<F>| g.guids.len() == g.keyforms.len();
     if !tracked(old) || !tracked(new) || new.guids.iter().any(String::is_empty) {
         return unsupported(format!("{what}: keyforms without identities"));

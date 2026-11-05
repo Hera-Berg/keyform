@@ -708,6 +708,16 @@ impl Document {
         }
         let v = param.clamp(self.shown_value(p));
         let keys = keys_of(&self.model, o, p);
+        // Keys can't be added or removed while extended interpolation is
+        // set on that binding (extended-interpolation.md §5).
+        if keyform_edit::form_tools::extended_kind(&self.model, o, p)
+            .is_some_and(|k| k != keyform_model::ExtendedInterpolationKind::Linear)
+        {
+            return Err(
+                "Keys cannot be added or removed while extended interpolation is set. Select Linear Interpolation first."
+                    .into(),
+            );
+        }
         let message = |e: KeyError| match e {
             KeyError::RepeatEnds => {
                 "Unable to delete maximum and minimum key value when Repeat is active.".to_owned()

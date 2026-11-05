@@ -1112,6 +1112,116 @@ pub fn all_objects(m: &Model) -> Vec<ObjectRef> {
     out
 }
 
+// ------------------------------------------------ extended interpolation
+
+/// The reference's notice for fewer than 3 keyforms.
+pub const EXTENDED_NEEDS_3: &str = "Extended interpolation requires at least 3 keyforms.";
+
+/// Extended Interpolation dialog: sets the type, inserted-point count and
+/// scale of `o`'s binding to `p`. spec: extended-interpolation.md §5
+pub fn set_extended(
+    m: &mut Model,
+    o: ObjectRef,
+    p: ParamIndex,
+    kind: keyform_model::ExtendedInterpolationKind,
+    points: i32,
+    scale_deg: f32,
+) -> Result<bool, String> {
+    use keyform_model::ExtendedInterpolationKind as K;
+    fn on<F>(
+        g: &mut KeyformGrid<F>,
+        p: ParamIndex,
+        kind: K,
+        n: i32,
+        s: f32,
+    ) -> Result<bool, String> {
+        let b = g
+            .bindings
+            .iter_mut()
+            .find(|b| b.parameter == p)
+            .ok_or("The selected parameters are not linked to the object")?;
+        if kind != K::Linear && b.keys.len() < 3 {
+            return Err(EXTENDED_NEEDS_3.into());
+        }
+        let (n, s) = if kind == K::Linear {
+            (b.insert_point_count, b.extended_scale)
+        } else {
+            (n.clamp(1, 100), s)
+        };
+        if b.extended == kind && b.insert_point_count == n && b.extended_scale == s {
+            return Ok(false);
+        }
+        b.extended = kind;
+        b.insert_point_count = n;
+        b.extended_scale = s;
+        Ok(true)
+    }
+    match o {
+        ObjectRef::ArtMesh(i) => on(
+            &mut Arc::make_mut(&mut m.art_meshes[i]).grid,
+            p,
+            kind,
+            points,
+            scale_deg,
+        ),
+        ObjectRef::Part(i) => on(
+            &mut Arc::make_mut(&mut m.parts[i]).grid,
+            p,
+            kind,
+            points,
+            scale_deg,
+        ),
+        ObjectRef::Glue(i) => on(
+            &mut Arc::make_mut(&mut m.glues[i]).grid,
+            p,
+            kind,
+            points,
+            scale_deg,
+        ),
+        ObjectRef::Deformer(i) => match &mut Arc::make_mut(&mut m.deformers[i]).kind {
+            DeformerKind::Warp(w) => on(&mut w.grid, p, kind, points, scale_deg),
+            DeformerKind::Rotation(r) => on(&mut r.grid, p, kind, points, scale_deg),
+        },
+    }
+}
+
+/// The extended-interpolation settings of `o`'s binding to `p`: (type,
+/// points, scale).
+pub fn extended_settings(
+    m: &Model,
+    o: ObjectRef,
+    p: ParamIndex,
+) -> Option<(keyform_model::ExtendedInterpolationKind, i32, f32, usize)> {
+    let f = |b: &[keyform_model::Binding]| {
+        b.iter().find(|x| x.parameter == p).map(|x| {
+            (
+                x.extended,
+                x.insert_point_count,
+                x.extended_scale,
+                x.keys.len(),
+            )
+        })
+    };
+    match o {
+        ObjectRef::ArtMesh(i) => f(&m.art_meshes.get(i)?.grid.bindings),
+        ObjectRef::Part(i) => f(&m.parts.get(i)?.grid.bindings),
+        ObjectRef::Glue(i) => f(&m.glues.get(i)?.grid.bindings),
+        ObjectRef::Deformer(i) => match &m.deformers.get(i)?.kind {
+            DeformerKind::Warp(w) => f(&w.grid.bindings),
+            DeformerKind::Rotation(r) => f(&r.grid.bindings),
+        },
+    }
+}
+
+/// The extended-interpolation type of `o`'s binding to `p`.
+pub fn extended_kind(
+    m: &Model,
+    o: ObjectRef,
+    p: ParamIndex,
+) -> Option<keyform_model::ExtendedInterpolationKind> {
+    extended_settings(m, o, p).map(|s| s.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

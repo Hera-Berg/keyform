@@ -46,6 +46,10 @@ pub struct FormDialogs {
     corners: Option<CornerDialog>,
     batch: Option<Vec<bool>>,
     mirror: Option<MirrorDialog>,
+    /// Extended Interpolation: the parameter shown.
+    ext: Option<usize>,
+    /// The "at least 3 keyforms" notice was shown.
+    ext_notice: bool,
 }
 
 /// Motion Mirroring dialog state; the flips and axis are remembered.
@@ -121,6 +125,20 @@ impl FormDialogs {
         Ok(())
     }
 
+    /// Extended Interpolation (a floating panel for the selected objects
+    /// and a parameter).
+    pub fn open_extended(&mut self, doc: &Document) {
+        let m = &doc.model;
+        let p = (0..m.parameters.len())
+            .find(|&p| {
+                doc.selection.objects.iter().any(|&o| {
+                    keyform_edit::form_tools::extended_settings(m, o, p).is_some_and(|s| s.3 >= 3)
+                })
+            })
+            .unwrap_or(0);
+        self.ext = Some(p);
+    }
+
     pub fn open_batch(&mut self, doc: &Document) {
         self.batch = Some(vec![false; doc.model.parameters.len()]);
     }
@@ -186,6 +204,125 @@ pub fn dialogs(
     corners_dialog(ctx, st, doc, log);
     batch_dialog(ctx, st, doc, log);
     mirror_dialog(ctx, st, doc, log);
+    extended_dialog(ctx, st, doc, log);
+}
+
+/// Extended Interpolation (extended-interpolation.md §5): method, number
+/// of inserted points, scale (ELLIPSE), for the selected objects' binding
+/// to one parameter; illegal ELLIPSE settings are marked.
+fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, log: &mut Log) {
+    use keyform_edit::form_tools::{extended_settings, set_extended, EXTENDED_NEEDS_3};
+    use keyform_model::ExtendedInterpolationKind as K;
+    let Some(mut p) = st.ext.take() else { return };
+    let mut open = true;
+    let m = &doc.model;
+    let targets: Vec<Selection> = doc.selection.objects.clone();
+    let current = targets.iter().find_map(|&o| extended_settings(m, o, p));
+    let choices: Vec<usize> = (0..m.parameters.len()).collect();
+    let mut change: Option<(K, i32, f32)> = None;
+    egui::Window::new("Extended Interpolation")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            if !st.ext_notice {
+                ui.weak(EXTENDED_NEEDS_3);
+                ui.weak("When setting extended interpolation and changing to 2 keyforms or less, select Linear Interpolation.");
+                ui.separator();
+            }
+            ui.horizontal(|ui| {
+                ui.label("Parameter");
+                param_combo(ui, "ext-param", m, &choices, &mut p);
+            });
+            let Some((kind, n, s, keys)) = current else {
+                ui.weak("Select an object with keys on this parameter.");
+                return;
+            };
+            let enabled = doc.editable() && keys >= 3;
+            ui.add_enabled_ui(enabled, |ui| {
+                ui.strong("Interpolation method");
+                let label = |k: K| match k {
+                    K::Linear => "Linear Interpolation",
+                    K::Ellipse => "Ellipse Interpolation",
+                    K::SnsCurve => "SNS Interpolation",
+                };
+                let mut k2 = kind;
+                egui::ComboBox::from_id_salt("ext-kind")
+                    .selected_text(label(kind))
+                    .show_ui(ui, |ui| {
+                        for k in [K::Linear, K::Ellipse, K::SnsCurve] {
+                            ui.selectable_value(&mut k2, k, label(k));
+                        }
+                    });
+                ui.strong("Interpolation adjustment");
+                let (mut n2, mut s2) = (n, s);
+                ui.add_enabled_ui(kind != K::Linear, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Points:");
+                        egui::ComboBox::from_id_salt("ext-points")
+                            .selected_text(n.to_string())
+                            .show_ui(ui, |ui| {
+                                for v in 1..=10 {
+                                    ui.selectable_value(&mut n2, v, v.to_string());
+                                }
+                            });
+                    });
+                    ui.add_enabled_ui(kind == K::Ellipse, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Scale");
+                            ui.add(egui::DragValue::new(&mut s2).speed(0.01).range(0.001..=100.0));
+                        });
+                    });
+                });
+                if k2 != kind {
+                    // Switching to a curve starts with 5 points (observed).
+                    let n = if kind == K::Linear && k2 != K::Linear { 5 } else { n2 };
+                    change = Some((k2, n, s2));
+                } else if (n2, s2) != (n, s) {
+                    change = Some((k2, n2, s2));
+                }
+            });
+            if keys < 3 {
+                ui.weak(EXTENDED_NEEDS_3);
+            }
+            if kind == K::Ellipse {
+                let legal = targets.iter().all(|&o| {
+                    let b = match o {
+                        Selection::ArtMesh(i) => m.art_meshes[i].grid.bindings.iter().find(|b| b.parameter == p).cloned(),
+                        _ => None,
+                    };
+                    b.is_none_or(|b| keyform_eval::extended::ellipse_legal(&b.keys, b.extended_scale))
+                });
+                if !legal {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Illegal setting: adjacent keys differ by more than 175° after scaling (or keys two apart by more than 270°).",
+                    );
+                }
+            }
+        });
+    if !open {
+        st.ext_notice = true;
+        return;
+    }
+    if let Some((k, n, s)) = change {
+        st.ext_notice = true;
+        let r = doc.try_edit("Extended Interpolation", |m| {
+            let mut any = false;
+            for &o in &targets {
+                if extended_settings(m, o, p).is_some() {
+                    any |= set_extended(m, o, p, k, n, s)?;
+                }
+            }
+            Ok(any)
+        });
+        if let Err(e) = r {
+            log.warn(e);
+        }
+        let sel = doc.selection.clone();
+        doc.set_selection(sel);
+    }
+    st.ext = Some(p);
 }
 
 /// Motion Mirroring (§5.1).

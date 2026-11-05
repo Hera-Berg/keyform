@@ -904,6 +904,13 @@ impl KeyformApp {
                 ui.close();
             }
             if ui
+                .add_enabled(ok, egui::Button::new("Extended Interpolation…"))
+                .clicked()
+            {
+                self.forms.open_extended(doc);
+                ui.close();
+            }
+            if ui
                 .add_enabled(ok, egui::Button::new("Batch Reflect…"))
                 .clicked()
             {

@@ -1744,3 +1744,153 @@ fn bb_out(path: &Path, name: &str, bytes: &[u8]) {
         }
     }
 }
+
+/// Extended interpolation (extended-interpolation.md §1–2): the generated
+/// inserted keyforms equal the ones the reference stored in files made
+/// with its Extended Interpolation dialog
+/// (`test-data/blackbox/forms/ext_{ellipse,sns}.cmo3`, when present).
+#[test]
+fn extended_grid_matches_reference() {
+    use keyform_eval::extended::extended_grid;
+    use keyform_formats::cmo3::Cmo3Document;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/blackbox/forms");
+    for name in ["ext_ellipse.cmo3", "ext_sns.cmo3"] {
+        let Ok(data) = std::fs::read(dir.join(name)) else {
+            continue;
+        };
+        let doc = Cmo3Document::read(&data).unwrap();
+        let a = doc
+            .model
+            .art_meshes
+            .iter()
+            .find(|a| a.info.id == "ArtMesh")
+            .unwrap();
+        let g = extended_grid(&a.grid).expect("extended");
+        assert_eq!(g.keyforms.len(), 13, "{name}");
+        // The stored inserted forms, in key order.
+        let xml = String::from_utf8(doc.xml.write()).unwrap();
+        let i = xml.find("xs.n=\"normalExtendedKeyforms\"").unwrap();
+        let j = i + xml[i..].find("</carray_list>").unwrap();
+        let stored: Vec<Vec<f32>> = xml[i..j]
+            .split("<float-array xs.n=\"positions\"")
+            .skip(1)
+            .map(|t| {
+                let body = &t[t.find('>').unwrap() + 1..t.find("</float-array>").unwrap()];
+                body.split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect()
+            })
+            .collect();
+        let inserted: Vec<&Vec<f32>> = g
+            .keyforms
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| k % 6 != 0)
+            .map(|(_, f)| &f.positions)
+            .collect();
+        assert_eq!(stored.len(), inserted.len(), "{name}");
+        let mut worst = 0.0f32;
+        for (s, o) in stored.iter().zip(&inserted) {
+            for (x, y) in s.iter().zip(o.iter()) {
+                worst = worst.max((x - y).abs());
+            }
+        }
+        eprintln!("{name}: max difference {worst} px");
+        assert!(worst < 0.01, "{name}: {worst}");
+    }
+}
+
+/// Saving extended interpolation (extended-interpolation.md §1): setting
+/// ELLIPSE (5 points) on the 3-key test model writes an extension whose
+/// inserted forms equal the reference's saved file; switching a reference
+/// file to SNS replaces its extension; both reload as edited.
+#[test]
+fn extended_interpolation_saves() {
+    use keyform_edit::form_tools::set_extended;
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::ExtendedInterpolationKind as K;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/blackbox/forms");
+    let stored = |doc: &Cmo3Document| -> (usize, Vec<Vec<f32>>) {
+        let xml = String::from_utf8(doc.xml.write()).unwrap();
+        let n = xml.matches("<CExtendedInterpolationExtension").count();
+        let Some(i) = xml.find("xs.n=\"normalExtendedKeyforms\"") else {
+            return (n, Vec::new());
+        };
+        let j = i + xml[i..].find("</carray_list>").unwrap();
+        let v = xml[i..j]
+            .split("<float-array xs.n=\"positions\"")
+            .skip(1)
+            .map(|t| {
+                let body = &t[t.find('>').unwrap() + 1..t.find("</float-array>").unwrap()];
+                body.split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect()
+            })
+            .collect();
+        (n, v)
+    };
+    let close = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| x.iter().zip(y).all(|(p, q)| (p - q).abs() < 0.01))
+    };
+    let (Ok(keys), Ok(ell), Ok(sns)) = (
+        std::fs::read(dir.join("ext_keys.cmo3")),
+        std::fs::read(dir.join("ext_ellipse.cmo3")),
+        std::fs::read(dir.join("ext_sns.cmo3")),
+    ) else {
+        return;
+    };
+    let reference_ell = stored(&Cmo3Document::read(&ell).unwrap()).1;
+    let reference_sns = stored(&Cmo3Document::read(&sns).unwrap()).1;
+    // Keyform sets ELLIPSE on the linear file.
+    let mut doc = Cmo3Document::read(&keys).unwrap();
+    let a = doc
+        .model
+        .art_meshes
+        .iter()
+        .position(|a| a.info.id == "ArtMesh")
+        .unwrap();
+    let p = doc
+        .model
+        .parameters
+        .iter()
+        .position(|x| x.id == "ParamAngleX")
+        .unwrap();
+    assert!(set_extended(&mut doc.model, ObjectRef::ArtMesh(a), p, K::Ellipse, 5, 1.0).unwrap());
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.model.same_data(&edited));
+    let (n, forms) = stored(&back);
+    assert_eq!(n, 1);
+    assert!(close(&forms, &reference_ell), "ellipse forms differ");
+    if let Some(d) = std::env::var_os("KEYFORM_BB_OUT") {
+        std::fs::write(Path::new(&d).join("kf_ext_ellipse.cmo3"), &bytes).unwrap();
+    }
+    // The reference's ELLIPSE file switched to SNS by Keyform.
+    let mut doc = Cmo3Document::read(&ell).unwrap();
+    assert!(set_extended(
+        &mut doc.model,
+        ObjectRef::ArtMesh(a),
+        p,
+        K::SnsCurve,
+        5,
+        1.0
+    )
+    .unwrap());
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.model.same_data(&edited));
+    let (n, forms) = stored(&back);
+    assert_eq!(n, 1, "the old extension is replaced");
+    assert!(close(&forms, &reference_sns), "sns forms differ");
+    // Back to linear: the extension goes.
+    let mut doc = back;
+    set_extended(&mut doc.model, ObjectRef::ArtMesh(a), p, K::Linear, 5, 1.0).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    assert_eq!(stored(&Cmo3Document::read(&bytes).unwrap()).0, 0);
+}

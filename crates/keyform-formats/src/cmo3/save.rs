@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use keyform_model::*;
 
+mod extended;
 mod grid;
 mod mesh;
 mod objects;
@@ -938,7 +939,20 @@ impl FormFields for GlueForm {
 
 /// Writes changed keyform contents. The grid's bindings and the blend
 /// shapes' parameters and keys must be unchanged.
-fn write_forms<F: FormFields>(
+fn write_forms<F: FormFields + keyform_eval::Blend + keyform_eval::extended::Points>(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    what: &str,
+    (og, ob): (&KeyformGrid<F>, &BlendShapes<F>),
+    (ng, nb): (&KeyformGrid<F>, &BlendShapes<F>),
+) -> Result<()> {
+    write_grid_forms(root, ctx, src, what, (og, ob), (ng, nb))?;
+    // Extended interpolation follows the grid.
+    extended::sync_extension(root, ctx, src, what, og, ng)
+}
+
+fn write_grid_forms<F: FormFields>(
     root: &mut Element,
     ctx: &mut Ctx,
     src: &ObjectSource,
