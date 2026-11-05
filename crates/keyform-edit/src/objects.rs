@@ -714,6 +714,88 @@ pub fn delete_part(m: &mut Model, p: PartIndex) -> Result<(), String> {
     Ok(())
 }
 
+/// Refusal of moving a part into itself or one of its descendants.
+pub const PART_INTO_ITSELF: &str = "A part cannot be moved into itself or its child parts.";
+
+/// "Move Here" / "Add selected objects to child": moves `objects` to the
+/// end of part `part`'s children (their parent part becomes `part`).
+/// Objects already there stay. Returns how many moved.
+/// spec: 50-ui/palettes.md §1 (palette and context menus)
+pub fn move_to_part(
+    m: &mut Model,
+    objects: &[ObjectRef],
+    part: PartIndex,
+) -> Result<usize, String> {
+    if part >= m.parts.len() {
+        return Err("no such part".into());
+    }
+    // A part may not go below itself.
+    for o in objects {
+        if let ObjectRef::Part(q) = *o {
+            if Some(q) == m.root_part {
+                return Err("The root part cannot be moved.".into());
+            }
+            let mut cur = Some(part);
+            let mut guard = 0;
+            while let Some(c) = cur {
+                if c == q {
+                    return Err(PART_INTO_ITSELF.into());
+                }
+                cur = m.parts.get(c).and_then(|x| x.info.parent_part);
+                guard += 1;
+                if guard > m.parts.len() {
+                    break;
+                }
+            }
+        }
+    }
+    let mut moved = 0;
+    for &o in objects {
+        let child = as_child(o);
+        let info_parent = match o {
+            ObjectRef::Part(i) => m.parts.get(i).map(|x| x.info.parent_part),
+            ObjectRef::Deformer(i) => m.deformers.get(i).map(|x| x.info.parent_part),
+            ObjectRef::ArtMesh(i) => m.art_meshes.get(i).map(|x| x.info.parent_part),
+            ObjectRef::Glue(i) => m.glues.get(i).map(|x| x.info.parent_part),
+        };
+        let Some(old) = info_parent else { continue };
+        if old == Some(part) {
+            continue;
+        }
+        for x in &mut m.parts {
+            if x.children.contains(&child) {
+                Arc::make_mut(x).children.retain(|c| *c != child);
+            }
+        }
+        add_to_part(m, part, child, None);
+        let p = Some(part);
+        match o {
+            ObjectRef::Part(i) => Arc::make_mut(&mut m.parts[i]).info.parent_part = p,
+            ObjectRef::Deformer(i) => Arc::make_mut(&mut m.deformers[i]).info.parent_part = p,
+            ObjectRef::ArtMesh(i) => Arc::make_mut(&mut m.art_meshes[i]).info.parent_part = p,
+            ObjectRef::Glue(i) => Arc::make_mut(&mut m.glues[i]).info.parent_part = p,
+        }
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Delete empty parts: removes every part (other than the root) that has
+/// no children, repeating while removals empty further parts. Returns how
+/// many were deleted. spec: 50-ui/palettes.md §1
+pub fn delete_empty_parts(m: &mut Model) -> usize {
+    let mut n = 0;
+    loop {
+        let empty = (0..m.parts.len())
+            .rev()
+            .find(|&p| Some(p) != m.root_part && m.parts[p].children.is_empty());
+        match empty {
+            Some(p) if delete_part(m, p).is_ok() => n += 1,
+            _ => return n,
+        }
+    }
+}
+
 /// Deletes glue `g`. Returns its name.
 pub fn delete_glue(m: &mut Model, g: usize) -> Result<String, String> {
     let name = m

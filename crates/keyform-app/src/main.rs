@@ -35,7 +35,7 @@ fn main() -> eframe::Result<()> {
     let mut mesh_edit = false;
     let mut auto_mesh = false;
     let mut atlas = false;
-    let mut project = false;
+    let mut tab = None;
     let mut glue_tool = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -46,7 +46,7 @@ fn main() -> eframe::Result<()> {
             "--mesh-edit" => mesh_edit = true,
             "--auto-mesh" => auto_mesh = true,
             "--atlas" => atlas = true,
-            "--project" => project = true,
+            "--tab" => tab = args.next(),
             "--glue-tool" => {
                 use keyform_edit::glue_brush::GlueBrush;
                 glue_tool = match args.next().as_deref() {
@@ -111,7 +111,7 @@ fn main() -> eframe::Result<()> {
             a.initial_mesh_edit = mesh_edit;
             a.initial_auto_mesh = auto_mesh;
             a.initial_atlas = atlas;
-            a.initial_project = project;
+            a.initial_tab = tab;
             a.initial_glue_tool = glue_tool;
             Ok(Box::new(a))
         }),

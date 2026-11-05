@@ -1335,3 +1335,42 @@ fn blank_model_matches_reference() {
         (r.canvas.width, r.canvas.height)
     );
 }
+
+/// Parts editing (palettes.md §1): Move Here for an art mesh and a part,
+/// moving a part into its own child refused, Delete empty parts; saved
+/// and reloaded.
+#[test]
+fn parts_editing_saves() {
+    use keyform_edit::objects::{create_part, delete_empty_parts, move_to_part, PART_INTO_ITSELF};
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        if m.art_meshes.is_empty() {
+            continue;
+        }
+        let a = create_part(m, "A", None);
+        let b = create_part(m, "B", Some(a));
+        assert_eq!(
+            move_to_part(m, &[ObjectRef::Part(a)], b),
+            Err(PART_INTO_ITSELF.into())
+        );
+        assert_eq!(move_to_part(m, &[ObjectRef::ArtMesh(0)], b), Ok(1));
+        assert_eq!(m.art_meshes[0].info.parent_part, Some(b));
+        assert_eq!(move_to_part(m, &[ObjectRef::ArtMesh(0)], b), Ok(0));
+        let e = create_part(m, "Empty", None);
+        create_part(m, "Empty child", Some(e));
+        // The sample's own empty parts go too.
+        assert!(delete_empty_parts(m) >= 2);
+        assert!(!m.parts.iter().any(|p| p.info.name.starts_with("Empty")));
+        assert!(m.parts.iter().any(|p| p.info.name == "B"));
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}");
+        let b = back.model.art_meshes[0].info.parent_part.unwrap();
+        assert_eq!(back.model.parts[b].info.name, "B");
+    }
+}

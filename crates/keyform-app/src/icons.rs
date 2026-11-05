@@ -20,6 +20,9 @@ pub enum Icon {
     KeyAdd,
     /// Key diamond with a minus: delete a key.
     KeyDelete,
+    /// Closed padlock (locked); open shackle = unlocked.
+    Locked,
+    Unlocked,
 }
 
 pub const ICON_COLOR: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xa8);
@@ -114,6 +117,27 @@ pub fn paint(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Stop => {
             p.rect_filled(Rect::from_min_max(at(3.5, 3.5), at(12.5, 12.5)), 1.0, color);
+        }
+        Icon::Locked | Icon::Unlocked => {
+            // Body.
+            line(&[
+                (4.0, 8.0),
+                (12.0, 8.0),
+                (12.0, 14.0),
+                (4.0, 14.0),
+                (4.0, 8.0),
+            ]);
+            // Shackle: closed, or lifted and open on the right.
+            if icon == Icon::Locked {
+                line(&[(5.5, 8.0), (5.5, 5.0), (8.0, 2.5), (10.5, 5.0), (10.5, 8.0)]);
+            } else {
+                let dim = Stroke::new(st.width, color.gamma_multiply(0.6));
+                let v: Vec<Pos2> = [(5.5, 8.0), (5.5, 4.0), (8.0, 1.5), (10.5, 4.0), (10.5, 5.0)]
+                    .iter()
+                    .map(|&(x, y)| at(x, y))
+                    .collect();
+                p.add(egui::Shape::line(v, dim));
+            }
         }
         Icon::KeyAdd | Icon::KeyDelete => {
             // Key mark (diamond) at the left, sign at the right.

@@ -120,8 +120,8 @@ pub struct KeyformApp {
     pub initial_auto_mesh: bool,
     /// Then open Edit Texture Atlas (`--atlas`).
     pub initial_atlas: bool,
-    /// Focus the Project palette (`--project`).
-    pub initial_project: bool,
+    /// Focus a palette by name (`--tab "Tool Details"`).
+    pub initial_tab: Option<String>,
     /// Then pick a glue tool (`--glue-tool A|B|AB|BA|remerge`, with `--select`).
     pub initial_glue_tool: Option<keyform_edit::glue_brush::GlueBrush>,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
@@ -288,7 +288,7 @@ impl KeyformApp {
             initial_mesh_edit: false,
             initial_auto_mesh: false,
             initial_atlas: false,
-            initial_project: false,
+            initial_tab: None,
             initial_glue_tool: None,
             closing: Vec::new(),
             quit_after_closing: false,
@@ -1805,8 +1805,12 @@ impl eframe::App for KeyformApp {
         if let (Some(n), Some(s)) = (self.initial_motion.take(), self.slots.first_mut()) {
             s.doc.play_motion(n);
         }
-        if std::mem::take(&mut self.initial_project) {
-            if let Some(at) = self.dock.find_tab(&Tab::Project) {
+        if let Some(name) = self.initial_tab.take() {
+            let tab = Tab::PALETTES
+                .iter()
+                .find(|(_, n)| *n == name)
+                .map(|(t, _)| *t);
+            if let Some(at) = tab.and_then(|t| self.dock.find_tab(&t)) {
                 let _ = self.dock.set_active_tab(at);
             }
         }

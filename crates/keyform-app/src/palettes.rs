@@ -19,6 +19,35 @@ fn eye(ui: &mut egui::Ui, visible: bool, editable: bool) -> bool {
     editable && r.interact(Sense::click()).clicked()
 }
 
+/// The Lock column: locked objects can't be selected on the canvas.
+fn lock(ui: &mut egui::Ui, locked: bool, editable: bool) -> bool {
+    let r = icons::icon(ui, if locked { Icon::Locked } else { Icon::Unlocked });
+    editable && r.interact(Sense::click()).clicked()
+}
+
+/// Bulk operations of the Parts palette menus.
+#[derive(Clone, Copy, PartialEq)]
+enum PartsBulk {
+    ShowAll(bool),
+    LockAll(bool),
+    DeleteEmpty,
+}
+
+fn parts_menu(ui: &mut egui::Ui, bulk: &mut Option<PartsBulk>) {
+    for (label, b) in [
+        ("Show all", PartsBulk::ShowAll(true)),
+        ("Hide all", PartsBulk::ShowAll(false)),
+        ("Lock all", PartsBulk::LockAll(true)),
+        ("Unlock all", PartsBulk::LockAll(false)),
+        ("Delete empty parts", PartsBulk::DeleteEmpty),
+    ] {
+        if ui.button(label).clicked() {
+            *bulk = Some(b);
+            ui.close();
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Parts
 
 /// Parts palette: part tree with art meshes (and, when toggled, deformers
@@ -37,6 +66,32 @@ pub fn parts_ui(
         );
         ui.toggle_value(show_deformers, "D")
             .on_hover_text("Show/hide Warp Deformers and Rotation Deformers");
+        ui.menu_button("☰", |ui| {
+            if ui
+                .button("New part")
+                .on_hover_text("Create new part")
+                .clicked()
+            {
+                let parent = match doc.primary() {
+                    Some(Selection::Part(p)) => Some(p),
+                    _ => None,
+                };
+                let r = doc.try_edit("New Part", |m| {
+                    Ok(keyform_edit::objects::create_part(m, "New Part", parent))
+                });
+                if let Ok(p) = r {
+                    doc.select(Some(Selection::Part(p)));
+                }
+                ui.close();
+            }
+            let mut bulk = None;
+            parts_menu(ui, &mut bulk);
+            if let Some(b) = bulk {
+                parts_bulk(doc, b);
+            }
+        })
+        .response
+        .on_hover_text("Show palette menu");
     });
     ui.separator();
     let Some(root) = doc.model.root_part else {
@@ -50,6 +105,7 @@ pub fn parts_ui(
             let mut sel = doc.primary();
             let mut toggled = Vec::new();
             let mut reverse_lookup = None;
+            let (mut lock_toggled, mut move_here, mut bulk) = (Vec::new(), None, None);
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -70,6 +126,9 @@ pub fn parts_ui(
                 filter: &filter,
                 draw_orders: &draw_orders,
                 reverse_lookup: &mut reverse_lookup,
+                lock_toggled: &mut lock_toggled,
+                move_here: &mut move_here,
+                bulk: &mut bulk,
             };
             part_children(ui, model, root, &mut t, 0);
             if let Some(a) = reverse_lookup {
@@ -89,7 +148,73 @@ pub fn parts_ui(
                     }
                 });
             }
+            for s in lock_toggled {
+                doc.edit("Lock/unlock", |m| {
+                    if let Some(info) = info_mut(m, s) {
+                        info.locked = !info.locked;
+                    }
+                });
+            }
+            if let Some(p) = move_here {
+                let objects: Vec<keyform_edit::ObjectRef> = doc
+                    .selection
+                    .objects
+                    .iter()
+                    .filter(|o| **o != Selection::Part(p))
+                    .copied()
+                    .collect();
+                if let Err(e) = doc.try_edit("Move Here", |m| {
+                    keyform_edit::objects::move_to_part(m, &objects, p)
+                }) {
+                    doc.notice = Some(e);
+                }
+            }
+            if let Some(b) = bulk {
+                parts_bulk(doc, b);
+            }
         });
+}
+
+/// Show/Hide all, Lock/Unlock all (parts and art meshes), Delete empty
+/// parts. spec: palettes.md §1
+fn parts_bulk(doc: &mut Document, b: PartsBulk) {
+    use std::sync::Arc;
+    let r = match b {
+        PartsBulk::ShowAll(v) => doc.try_edit(if v { "Show all" } else { "Hide all" }, |m| {
+            for p in &mut m.parts {
+                if p.info.visible != v {
+                    Arc::make_mut(p).info.visible = v;
+                }
+            }
+            for a in &mut m.art_meshes {
+                if a.info.visible != v {
+                    Arc::make_mut(a).info.visible = v;
+                }
+            }
+            Ok(())
+        }),
+        PartsBulk::LockAll(v) => doc.try_edit(if v { "Lock all" } else { "Unlock all" }, |m| {
+            for p in &mut m.parts {
+                if p.info.locked != v {
+                    Arc::make_mut(p).info.locked = v;
+                }
+            }
+            for a in &mut m.art_meshes {
+                if a.info.locked != v {
+                    Arc::make_mut(a).info.locked = v;
+                }
+            }
+            Ok(())
+        }),
+        PartsBulk::DeleteEmpty => doc
+            .try_edit("Delete empty parts", |m| {
+                Ok(keyform_edit::objects::delete_empty_parts(m))
+            })
+            .map(|_| ()),
+    };
+    if let Err(e) = r {
+        doc.notice = Some(e);
+    }
 }
 
 /// A copy of the part tree whose child lists come from parent links, in
@@ -163,6 +288,11 @@ struct TreeCtx<'a> {
     draw_orders: &'a [f32],
     /// "Reverse Clipping ID Lookup" requested on this art mesh.
     reverse_lookup: &'a mut Option<usize>,
+    /// Objects whose lock was clicked.
+    lock_toggled: &'a mut Vec<Selection>,
+    /// "Move Here": the selected objects into this part.
+    move_here: &'a mut Option<usize>,
+    bulk: &'a mut Option<PartsBulk>,
 }
 
 fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
@@ -184,10 +314,27 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     if eye(ui, info.visible, t.editable) {
                         t.toggled.push(Selection::Part(p));
                     }
+                    if lock(ui, info.locked, t.editable) {
+                        t.lock_toggled.push(Selection::Part(p));
+                    }
                     icons::icon(ui, Icon::Part);
-                    if selectable(ui, *t.sel == Some(Selection::Part(p)), info.display_name()) {
+                    let r = ui
+                        .selectable_label(*t.sel == Some(Selection::Part(p)), info.display_name());
+                    if r.clicked() {
                         *t.sel = Some(Selection::Part(p));
                     }
+                    r.context_menu(|ui| {
+                        if ui
+                            .add_enabled(t.editable, egui::Button::new("Move Here"))
+                            .on_hover_text("Move the selected objects into this part")
+                            .clicked()
+                        {
+                            *t.move_here = Some(p);
+                            ui.close();
+                        }
+                        ui.separator();
+                        parts_menu(ui, t.bulk);
+                    });
                 })
                 .body(|ui| part_children(ui, m, p, t, depth + 1));
             }
@@ -202,6 +349,9 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                 ui.horizontal(|ui| {
                     if eye(ui, info.visible, t.editable) {
                         t.toggled.push(Selection::ArtMesh(a));
+                    }
+                    if lock(ui, info.locked, t.editable) {
+                        t.lock_toggled.push(Selection::ArtMesh(a));
                     }
                     icons::icon(ui, Icon::ArtMesh);
                     let r = ui.selectable_label(
