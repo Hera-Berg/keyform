@@ -1539,3 +1539,143 @@ fn inspector_edits_save() {
         assert!(back.model.same_data(&edited), "{path:?}");
     }
 }
+
+/// Form tools (form-tools.md §1–4, §5.2) on the samples: pasting an
+/// object's own copy keeps its keyform, flipping twice and reversing keys
+/// twice are identities, synthesized corners follow
+/// K = F(c1,b2) + F(b1,c2) − F(b1,b2); the results save and reload.
+#[test]
+fn form_tools_on_samples() {
+    use keyform_edit::form_tools::*;
+    use keyform_edit::ObjectRef;
+    use keyform_eval::Evaluator;
+    use keyform_formats::cmo3::Cmo3Document;
+    let close = |a: &[f32], b: &[f32]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 2e-2)
+    };
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+        let frame = Evaluator::new(m).evaluate(&values);
+        // Paste of the object's own copy: unchanged (within float noise).
+        let mut tried = 0;
+        for i in 0..m.art_meshes.len() {
+            let o = ObjectRef::ArtMesh(i);
+            let Ok(cell) = keyform_edit::current_cell(m, o, &values) else {
+                continue;
+            };
+            let Some(c) = copy_form(m, &frame, &values, o, None) else {
+                continue;
+            };
+            let before = m.art_meshes[i].grid.keyforms[cell].positions.clone();
+            let mut t = m.clone();
+            paste_form(&mut t, &values, &[c], &[o], 1.0, PasteMirror::default()).unwrap();
+            let after = &t.art_meshes[i].grid.keyforms[cell].positions;
+            assert!(close(&before, after), "{path:?} mesh {i}");
+            tried += 1;
+            if tried >= 5 {
+                break;
+            }
+        }
+        // Flip twice = identity.
+        let objs: Vec<ObjectRef> = (0..m.art_meshes.len().min(10))
+            .map(ObjectRef::ArtMesh)
+            .collect();
+        let s = FlipSettings {
+            horizontal: true,
+            all_keyforms: true,
+            keep_culling: true,
+            ..Default::default()
+        };
+        let orig = m.clone();
+        flip(m, &values, &objs, &s);
+        assert!(!m.same_data(&orig));
+        flip(m, &values, &objs, &s);
+        for (a, b) in m.art_meshes.iter().zip(&orig.art_meshes) {
+            for (x, y) in a.grid.keyforms.iter().zip(&b.grid.keyforms) {
+                assert!(close(&x.positions, &y.positions), "{path:?}");
+            }
+        }
+        // Reverse keys twice = identity.
+        if let Some(p) = m.parameters.iter().position(|p| p.id == "ParamAngleX") {
+            let snap = m.clone();
+            let n = batch_reflect(m, &[p]);
+            assert!(n == 0 || !m.same_data(&snap));
+            batch_reflect(m, &[p]);
+            for (a, b) in m.art_meshes.iter().zip(&snap.art_meshes) {
+                for (x, y) in a.grid.bindings.iter().zip(&b.grid.bindings) {
+                    assert!(close(&x.keys, &y.keys), "{path:?}");
+                }
+                assert_eq!(a.grid.keyforms, b.grid.keyforms, "{path:?}");
+            }
+        }
+        // Synthesize corners on Angle X / Angle Y.
+        let px = m.parameters.iter().position(|p| p.id == "ParamAngleX");
+        let py = m.parameters.iter().position(|p| p.id == "ParamAngleY");
+        if let (Some(p1), Some(p2)) = (px, py) {
+            let s = CornerSettings {
+                p1,
+                p2,
+                centre: false,
+                corners: vec![
+                    Corner::TopLeft,
+                    Corner::TopRight,
+                    Corner::BottomLeft,
+                    Corner::BottomRight,
+                ],
+            };
+            let objects = all_objects(m);
+            let before = m.clone();
+            let n = synthesize_corners(m, &values, &objects, &s);
+            eprintln!("{path:?}: corners synthesized on {n} objects");
+            // Check one processed art mesh at the top-right corner.
+            let ev_before = Evaluator::new(&before);
+            let ev_after = Evaluator::new(m);
+            for i in 0..m.art_meshes.len() {
+                let b = &m.art_meshes[i].grid.bindings;
+                let k = |p| b.iter().find(|x| x.parameter == p).map(|x| x.keys.clone());
+                let (Some(k1), Some(k2)) = (k(p1), k(p2)) else {
+                    continue;
+                };
+                if k1.len() < 3 || k2.len() < 3 {
+                    continue;
+                }
+                let at = |a: f32, c: f32| {
+                    let mut v = values.clone();
+                    v[p1] = a;
+                    v[p2] = c;
+                    v
+                };
+                let (c1, c2) = (k1[k1.len() - 1], k2[k2.len() - 1]);
+                let (b1, b2) = (values[p1], values[p2]);
+                // Evaluate local forms through a mesh with no parent effect:
+                // compare canvas results only when the mesh is unparented.
+                if m.art_meshes[i].target.is_some() {
+                    continue;
+                }
+                let f = |ev: &Evaluator, a: f32, c: f32| {
+                    ev.evaluate(&at(a, c)).meshes[i].positions.clone()
+                };
+                let (fa, fb, fc) = (
+                    f(&ev_before, c1, b2),
+                    f(&ev_before, b1, c2),
+                    f(&ev_before, b1, b2),
+                );
+                let want: Vec<f32> = fa
+                    .iter()
+                    .zip(&fb)
+                    .zip(&fc)
+                    .map(|((a, b), c)| a + b - c)
+                    .collect();
+                let got = f(&ev_after, c1, c2);
+                assert!(close(&want, &got), "{path:?} mesh {i}");
+                break;
+            }
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.model.same_data(&edited), "{path:?}");
+    }
+}

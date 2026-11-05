@@ -11,7 +11,7 @@ pub mod keys;
 use keyform_model::*;
 
 pub use deform::{DeformerMap, RotationMap, WarpMap};
-use interp::interpolate;
+pub use interp::{interpolate, Blend, Interpolated};
 
 /// Evaluated state of one part.
 #[derive(Clone, Debug, PartialEq)]

@@ -147,6 +147,7 @@ pub struct KeyformApp {
     atlas: crate::texture_atlas::AtlasWindow,
     new_model: crate::new_model_dialog::NewModelDialog,
     parts_settings: crate::parts_settings::PartsSettings,
+    forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
     param_dialog: crate::param_dialog::ParamDialog,
@@ -266,6 +267,7 @@ impl KeyformApp {
             atlas: Default::default(),
             new_model: Default::default(),
             parts_settings: Default::default(),
+            forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
             export_image: cc
@@ -879,6 +881,73 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        ui.menu_button("Parameter", |ui| {
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Synthesize corners…").shortcut_text("Ctrl+4"),
+                )
+                .clicked()
+            {
+                if let Err(e) = self.forms.open_corners(doc) {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+            if ui
+                .add_enabled(ok, egui::Button::new("Batch Reflect…"))
+                .clicked()
+            {
+                self.forms.open_batch(doc);
+                ui.close();
+            }
+        });
+        ui.menu_button("Edit Form", |ui| {
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Copy Form").shortcut_text("Ctrl+Shift+C"),
+                )
+                .clicked()
+            {
+                if let Err(e) = doc.copy_form() {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+            let has = !doc.form_clipboard.is_empty();
+            if ui
+                .add_enabled(
+                    ok && has,
+                    egui::Button::new("Paste Form").shortcut_text("Ctrl+Shift+V"),
+                )
+                .clicked()
+            {
+                if let Err(e) = doc.paste_form("Paste Form", 1.0, self.forms.special) {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    ok && has,
+                    egui::Button::new("Blend Form…").shortcut_text("Ctrl+Shift+B"),
+                )
+                .clicked()
+            {
+                self.forms.open_blend();
+                ui.close();
+            }
+            if ui.button("Options for Paste Form Special…").clicked() {
+                self.forms.special_open = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.add_enabled(ok, egui::Button::new("Flip…")).clicked() {
+                self.forms.open_flip();
+                ui.close();
+            }
+        });
         ui.separator();
         ui.menu_button("Texture Atlas", |ui| {
             if ui
@@ -1425,6 +1494,46 @@ impl KeyformApp {
                     d.lasso = l;
                     if a {
                         let _ = d.set_glue_tool(None);
+                    }
+                }
+            }
+        }
+        // Edit Form: Copy [Ctrl+Shift+C], Paste [Ctrl+Shift+V], Blend
+        // [Ctrl+Shift+B]; Synthesize corners [Ctrl+4] (menus.md).
+        if !ctx.egui_wants_keyboard_input() {
+            let (c, v, b, four) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&K::new(shift_cmd, Key::C)),
+                    i.consume_shortcut(&K::new(shift_cmd, Key::V)),
+                    i.consume_shortcut(&K::new(shift_cmd, Key::B)),
+                    i.consume_shortcut(&K::new(M::COMMAND, Key::Num4)),
+                )
+            });
+            let special = self.forms.special;
+            let mut warn = None;
+            if let Some(d) = self
+                .active_doc()
+                .filter(|d| d.editable() && d.mesh_edit.is_none())
+            {
+                if c {
+                    warn = d.copy_form().err();
+                } else if v {
+                    warn = d.paste_form("Paste Form", 1.0, special).err();
+                }
+            }
+            if let Some(e) = warn {
+                self.log.warn(e);
+            }
+            if b && self
+                .active_doc()
+                .is_some_and(|d| !d.form_clipboard.is_empty())
+            {
+                self.forms.open_blend();
+            }
+            if four {
+                if let Some(i) = self.active {
+                    if let Err(e) = self.forms.open_corners(&self.slots[i].doc) {
+                        self.log.warn(e);
                     }
                 }
             }
@@ -1979,6 +2088,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::parts_settings::dialog(&ctx, &mut self.parts_settings, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::form_dialogs::dialogs(&ctx, &mut self.forms, doc, &mut self.log);
         if let Some(mut p) = self.pending_psd.take() {
             let mut docs: Vec<(u64, &mut Document)> =
                 self.slots.iter_mut().map(|s| (s.uid, &mut s.doc)).collect();

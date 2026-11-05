@@ -306,6 +306,8 @@ pub struct Document {
     /// Lasso Tool [L] instead of the Arrow tool's rectangle [A]: dragging
     /// on empty space draws a lasso. spec: canvas-and-tools.md §3
     pub lasso: bool,
+    /// Copy Form data (form-tools.md §1).
+    pub form_clipboard: Vec<keyform_edit::form_tools::CopiedForm>,
     /// Never saved yet: the first save asks for a location.
     pub untitled: bool,
 }
@@ -625,6 +627,7 @@ impl Document {
             glue_tool: None,
             glue_prefs: Default::default(),
             lasso: false,
+            form_clipboard: Vec::new(),
             untitled: false,
             drag: None,
             edit_level: 2,
@@ -1172,6 +1175,83 @@ impl Document {
         })?;
         self.select(Some(Selection::ArtMesh(a)));
         Ok(())
+    }
+
+    /// Edit Form ▸ Copy Form: the selected objects' forms (selected
+    /// points weigh 1, others 0, when points are selected).
+    /// spec: form-tools.md §1
+    pub fn copy_form(&mut self) -> Result<usize, String> {
+        let Some(frame) = self.frame.as_ref() else {
+            return Err("The model is not evaluated yet.".into());
+        };
+        let mut out = Vec::new();
+        for &o in &self.selection.objects {
+            let pts: Vec<usize> = self
+                .selection
+                .points
+                .iter()
+                .filter(|(x, _)| *x == o)
+                .map(|(_, k)| *k)
+                .collect();
+            let weights: Option<Vec<f32>> = (!self.selection.points.is_empty()).then(|| {
+                // Points past the end weigh 0 (copy_form).
+                let n = pts.iter().max().map_or(0, |m| m + 1);
+                (0..n)
+                    .map(|k| if pts.contains(&k) { 1.0 } else { 0.0 })
+                    .collect()
+            });
+            match keyform_edit::form_tools::copy_form(
+                &self.model,
+                frame,
+                &self.values,
+                o,
+                weights.as_deref(),
+            ) {
+                Some(c) => out.push(c),
+                None => {
+                    if let Some(i) = crate::palettes::info(&self.model, o) {
+                        self.notice =
+                            Some(format!("{}: this object's form cannot be copied.", i.id));
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            return Err("Select the objects whose forms to copy.".into());
+        }
+        let n = out.len();
+        self.form_clipboard = out;
+        Ok(n)
+    }
+
+    /// Paste Form (w = 1) / Blend Form (w = rate) into the selected objects
+    /// (or the copied objects when nothing is selected). One undo step.
+    pub fn paste_form(
+        &mut self,
+        name: &str,
+        w: f32,
+        mirror: keyform_edit::form_tools::PasteMirror,
+    ) -> Result<usize, String> {
+        if self.form_clipboard.is_empty() {
+            return Err("There is no copied form.".into());
+        }
+        let targets: Vec<Selection> = if self.selection.objects.is_empty() {
+            self.form_clipboard.iter().map(|c| c.object).collect()
+        } else {
+            self.selection.objects.clone()
+        };
+        let copies = self.form_clipboard.clone();
+        let values = self.values.clone();
+        let sel = self.selection.clone();
+        let n = self.try_edit(name, |m| {
+            keyform_edit::form_tools::paste_form(m, &values, &copies, &targets, w, mirror)
+                .map_err(|e| e.to_string())
+        })?;
+        self.set_selection(sel);
+        if n == 0 {
+            return Err("The copied forms don't fit the selected objects.".into());
+        }
+        Ok(n)
     }
 
     /// Unbind Glue Vertices [Ctrl+Shift+G] in the Modeling view: removes
