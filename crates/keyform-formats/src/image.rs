@@ -12,6 +12,15 @@ pub struct RgbaImage {
     pub data: Vec<u8>,
 }
 
+/// Width and height from a PNG's IHDR chunk, without decoding it.
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    Some((be(16), be(20)))
+}
+
 impl RgbaImage {
     pub fn new(width: u32, height: u32) -> Self {
         Self {

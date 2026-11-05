@@ -13,6 +13,10 @@ use keyform_model::{
 use spade::handles::FixedVertexHandle;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation as _};
 
+/// spec: 50-ui/canvas-and-tools.md §5.1
+pub const PROTECT_NEEDS_OUTLINE: &str =
+    "Please close the mesh, or turn off the \"Protect Edge Exterior\" setting.";
+
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MeshError {
     #[error("no such art mesh")]
@@ -45,6 +49,8 @@ pub struct Triangulated {
     /// Constraint edges that cross another one and were left out
     /// (spec: mesh-triangulation.md §3 step 3, "unresolved crossing").
     pub unresolved: usize,
+    /// The constraint edges enclose an area (there are outlines, §2).
+    pub enclosed: bool,
 }
 
 impl MeshGraph {
@@ -261,51 +267,148 @@ impl MeshGraph {
         chosen.len()
     }
 
-    /// Merge Vertices: points within `eps` of each other (among `among`, or
-    /// all points) become one; the lowest index is kept and takes over the
-    /// others' edges. Returns how many points were removed.
-    pub fn merge_overlapping(&mut self, among: Option<&HashSet<usize>>, eps: f32) -> usize {
+    /// Merge Vertices: the points of `sel` become one, the lowest index
+    /// moved to their centroid. The other points' non-auto edges are
+    /// re-attached to it as normal edges (no loops, no duplicates), then
+    /// they are deleted. Returns the survivor's index afterwards.
+    /// spec: 50-ui/canvas-and-tools.md §5.1 "Merge Vertices"
+    pub fn merge_vertices(&mut self, sel: &[usize]) -> Option<usize> {
         let n = self.len();
-        let cand: Vec<usize> = (0..n)
-            .filter(|k| among.is_none_or(|s| s.contains(k)))
-            .collect();
-        let mut target: Vec<usize> = (0..n).collect();
-        for (x, &i) in cand.iter().enumerate() {
-            if target[i] != i {
-                continue;
-            }
-            for &j in &cand[x + 1..] {
-                if target[j] == j {
-                    let (p, q) = (self.point(i), self.point(j));
-                    if (p[0] - q[0]).hypot(p[1] - q[1]) <= eps {
-                        target[j] = i;
-                    }
-                }
-            }
+        let mut sel: Vec<usize> = sel.iter().copied().filter(|&k| k < n).collect();
+        sel.sort_unstable();
+        sel.dedup();
+        let (&keep, rest) = sel.split_first()?;
+        if rest.is_empty() {
+            return None;
         }
-        let gone: HashSet<usize> = (0..n).filter(|&k| target[k] != k).collect();
-        if gone.is_empty() {
-            return 0;
-        }
-        // Redirect edges, dropping loops and duplicates.
-        let old: Vec<([u32; 2], i8)> = self
+        let c = sel.iter().fold([0.0f64; 2], |c, &k| {
+            let p = self.point(k);
+            [c[0] + f64::from(p[0]), c[1] + f64::from(p[1])]
+        });
+        let m = sel.len() as f64;
+        self.set_point(keep, [(c[0] / m) as f32, (c[1] / m) as f32]);
+        let gone: HashSet<usize> = rest.iter().copied().collect();
+        let moved: Vec<u32> = self
             .mesh
             .edges
             .iter()
-            .copied()
-            .zip(self.mesh.edge_priority.iter().copied())
+            .zip(&self.mesh.edge_priority)
+            .filter(|(_, &p)| p != EDGE_AUTO_TRIANGULATION)
+            .filter_map(|(e, _)| {
+                let (a, b) = (e[0] as usize, e[1] as usize);
+                match (gone.contains(&a), gone.contains(&b)) {
+                    (true, false) => Some(b as u32),
+                    (false, true) => Some(a as u32),
+                    _ => None,
+                }
+            })
             .collect();
-        self.mesh.edges.clear();
-        self.mesh.edge_priority.clear();
-        for (e, p) in old {
-            let (a, b) = (target[e[0] as usize] as u32, target[e[1] as usize] as u32);
-            if a != b && self.edge_index(a, b).is_none() {
-                self.mesh.edges.push([a, b]);
-                self.mesh.edge_priority.push(p);
+        for other in moved {
+            if other as usize != keep {
+                self.add_edge(keep as u32, other, EDGE_NORMAL);
             }
         }
         self.delete_points(&gone);
+        Some(keep - rest.iter().filter(|&&k| k < keep).count())
+    }
+
+    /// Overlapping-vertex clean-up when mesh editing finishes: of points
+    /// with exactly equal coordinates the first is kept; the others go with
+    /// their own edges. Returns how many were removed.
+    /// spec: 50-ui/canvas-and-tools.md §5.1
+    pub fn remove_coincident(&mut self) -> usize {
+        let mut seen: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut gone = HashSet::new();
+        for k in 0..self.len() {
+            let p = self.point(k);
+            if seen.insert((p[0].to_bits(), p[1].to_bits()), k).is_some() {
+                gone.insert(k);
+            }
+        }
+        // Keep the first of each group, not the last.
+        let gone: HashSet<usize> = gone
+            .into_iter()
+            .filter(|&k| {
+                let p = self.point(k);
+                (0..k).any(|j| {
+                    let q = self.point(j);
+                    q[0].to_bits() == p[0].to_bits() && q[1].to_bits() == p[1].to_bits()
+                })
+            })
+            .collect();
+        if !gone.is_empty() {
+            self.delete_points(&gone);
+        }
         gone.len()
+    }
+
+    /// Auto connect (Ctrl+R / Connect / Auto connect): Delaunay connections
+    /// made permanent as normal edges. `protect` keeps the outline (and
+    /// needs one); `reconstruct` rebuilds every edge.
+    /// spec: 50-ui/canvas-and-tools.md §5.1 "Auto connect"
+    pub fn auto_connect(&mut self, protect: bool, reconstruct: bool) -> Result<(), &'static str> {
+        let n = self.len();
+        let constraints = constraint_edges(n, &self.mesh.edges, &self.mesh.edge_priority);
+        let current = triangulate_delaunay(&self.points, &constraints, false)
+            .map_err(|_| "A vertex has an invalid position.")?;
+        if protect && !current.enclosed {
+            return Err(PROTECT_NEEDS_OUTLINE);
+        }
+        if reconstruct {
+            self.mesh.edges.clear();
+            self.mesh.edge_priority.clear();
+            if protect {
+                // The outline: sides of exactly one enclosed triangle.
+                let mut count: HashMap<(u32, u32), usize> = HashMap::new();
+                for t in current.indices.chunks_exact(3) {
+                    for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                        *count.entry((a.min(b), a.max(b))).or_default() += 1;
+                    }
+                }
+                let mut outline: Vec<(u32, u32)> = count
+                    .into_iter()
+                    .filter(|&(_, c)| c == 1)
+                    .map(|(e, _)| e)
+                    .collect();
+                outline.sort_unstable();
+                for (a, b) in outline {
+                    self.add_edge(a, b, EDGE_NORMAL);
+                }
+            }
+        }
+        let constraints = constraint_edges(n, &self.mesh.edges, &self.mesh.edge_priority);
+        let t = triangulate_delaunay(&self.points, &constraints, !protect)
+            .map_err(|_| "A vertex has an invalid position.")?;
+        // Every triangle side becomes a permanent normal edge.
+        let keep: Vec<bool> = self
+            .mesh
+            .edge_priority
+            .iter()
+            .map(|&p| p != EDGE_AUTO_TRIANGULATION)
+            .collect();
+        retain_parallel(&mut self.mesh.edges, &mut self.mesh.edge_priority, &keep);
+        for tri in t.indices.chunks_exact(3) {
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                if self.edge_index(a, b).is_none() {
+                    self.add_edge(a.min(b), a.max(b), EDGE_NORMAL);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reset Mesh: all points and edges replaced by the rectangle
+    /// `corners` (canvas) with its four sides as normal edges.
+    /// spec: 50-ui/canvas-and-tools.md §5.1 "Reset Mesh"
+    pub fn reset_to_rect(&mut self, corners: [[f32; 2]; 4]) {
+        let n = self.len();
+        self.delete_points(&(0..n).collect());
+        for c in corners {
+            self.add_point(c);
+        }
+        for k in 0..4u32 {
+            self.add_edge(k, (k + 1) % 4, EDGE_NORMAL);
+        }
     }
 
     /// Mirror Edit partner of point `k`: the other point nearest to `k`'s
@@ -401,7 +504,7 @@ pub fn triangulate(
     }
     let constraints = constraint_edges(points.len() / 2, edges, priority);
     if delaunay {
-        triangulate_delaunay(points, &constraints)
+        triangulate_delaunay(points, &constraints, false)
     } else {
         Ok(triangulate_fans(points, &constraints))
     }
@@ -521,18 +624,22 @@ fn triangulate_fans(points: &[f32], constraints: &[[usize; 2]]) -> Triangulated 
             }
         }
     }
+    let enclosed = !indices.is_empty();
     Triangulated {
         indices,
         unresolved: 0,
+        enclosed,
     }
 }
 
 /// Constrained Delaunay triangulation of `points` honouring the
 /// constraint edges, keeping only the triangles enclosed by them, oriented
 /// to positive area. spec: 30-algorithms/mesh-triangulation.md §2–3
+/// With `keep_hull` every triangle of the convex hull is kept.
 fn triangulate_delaunay(
     points: &[f32],
     constraints: &[[usize; 2]],
+    keep_hull: bool,
 ) -> Result<Triangulated, MeshError> {
     let n = points.len() / 2;
     let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
@@ -616,7 +723,8 @@ fn triangulate_delaunay(
             }
         }
     }
-    let keep_all = outside.iter().all(|&o| o);
+    let enclosed = !outside.iter().all(|&o| o);
+    let keep_all = keep_hull || !enclosed;
     let mut indices = Vec::with_capacity(faces.len() * 3);
     for (k, f) in faces.iter().enumerate() {
         if outside[k] && !keep_all {
@@ -638,6 +746,7 @@ fn triangulate_delaunay(
     Ok(Triangulated {
         indices,
         unresolved,
+        enclosed,
     })
 }
 
@@ -774,7 +883,7 @@ pub fn set_mesh(m: &mut Model, i: usize, g: &MeshGraph) -> Result<Triangulated, 
     let t = if g.same_edges(&MeshGraph::of(&old)) {
         Triangulated {
             indices: old.indices.clone(),
-            unresolved: 0,
+            ..Default::default()
         }
     } else {
         g.triangulate()?
@@ -1104,16 +1213,54 @@ mod tests {
         assert_eq!(g.len(), 9);
         assert_eq!(g.triangulate().unwrap().indices.len() / 3, 8);
 
-        // Merge: a duplicate of point 2 takes over its edges.
-        let d = g.add_point([10.0, 10.0]);
+        // Merge: a point near 2 is merged into it at the centroid and its
+        // edge is re-attached.
+        let d = g.add_point([12.0, 10.0]);
         g.add_edge(d as u32, 0, EDGE_NORMAL);
-        assert_eq!(g.merge_overlapping(None, 0.01), 1);
+        assert_eq!(g.merge_vertices(&[2, d]), Some(2));
         assert_eq!(g.len(), 9);
+        assert_eq!(g.point(2), [11.0, 10.0]);
         assert!(g.edge_index(2, 0).is_some());
+        g.set_point(2, [10.0, 10.0]);
+        // Exact duplicates go on Finish; the first one stays.
+        let e = g.add_point([10.0, 10.0]);
+        g.add_edge(e as u32, 1, EDGE_NORMAL);
+        assert_eq!(g.remove_coincident(), 1);
+        assert_eq!(g.len(), 9);
 
         // Mirror partner across x = 5.
         assert_eq!(g.mirror_partner(0, 5.0, true, 0.5), Some(1));
         assert_eq!(g.mirror_partner(0, 5.0, false, 0.5), Some(3));
+    }
+
+    #[test]
+    fn auto_connect_options() {
+        // A square outline with a free point inside.
+        let pts = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [4.0, 5.0],
+        ];
+        let mut g = graph(&pts, &[[0, 1], [1, 2], [2, 3], [3, 0]]);
+        g.auto_connect(true, false).unwrap();
+        assert!(g.mesh.edge_priority.iter().all(|&p| p == EDGE_NORMAL));
+        // 4 sides + 4 spokes to the inner point.
+        assert_eq!(g.mesh.edges.len(), 8);
+        // Reconstruction keeps only the outline and rebuilds the inside.
+        g.add_edge(0, 2, EDGE_NORMAL);
+        g.auto_connect(true, true).unwrap();
+        assert_eq!(g.mesh.edges.len(), 8);
+        // Without an outline, protect refuses; unprotected, the hull is used.
+        let mut open = graph(&pts, &[[0, 1]]);
+        assert_eq!(open.auto_connect(true, false), Err(PROTECT_NEEDS_OUTLINE));
+        open.auto_connect(false, false).unwrap();
+        assert_eq!(open.triangulate().unwrap().indices.len() / 3, 4);
+        // Reset to a rectangle.
+        open.reset_to_rect([[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]]);
+        assert_eq!((open.len(), open.mesh.edges.len()), (4, 4));
+        assert_eq!(open.triangulate().unwrap().indices.len() / 3, 2);
     }
 
     #[test]

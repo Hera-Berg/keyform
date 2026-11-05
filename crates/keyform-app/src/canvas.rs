@@ -425,6 +425,9 @@ fn mesh_tool(
     let view = view_of(doc, rect, ppp);
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
     let radius = POINT_PICK / doc.view.zoom.max(1e-6);
+    // Mirror partners: within 1 screen pixel (§5.1).
+    let tolerance = 1.0 / doc.view.zoom.max(1e-6);
+    let flip = doc.view.mirror;
     let Some(s) = doc.mesh_edit.as_mut() else {
         return;
     };
@@ -451,7 +454,7 @@ fn mesh_tool(
                     }
                     s.set_selected(sel);
                     if response.drag_started_by(primary) && !shift {
-                        s.drag_begin(radius);
+                        s.drag_begin(tolerance);
                     }
                 } else if response.drag_started_by(primary) {
                     gpu.rect = Some((press, true));
@@ -481,7 +484,7 @@ fn mesh_tool(
                                 sel.push(k);
                             }
                         }
-                        s.set_selected(sel);
+                        s.select_with_partners(sel, tolerance);
                     }
                 }
                 return;
@@ -499,14 +502,14 @@ fn mesh_tool(
                     }
                 }
                 if response.drag_started_by(primary) {
-                    s.drag_begin(radius);
+                    s.drag_begin(tolerance);
                 }
             }
         }
         MeshTool::Brush => {
             if response.drag_started_by(primary) {
                 if let Some(press) = press {
-                    s.brush_begin(to_canvas(press), radius);
+                    s.brush_begin(to_canvas(press), tolerance, flip);
                 }
             }
         }
@@ -596,17 +599,38 @@ fn draw_mesh_edit(
             .filter(|p| rect.contains(*p))
         {
             let o = to_screen([0.0, 0.0]);
-            let r = (to_screen([s.brush_radius, 0.0]) - o).length();
-            painter.circle_stroke(c, r, egui::Stroke::new(1.0, tokens.accent));
-            painter.circle_stroke(
-                c,
-                r * s.brush_hardness,
-                egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.4)),
-            );
+            let b = &s.prefs;
+            let r = (to_screen([b.brush_size / 2.0, 0.0]) - o).length();
+            let stroke = egui::Stroke::new(1.0, tokens.accent);
+            let inner = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.4));
+            let rot = egui::emath::Rot2::from_angle(b.brush_angle.to_radians());
+            match b.brush_shape {
+                crate::mesh_edit::BrushShape::Circle => {
+                    painter.circle_stroke(c, r, stroke);
+                    painter.circle_stroke(c, r * b.brush_hardness, inner);
+                }
+                crate::mesh_edit::BrushShape::Square => {
+                    for (k, st) in [(1.0, stroke), (b.brush_hardness, inner)] {
+                        let pts: Vec<Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                            .iter()
+                            .map(|&(x, y)| c + rot * egui::vec2(x * r * k, y * r * k))
+                            .collect();
+                        painter.add(egui::Shape::closed_line(pts, st));
+                    }
+                }
+                crate::mesh_edit::BrushShape::Line => {
+                    // A band |y| ≤ r along the brush angle.
+                    for y in [-r, r] {
+                        let a = c + rot * egui::vec2(-4.0 * r, y);
+                        let e = c + rot * egui::vec2(4.0 * r, y);
+                        painter.line_segment([a, e], stroke);
+                    }
+                }
+            }
         }
     }
     // Mirror Edit axis.
-    if let Some(m) = s.mirror {
+    if let Some(m) = s.mirror() {
         let stroke = egui::Stroke::new(1.0, tokens.warning);
         let far = 1e6;
         let (a, b) = if m.vertical {

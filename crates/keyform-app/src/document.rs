@@ -290,6 +290,8 @@ pub struct Document {
     saved_revision: u64,
     /// Mesh edit mode on one art mesh (main-window.md §6).
     pub mesh_edit: Option<crate::mesh_edit::MeshEdit>,
+    /// Mesh editor settings kept between mesh-edit sessions.
+    mesh_prefs: Option<crate::mesh_edit::MeshPrefs>,
 }
 
 pub fn load_motion(dir: &Path, file: &str, log: &mut Log) -> Option<Arc<Motion>> {
@@ -581,6 +583,7 @@ impl Document {
             }),
             saved_revision: 0,
             mesh_edit: None,
+            mesh_prefs: None,
             drag: None,
             edit_level: 2,
             notice: None,
@@ -1127,9 +1130,34 @@ impl Document {
         let [a] = meshes[..] else {
             return Err("Select one ArtMesh to edit its mesh.".into());
         };
-        let s = crate::mesh_edit::MeshEdit::start(a, &self.model.art_meshes[a])?;
+        let s = self.new_mesh_edit(a)?;
         self.mesh_edit = Some(s);
         Ok(())
+    }
+
+    /// A mesh-edit session on art mesh `a` with the remembered settings,
+    /// the model image's rectangle (Reset Mesh) and its glue state.
+    fn new_mesh_edit(&mut self, a: usize) -> Result<crate::mesh_edit::MeshEdit, String> {
+        let m = &self.model;
+        let canvas = [m.canvas.width as f32, m.canvas.height as f32];
+        let prefs = *self
+            .mesh_prefs
+            .get_or_insert_with(|| crate::mesh_edit::MeshPrefs::new(canvas));
+        let mut s = crate::mesh_edit::MeshEdit::start(a, &m.art_meshes[a], prefs)?;
+        s.glued = keyform_edit::automesh::is_glued(m, a);
+        // spec: canvas-and-tools.md §5.1 "Reset Mesh": the model image's
+        // (0, 0)–(width, height) mapped to the canvas, margin 0.
+        s.model_rect = m.art_meshes[a]
+            .model_image
+            .and_then(|k| m.model_images.get(k))
+            .and_then(|mi| {
+                let (w, h) = keyform_formats::image::png_size(mi.png.as_ref()?)?;
+                let t = mi.local_to_canvas;
+                let map = |x: f32, y: f32| [t[0] * x + t[1] * y + t[2], t[3] * x + t[4] * y + t[5]];
+                let (w, h) = (w as f32, h as f32);
+                Some([map(0.0, 0.0), map(w, 0.0), map(w, h), map(0.0, h)])
+            });
+        Ok(s)
     }
 
     /// Finish Mesh editing: the mesh is re-triangulated and its keyforms
@@ -1138,11 +1166,13 @@ impl Document {
         let Some(s) = self.mesh_edit.take() else {
             return Ok(None);
         };
+        self.mesh_prefs = Some(s.prefs);
         if !s.changed() {
             return Ok(None);
         }
         let a = s.mesh;
-        let graph = s.graph;
+        // Finishing merges exactly coincident vertices (§5.1).
+        let (graph, merged) = s.finished_graph();
         let generator = s.generator;
         let t = self.try_edit("Mesh Edit", |m| {
             let t = keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())?;
@@ -1155,19 +1185,21 @@ impl Document {
             Ok(t) => t,
             Err(e) => {
                 // Keep editing so nothing is lost.
-                let mut s = crate::mesh_edit::MeshEdit::start(a, &self.model.art_meshes[a])?;
+                let mut s = self.new_mesh_edit(a)?;
                 s.change(|g, _| *g = graph);
                 self.mesh_edit = Some(s);
                 return Err(e);
             }
         };
         self.select(Some(Selection::ArtMesh(a)));
-        Ok((t.unresolved > 0).then(|| {
-            format!(
+        let mut notes: Vec<String> = merged.map(str::to_owned).into_iter().collect();
+        if t.unresolved > 0 {
+            notes.push(format!(
                 "{} crossing edges could not be kept in the mesh.",
                 t.unresolved
-            )
-        }))
+            ));
+        }
+        Ok((!notes.is_empty()).then(|| notes.join(" ")))
     }
 
     /// The primary (last selected) object.

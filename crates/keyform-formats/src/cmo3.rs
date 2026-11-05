@@ -203,27 +203,16 @@ fn color(o: Option<O>, default: Color) -> Result<Color> {
 }
 
 /// Generator settings; out-of-range values are clamped to the UI ranges.
-/// Older files store one `polygonDensity` for both intervals
-/// (TODO(Q-0016)). spec: 70-advanced/auto-mesh.md §2
+/// Older files' single `polygonDensity` is ignored, as the reference does:
+/// both intervals then take their default. spec: 70-advanced/auto-mesh.md §2
 fn mesh_generate_setting(g: &O) -> Result<MeshGenerateSetting> {
     let d = MeshGenerateSetting::default();
     let int = |name: &str, lo: i32, hi: i32, def: i32| -> Result<i32> {
         Ok(g.i32(name)?.unwrap_or(def).clamp(lo, hi))
     };
-    let legacy = g.i32("polygonDensity")?;
     Ok(MeshGenerateSetting {
-        outer_density: int(
-            "polygonOuterDensity",
-            10,
-            200,
-            legacy.unwrap_or(d.outer_density),
-        )?,
-        inner_density: int(
-            "polygonInnerDensity",
-            10,
-            200,
-            legacy.unwrap_or(d.inner_density),
-        )?,
+        outer_density: int("polygonOuterDensity", 10, 200, d.outer_density)?,
+        inner_density: int("polygonInnerDensity", 10, 200, d.inner_density)?,
         margin: int("polygonMargin", 0, 50, d.margin)?,
         inner_margin: int("polygonInnerMargin", 0, 50, d.inner_margin)?,
         min_margin: int("polygonMinMargin", 1, 10, d.min_margin)?,

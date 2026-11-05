@@ -117,9 +117,8 @@ pub(super) fn write_topology(root: &mut Element, path: &[u32], n: &ArtMesh) -> R
 }
 
 /// Writes changed automatic-mesh settings into the art mesh's
-/// `CMeshGeneratorExtension` (auto-mesh.md §2). Older files hold one
-/// `polygonDensity`; it is replaced by the two current fields
-/// (TODO(Q-0016)).
+/// `CMeshGeneratorExtension` (auto-mesh.md §2). Older files' unused
+/// `polygonDensity` is replaced by the two current fields.
 pub(super) fn write_generator(root: &mut Element, path: &[u32], n: &ArtMesh) -> Result<()> {
     let list = field_path(root, path, "_extensions")?;
     let items = element_at(root, Some(&list))?.children.clone();

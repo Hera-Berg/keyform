@@ -775,10 +775,30 @@ impl KeyformApp {
         ui.separator();
         let Some(d) = self.active_doc() else { return };
         let canvas = [d.model.canvas.width as f32, d.model.canvas.height as f32];
+        let tolerance = 1.0 / d.view.zoom.max(1e-6);
         let Some(s) = d.mesh_edit.as_mut() else {
             return;
         };
         let mut notice = None;
+        if ui
+            .add(egui::Button::new("Auto attach Edge (line)").shortcut_text("Ctrl+R"))
+            .on_hover_text("Automatically join vertices")
+            .clicked()
+        {
+            notice = s.auto_connect().err();
+            ui.close();
+        }
+        if ui
+            .button("Reset Mesh")
+            .on_hover_text(
+                "Restores the mesh to the state immediately after the ArtMesh was created.",
+            )
+            .clicked()
+        {
+            notice = s.reset_mesh().err();
+            ui.close();
+        }
+        ui.separator();
         if ui.button("Edge swap").clicked() {
             notice = s.swap_edge().err();
             ui.close();
@@ -792,59 +812,13 @@ impl KeyformApp {
             ui.close();
         }
         if ui.button("Merge Vertices").clicked() {
-            let n = s.merge();
-            notice = Some(if n > 0 {
-                format!("Overlapping vertices are merged. ({n})")
-            } else {
-                "No overlapping vertices.".to_owned()
-            });
+            notice = s.merge().err();
             ui.close();
         }
         ui.menu_button("Mirror Edit", |ui| {
-            let mut on = s.mirror.is_some();
-            if ui.checkbox(&mut on, "Mirror Edit").changed() {
-                s.mirror = on.then(|| crate::mesh_edit::Mirror {
-                    axis: s.centre(false).map_or(canvas[0] / 2.0, |c| c[0]),
-                    vertical: true,
-                });
-            }
-            if let Some(m) = s.mirror.as_mut() {
-                ui.radio_value(&mut m.vertical, true, "Axis: vertical");
-                ui.radio_value(&mut m.vertical, false, "Axis: horizontal");
-            }
-            let k = usize::from(!s.mirror.is_some_and(|m| m.vertical));
-            let centre = s.centre(false);
-            let selected = s.centre(true);
-            if let Some(m) = s.mirror.as_mut() {
-                if ui.button("Reset Axis Position").clicked() {
-                    if let Some(c) = centre {
-                        m.axis = c[k];
-                    }
-                }
-                if ui.button("Center of Canvas").clicked() {
-                    m.axis = canvas[k] / 2.0;
-                }
-                if ui
-                    .add_enabled(
-                        selected.is_some(),
-                        egui::Button::new("Center of Selected Vertices"),
-                    )
-                    .clicked()
-                {
-                    if let Some(c) = selected {
-                        m.axis = c[k];
-                    }
-                }
-            }
+            mirror_controls(ui, s, canvas);
         });
         ui.separator();
-        if ui
-            .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
-            .clicked()
-        {
-            s.connect();
-            ui.close();
-        }
         if ui
             .add_enabled(
                 !s.selected.is_empty(),
@@ -852,7 +826,7 @@ impl KeyformApp {
             )
             .clicked()
         {
-            s.delete_selected();
+            s.delete_selected(tolerance);
             ui.close();
         }
         ui.menu_button("Subtools", |ui| {
@@ -1032,36 +1006,23 @@ impl KeyformApp {
                     }
                 }
                 if s.tool == MeshTool::Brush {
-                    ui.add(
-                        egui::DragValue::new(&mut s.brush_radius)
-                            .range(2.0..=2000.0)
-                            .prefix("size ")
-                            .suffix(" px"),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut s.brush_hardness)
-                            .range(0.0..=1.0)
-                            .speed(0.01)
-                            .prefix("hardness "),
-                    );
+                    brush_controls(ui, &mut s.prefs);
                 }
                 if ui
-                    .add_enabled(s.selected.len() >= 2, egui::Button::new("Connect"))
-                    .on_hover_text("Connect the selected vertices with edges")
+                    .button("Connect")
+                    .on_hover_text("Automatically join vertices (Ctrl+R)")
                     .clicked()
                 {
-                    s.connect();
+                    if let Err(e) = s.auto_connect() {
+                        self.log.warn(e);
+                    }
                 }
-                let mut mirror = s.mirror.is_some();
-                if ui
-                    .checkbox(&mut mirror, "Mirror")
-                    .on_hover_text("Mirror Edit: vertex moves are mirrored across the axis")
-                    .changed()
-                {
-                    s.mirror = mirror.then(|| crate::mesh_edit::Mirror {
-                        axis: s.centre(false).map_or(0.0, |c| c[0]),
-                        vertical: true,
-                    });
+                ui.checkbox(&mut s.prefs.protect_exterior, "Protect Edge exterior");
+                ui.checkbox(&mut s.prefs.reconstruct, "Mesh reconstruction");
+                ui.checkbox(&mut s.prefs.mirror_on, "Mirror")
+                    .on_hover_text("Mirror Edit: edits are mirrored across the axis");
+                if s.prefs.mirror_on {
+                    ui.weak("Mirror Editing in Progress");
                 }
                 if s.unresolved > 0 {
                     ui.colored_label(
@@ -1251,9 +1212,12 @@ impl KeyformApp {
     }
 
     fn delete_active(&mut self) {
-        if let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) {
-            s.delete_selected();
-            return;
+        if let Some(d) = self.active_doc() {
+            let tolerance = 1.0 / d.view.zoom.max(1e-6);
+            if let Some(s) = d.mesh_edit.as_mut() {
+                s.delete_selected(tolerance);
+                return;
+            }
         }
         if let Some(d) = self.active_doc() {
             match d.delete_selection() {
@@ -1307,6 +1271,17 @@ impl KeyformApp {
             && ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::A)))
         {
             self.open_auto_mesh();
+        }
+        // Auto attach Edge (line) [Ctrl+R] in mesh edit mode (§5.1).
+        if !ctx.egui_wants_keyboard_input() {
+            let ctrl_r = ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::R)));
+            if ctrl_r {
+                if let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) {
+                    if let Err(e) = s.auto_connect() {
+                        self.log.warn(e);
+                    }
+                }
+            }
         }
         // Mesh edit [Ctrl+E] (menus.md "ArtMesh", "Mesh Edit mode").
         if ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::E))) {
@@ -1794,6 +1769,73 @@ impl eframe::App for KeyformApp {
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
         eframe::set_value(storage, EXPORT_IMAGE_KEY, &self.export_image);
     }
+}
+
+/// Mirror Edit panel: on/off, axis direction and position.
+/// spec: 50-ui/canvas-and-tools.md §5.1 "Mirror Edit"
+fn mirror_controls(ui: &mut egui::Ui, s: &mut crate::mesh_edit::MeshEdit, canvas: [f32; 2]) {
+    ui.checkbox(&mut s.prefs.mirror_on, "Mirror Edit");
+    let selected = s.centre(true);
+    let m = &mut s.prefs.mirror;
+    ui.radio_value(&mut m.vertical, true, "Axis: vertical (left ↔ right)");
+    ui.radio_value(&mut m.vertical, false, "Axis: horizontal (top ↔ bottom)");
+    let k = usize::from(!m.vertical);
+    ui.horizontal(|ui| {
+        ui.label("Axis");
+        ui.add(egui::DragValue::new(&mut m.axis).speed(1.0).suffix(" px"));
+    });
+    // The axis starts at the canvas centre; both buttons return it there.
+    let reset = ui.button("Reset Axis Position").clicked();
+    if ui.button("Center of Canvas").clicked() || reset {
+        m.axis = canvas[k] / 2.0;
+    }
+    if ui
+        .add_enabled(
+            selected.is_some(),
+            egui::Button::new("Center of Selected Vertices"),
+        )
+        .clicked()
+    {
+        if let Some(c) = selected {
+            m.axis = c[k];
+        }
+    }
+}
+
+/// Mesh-edit brush settings. spec: 50-ui/canvas-and-tools.md §5.1 "Brush"
+fn brush_controls(ui: &mut egui::Ui, b: &mut crate::mesh_edit::MeshPrefs) {
+    use crate::mesh_edit::BrushShape;
+    ui.add(
+        egui::DragValue::new(&mut b.brush_size)
+            .range(2.0..=4000.0)
+            .prefix("size ")
+            .suffix(" px"),
+    );
+    ui.add(
+        egui::DragValue::new(&mut b.brush_level)
+            .range(0.0..=1.0)
+            .speed(0.01)
+            .prefix("level "),
+    );
+    ui.add(
+        egui::DragValue::new(&mut b.brush_hardness)
+            .range(0.0..=1.0)
+            .speed(0.01)
+            .prefix("hardness "),
+    );
+    ui.add(
+        egui::DragValue::new(&mut b.brush_angle)
+            .range(-180.0..=180.0)
+            .prefix("angle ")
+            .suffix("°"),
+    );
+    egui::ComboBox::from_id_salt("brush-shape")
+        .selected_text(format!("{:?}", b.brush_shape))
+        .show_ui(ui, |ui| {
+            for s in [BrushShape::Circle, BrushShape::Square, BrushShape::Line] {
+                ui.selectable_value(&mut b.brush_shape, s, format!("{s:?}"));
+            }
+        });
 }
 
 #[cfg(test)]

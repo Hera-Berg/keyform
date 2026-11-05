@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use keyform_edit::mesh::{triangulate, MeshGraph, Remap};
-use keyform_model::{ArtMesh, EDGE_AUTO_TRIANGULATION, EDGE_NORMAL};
+use keyform_model::{ArtMesh, EDGE_AUTO_TRIANGULATION};
 
 use crate::document::in_quad;
 
@@ -24,14 +24,71 @@ pub enum MeshTool {
     Brush,
 }
 
-/// Mirror Edit: vertex moves are mirrored across an axis (TODO(Q-0017):
-/// partner rule and default axis provisional)
-/// (canvas-and-tools.md §5).
+/// Mirror Edit axis: x = `axis` (vertical, mirroring left ↔ right) or
+/// y = `axis`. spec: canvas-and-tools.md §5.1 "Mirror Edit"
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mirror {
-    /// x of a vertical axis, or y of a horizontal one (canvas pixels).
     pub axis: f32,
     pub vertical: bool,
+}
+
+impl Mirror {
+    pub fn reflect(&self, p: [f32; 2]) -> [f32; 2] {
+        if self.vertical {
+            [2.0 * self.axis - p[0], p[1]]
+        } else {
+            [p[0], 2.0 * self.axis - p[1]]
+        }
+    }
+
+    /// Distance of `p` from the axis.
+    pub fn off_axis(&self, p: [f32; 2]) -> f32 {
+        (if self.vertical { p[0] } else { p[1] } - self.axis).abs()
+    }
+}
+
+/// Mesh-edit brush shapes. spec: canvas-and-tools.md §5.1 "Brush"
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrushShape {
+    Circle,
+    Square,
+    Line,
+}
+
+/// Mesh editor settings kept between mesh-edit sessions (the mirror axis
+/// is initialised to the canvas centre once).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshPrefs {
+    pub mirror_on: bool,
+    pub mirror: Mirror,
+    /// Brush diameter (canvas px), level and hardness (0…1), angle (°).
+    pub brush_size: f32,
+    pub brush_level: f32,
+    pub brush_hardness: f32,
+    pub brush_angle: f32,
+    pub brush_shape: BrushShape,
+    /// Auto connect options (defaults: protect on, reconstruction off).
+    pub protect_exterior: bool,
+    pub reconstruct: bool,
+}
+
+impl MeshPrefs {
+    pub fn new(canvas: [f32; 2]) -> Self {
+        Self {
+            mirror_on: false,
+            mirror: Mirror {
+                axis: canvas[0] / 2.0,
+                vertical: true,
+            },
+            brush_size: 120.0,
+            brush_level: 1.0,
+            brush_hardness: 0.3,
+            brush_angle: 0.0,
+            brush_shape: BrushShape::Circle,
+            protect_exterior: true,
+            reconstruct: false,
+        }
+    }
 }
 
 /// A point being dragged: start position and the factors applied to the
@@ -43,9 +100,8 @@ struct DragPoint {
     factor: [f32; 2],
 }
 
-/// Overlapping vertices closer than this (canvas px) are merged
-/// (TODO(Q-0017): threshold unspecified).
-pub const MERGE_DISTANCE: f32 = 0.5;
+pub const RESET_NEEDS_NO_GLUE: &str = "Unable to execute on an ArtMesh with glue set.";
+pub const OVERLAPPING_MERGED: &str = "Overlapping vertices are merged.";
 
 type Snapshot = (MeshGraph, Vec<usize>);
 
@@ -73,10 +129,11 @@ pub struct MeshEdit {
     redo: Vec<Snapshot>,
     /// Points being dragged, with their positions at the press.
     drag: Option<Vec<DragPoint>>,
-    pub mirror: Option<Mirror>,
-    /// Brush radius (canvas px) and hardness (0 = soft … 1 = hard).
-    pub brush_radius: f32,
-    pub brush_hardness: f32,
+    pub prefs: MeshPrefs,
+    /// The model image's rectangle on the canvas (Reset Mesh), and whether
+    /// the mesh has glue.
+    pub model_rect: Option<[[f32; 2]; 4]>,
+    pub glued: bool,
     /// State before a live preview (automatic generation popup).
     preview_base: Option<Snapshot>,
     /// Generator settings to store on the mesh when editing finishes.
@@ -84,7 +141,7 @@ pub struct MeshEdit {
 }
 
 impl MeshEdit {
-    pub fn start(i: usize, a: &ArtMesh) -> Result<Self, String> {
+    pub fn start(i: usize, a: &ArtMesh, prefs: MeshPrefs) -> Result<Self, String> {
         if a.mesh.observed {
             return Err(keyform_edit::mesh::MeshError::Observed.to_string());
         }
@@ -105,9 +162,9 @@ impl MeshEdit {
             undo: Vec::new(),
             redo: Vec::new(),
             drag: None,
-            mirror: None,
-            brush_radius: 60.0,
-            brush_hardness: 0.5,
+            prefs,
+            model_rect: None,
+            glued: false,
             preview_base: None,
             generator: None,
         };
@@ -185,6 +242,36 @@ impl MeshEdit {
         true
     }
 
+    /// The active mirror, if Mirror Edit is on.
+    pub fn mirror(&self) -> Option<Mirror> {
+        self.prefs.mirror_on.then_some(self.prefs.mirror)
+    }
+
+    /// Mirror partners of `points` (within `tolerance`, canvas units of one
+    /// screen pixel), not already in it.
+    fn partners(&self, points: &[usize], tolerance: f32) -> Vec<usize> {
+        let Some(m) = self.mirror() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for &k in points {
+            if let Some(j) = self.graph.mirror_partner(k, m.axis, m.vertical, tolerance) {
+                if !points.contains(&j) && !out.contains(&j) {
+                    out.push(j);
+                }
+            }
+        }
+        out
+    }
+
+    /// Adds the mirror partners of the selected points to the selection
+    /// (mirrored rectangle selection).
+    pub fn select_with_partners(&mut self, mut sel: Vec<usize>, tolerance: f32) {
+        let extra = self.partners(&sel, tolerance);
+        sel.extend(extra);
+        self.set_selected(sel);
+    }
+
     /// The point nearest `q` within `radius`.
     pub fn point_at(&self, q: [f32; 2], radius: f32) -> Option<usize> {
         let g = &self.graph;
@@ -196,19 +283,6 @@ impl MeshEdit {
     }
 
     /// The graph edge nearest `q` within `radius`.
-    pub fn edge_at(&self, q: [f32; 2], radius: f32) -> Option<usize> {
-        let g = &self.graph;
-        (0..g.mesh.edges.len())
-            .filter(|&e| g.mesh.edge_priority[e] != EDGE_AUTO_TRIANGULATION)
-            .map(|e| {
-                let [a, b] = g.mesh.edges[e].map(|v| g.point(v as usize));
-                (e, seg_dist(q, a, b))
-            })
-            .filter(|&(_, d)| d <= radius)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(e, _)| e)
-    }
-
     pub fn points_in(&self, quad: &[[f32; 2]; 4]) -> Vec<usize> {
         (0..self.graph.len())
             .filter(|&k| in_quad(quad, self.graph.point(k)))
@@ -218,18 +292,26 @@ impl MeshEdit {
     /// Add Point: a new vertex at `q`, splitting the edge under it. The new
     /// point becomes the selection. Returns it.
     pub fn add_point(&mut self, q: [f32; 2], radius: f32) -> usize {
-        let edge = self.edge_at(q, radius);
+        let mirror = self.mirror().filter(|m| m.off_axis(q) > radius);
         let mut new = 0;
         self.change(|g, sel| {
-            new = match edge {
-                Some(e) => {
-                    // On the edge itself, so the outline keeps its shape.
-                    let [a, b] = g.mesh.edges[e].map(|v| g.point(v as usize));
-                    g.split_edge(e, closest_on_segment(q, a, b))
+            let add = |g: &mut MeshGraph, q: [f32; 2]| {
+                let edge = edge_near(g, q, radius);
+                match edge {
+                    Some(e) => {
+                        // On the edge itself, so the outline keeps its shape.
+                        let [a, b] = g.mesh.edges[e].map(|v| g.point(v as usize));
+                        g.split_edge(e, closest_on_segment(q, a, b))
+                    }
+                    None => g.add_point(q),
                 }
-                None => g.add_point(q),
             };
+            new = add(g, q);
             *sel = vec![new];
+            // Mirror Edit adds the mirrored point too.
+            if let Some(m) = mirror {
+                sel.push(add(g, m.reflect(q)));
+            }
         });
         new
     }
@@ -238,15 +320,20 @@ impl MeshEdit {
     /// `radius`. Returns whether anything was deleted.
     pub fn erase(&mut self, q: [f32; 2], radius: f32, edges_only: bool) -> bool {
         let g = &self.graph;
+        // Mirror Edit erases at the reflected position too.
+        let mut at = vec![q];
+        if let Some(m) = self.mirror() {
+            at.push(m.reflect(q));
+        }
         let points: HashSet<usize> = if edges_only {
             HashSet::new()
         } else {
             (0..g.len())
-                .filter(|&k| dist(g.point(k), q) <= radius)
+                .filter(|&k| at.iter().any(|&c| dist(g.point(k), c) <= radius))
                 .collect()
         };
         let edges: HashSet<usize> = if points.is_empty() {
-            self.edge_at(q, radius).into_iter().collect()
+            at.iter().filter_map(|&c| edge_near(g, c, radius)).collect()
         } else {
             HashSet::new()
         };
@@ -264,9 +351,11 @@ impl MeshEdit {
         true
     }
 
-    /// Deletes the selected points (and their edges).
-    pub fn delete_selected(&mut self) {
-        let which: HashSet<usize> = self.selected.iter().copied().collect();
+    /// Deletes the selected points (and their edges), with their mirror
+    /// partners when Mirror Edit is on.
+    pub fn delete_selected(&mut self, tolerance: f32) {
+        let mut which: HashSet<usize> = self.selected.iter().copied().collect();
+        which.extend(self.partners(&self.selected, tolerance));
         if which.is_empty() {
             return;
         }
@@ -276,58 +365,114 @@ impl MeshEdit {
         });
     }
 
-    /// Connect: normal edges between successive selected points.
-    pub fn connect(&mut self) {
-        let sel = self.selected.clone();
-        self.change(|g, _| {
-            for w in sel.windows(2) {
-                g.add_edge(w[0] as u32, w[1] as u32, EDGE_NORMAL);
+    /// Auto connect (Ctrl+R, Connect, Auto connect) with the Protect Edge
+    /// exterior and Mesh reconstruction options. spec: §5.1
+    pub fn auto_connect(&mut self) -> Result<(), String> {
+        let (protect, reconstruct) = (self.prefs.protect_exterior, self.prefs.reconstruct);
+        let mut r = Ok(());
+        self.change(|g, sel| {
+            r = g.auto_connect(protect, reconstruct);
+            if r.is_ok() {
+                sel.clear();
             }
         });
+        r.map_err(str::to_owned)
+    }
+
+    /// Reset Mesh: the model image's rectangle. spec: §5.1
+    pub fn reset_mesh(&mut self) -> Result<(), String> {
+        if self.glued {
+            return Err(RESET_NEEDS_NO_GLUE.into());
+        }
+        let Some(rect) = self.model_rect else {
+            return Err("The ArtMesh has no model image.".into());
+        };
+        self.drag = None;
+        self.change(|g, sel| {
+            g.reset_to_rect(rect);
+            sel.clear();
+        });
+        Ok(())
+    }
+
+    /// The graph to commit when editing finishes with OK: exactly
+    /// coincident vertices merged. Returns it with the clean-up hint.
+    pub fn finished_graph(&self) -> (MeshGraph, Option<&'static str>) {
+        let mut g = self.graph.clone();
+        let n = g.remove_coincident();
+        (g, (n > 0).then_some(OVERLAPPING_MERGED))
     }
 
     /// Starts moving the selected points (one undo step until released).
+    /// `tolerance` is one screen pixel in canvas units (mirror partners).
     pub fn drag_begin(&mut self, tolerance: f32) {
         let points = self.selected.iter().map(|&k| (k, 1.0)).collect();
         self.drag_points(points, tolerance);
     }
 
-    /// Brush (TODO(Q-0017): falloff provisional): starts dragging the
-    /// points within the brush around `at`,
-    /// weighted by a falloff from 1 at the centre (flat out to `hardness`
-    /// of the radius) to 0 at the edge.
-    pub fn brush_begin(&mut self, at: [f32; 2], tolerance: f32) {
-        let (r, hard) = (
-            self.brush_radius.max(1.0),
-            self.brush_hardness.clamp(0.0, 0.99),
-        );
+    /// Brush weight of a point at canvas offset `v` from the brush centre
+    /// (`flip` when the view is mirrored). spec: §5.1 "Brush"
+    pub fn brush_weight(&self, v: [f32; 2], flip: bool) -> f32 {
+        let b = &self.prefs;
+        let (s, c) = (-b.brush_angle.to_radians()).sin_cos();
+        let (mut x, y) = (v[0] * c - v[1] * s, v[0] * s + v[1] * c);
+        if flip {
+            x = -x;
+        }
+        let d = match b.brush_shape {
+            BrushShape::Circle => x.hypot(y),
+            BrushShape::Square => x.abs().max(y.abs()),
+            BrushShape::Line => y.abs(),
+        };
+        let r = (b.brush_size / 2.0).max(1e-3);
+        if d > r {
+            return 0.0;
+        }
+        let t = d / r;
+        let hard = b.brush_hardness.clamp(0.0, 1.0);
+        let f = if hard >= 1.0 {
+            1.0
+        } else {
+            ((1.0 - t) / (1.0 - hard)).clamp(0.0, 1.0)
+        };
+        (b.brush_level * f).clamp(0.0, 1.0)
+    }
+
+    /// Brush: starts a stroke at `at`; weights are fixed at the press and
+    /// each vertex moves by its weight times the drag.
+    pub fn brush_begin(&mut self, at: [f32; 2], tolerance: f32, flip: bool) {
         let points = (0..self.graph.len())
             .filter_map(|k| {
                 let p = self.graph.point(k);
-                let d = (p[0] - at[0]).hypot(p[1] - at[1]) / r;
-                if d >= 1.0 {
-                    return None;
-                }
-                let t = ((d - hard) / (1.0 - hard)).clamp(0.0, 1.0);
-                // Smoothstep from 1 down to 0.
-                Some((k, 1.0 - t * t * (3.0 - 2.0 * t)))
+                let w = self.brush_weight([p[0] - at[0], p[1] - at[1]], flip);
+                (w > 0.0).then_some((k, w))
             })
             .collect();
         self.drag_points(points, tolerance);
     }
 
     fn drag_points(&mut self, points: Vec<(usize, f32)>, tolerance: f32) {
-        let mut drag: Vec<DragPoint> = points
-            .iter()
-            .map(|&(k, w)| DragPoint {
-                k,
-                start: self.graph.point(k),
-                factor: [w, w],
-            })
-            .collect();
-        // Mirror Edit: partners across the axis move mirrored.
-        if let Some(m) = self.mirror {
+        let mirror = self.mirror();
+        let mut drag: Vec<DragPoint> = Vec::new();
+        for &(k, w) in &points {
+            let mut start = self.graph.point(k);
+            let mut factor = [w, w];
+            // A vertex on the axis stays on it.
+            if let Some(m) = mirror.filter(|m| m.off_axis(start) <= tolerance) {
+                if m.vertical {
+                    (start[0], factor[0]) = (m.axis, 0.0);
+                } else {
+                    (start[1], factor[1]) = (m.axis, 0.0);
+                }
+            }
+            drag.push(DragPoint { k, start, factor });
+        }
+        // Mirror Edit: partners move to the reflected position.
+        if let Some(m) = mirror {
             for &(k, w) in &points {
+                if m.off_axis(self.graph.point(k)) <= tolerance {
+                    continue;
+                }
                 if let Some(j) = self.graph.mirror_partner(k, m.axis, m.vertical, tolerance) {
                     if drag.iter().all(|d| d.k != j) {
                         drag.push(DragPoint {
@@ -399,22 +544,21 @@ impl MeshEdit {
         Ok(())
     }
 
-    /// Merge Vertices: overlapping selected vertices (or all, with fewer
-    /// than two selected). Returns how many were merged away.
-    pub fn merge(&mut self) -> usize {
-        let sel: HashSet<usize> = self.selected.iter().copied().collect();
-        let mut n = 0;
+    /// Merge Vertices: the selected vertices become one at their centroid.
+    /// spec: §5.1 "Merge Vertices"
+    pub fn merge(&mut self) -> Result<(), String> {
+        if self.selected.len() < 2 {
+            return Err("Select the vertices to merge.".into());
+        }
+        let sel = self.selected.clone();
         self.change(|g, s| {
-            n = g.merge_overlapping((sel.len() >= 2).then_some(&sel), MERGE_DISTANCE);
-            if n > 0 {
-                s.clear();
-            }
+            *s = g.merge_vertices(&sel).into_iter().collect();
         });
-        n
+        Ok(())
     }
 
-    /// Mirror Edit axis positions (canvas-and-tools.md §5): the mesh's
-    /// centre ("Reset Axis Position") or the selected vertices' centre.
+    /// The centre of the mesh's or the selected vertices' bounding box
+    /// ("Center of Selected Vertices").
     pub fn centre(&self, selected_only: bool) -> Option<[f32; 2]> {
         let pts: Vec<[f32; 2]> = if selected_only {
             self.selected.iter().map(|&k| self.graph.point(k)).collect()
@@ -470,6 +614,19 @@ impl MeshEdit {
     }
 }
 
+/// The non-auto edge of `g` nearest `q` within `radius`.
+fn edge_near(g: &MeshGraph, q: [f32; 2], radius: f32) -> Option<usize> {
+    (0..g.mesh.edges.len())
+        .filter(|&e| g.mesh.edge_priority[e] != EDGE_AUTO_TRIANGULATION)
+        .map(|e| {
+            let [a, b] = g.mesh.edges[e].map(|v| g.point(v as usize));
+            (e, seg_dist(q, a, b))
+        })
+        .filter(|&(_, d)| d <= radius)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(e, _)| e)
+}
+
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
@@ -493,7 +650,7 @@ fn seg_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use keyform_model::{ArtMeshForm, EditableMesh, KeyformGrid, ObjectInfo};
+    use keyform_model::{ArtMeshForm, EditableMesh, KeyformGrid, ObjectInfo, EDGE_NORMAL};
 
     fn square() -> ArtMesh {
         let positions = vec![0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
@@ -530,7 +687,7 @@ mod tests {
 
     #[test]
     fn tools_and_local_undo() {
-        let mut s = MeshEdit::start(0, &square()).unwrap();
+        let mut s = MeshEdit::start(0, &square(), MeshPrefs::new([10.0, 10.0])).unwrap();
         assert!(!s.changed());
         assert_eq!(s.preview.len(), 6);
         // A point on the bottom edge splits it.
@@ -563,36 +720,81 @@ mod tests {
 
     #[test]
     fn mirror_and_brush() {
-        let mut s = MeshEdit::start(0, &square()).unwrap();
-        s.mirror = Some(Mirror {
-            axis: 5.0,
-            vertical: true,
-        });
+        let mut s = MeshEdit::start(0, &square(), MeshPrefs::new([10.0, 10.0])).unwrap();
+        // The axis starts at the canvas centre (x = 5).
+        s.prefs.mirror_on = true;
         s.set_selected(vec![0]);
         s.drag_begin(0.5);
         s.drag_update([1.0, 2.0]);
         s.drag_end();
         assert_eq!(s.graph.point(0), [1.0, 2.0]);
         assert_eq!(s.graph.point(1), [9.0, 2.0]);
-        s.mirror = None;
-        // A hard brush on a corner moves it fully, the far corner not at all.
-        s.brush_radius = 4.0;
-        s.brush_hardness = 0.9;
-        s.brush_begin([10.0, 10.0], 0.5);
+        // Mirrored add: a point and its reflection.
+        s.add_point([3.0, 6.0], 0.1);
+        assert_eq!(s.graph.len(), 6);
+        assert_eq!(s.graph.point(5), [7.0, 6.0]);
+        // A point on the axis stays on it.
+        let k = s.add_point([5.0, 8.0], 0.1);
+        assert_eq!(s.graph.len(), 7);
+        s.set_selected(vec![k]);
+        s.drag_begin(0.5);
+        s.drag_update([2.0, -1.0]);
+        s.drag_end();
+        assert_eq!(s.graph.point(k), [5.0, 7.0]);
+        s.prefs.mirror_on = false;
+        // Linear falloff: full inside the hardness radius, 0 at the edge.
+        s.prefs.brush_size = 8.0;
+        s.prefs.brush_hardness = 0.5;
+        assert_eq!(s.brush_weight([1.0, 0.0], false), 1.0);
+        assert!((s.brush_weight([3.0, 0.0], false) - 0.5).abs() < 1e-6);
+        assert_eq!(s.brush_weight([4.5, 0.0], false), 0.0);
+        // Square and line shapes, rotated by the angle.
+        s.prefs.brush_shape = BrushShape::Square;
+        assert_eq!(s.brush_weight([1.9, 1.9], false), 1.0);
+        s.prefs.brush_shape = BrushShape::Line;
+        assert_eq!(s.brush_weight([100.0, 1.0], false), 1.0);
+        s.prefs.brush_angle = 90.0;
+        assert_eq!(s.brush_weight([100.0, 1.0], false), 0.0);
+        // A hard circle brush on a corner moves it fully.
+        s.prefs.brush_shape = BrushShape::Circle;
+        s.prefs.brush_hardness = 1.0;
+        s.brush_begin([10.0, 10.0], 0.5, false);
         s.drag_update([1.0, 0.0]);
         s.drag_end();
         assert_eq!(s.graph.point(2), [11.0, 10.0]);
         assert_eq!(s.graph.point(3), [0.0, 10.0]);
-        assert_eq!(s.centre(false), Some([5.5, 6.0]));
+    }
+
+    #[test]
+    fn reset_merge_and_finish() {
+        let mut s = MeshEdit::start(0, &square(), MeshPrefs::new([10.0, 10.0])).unwrap();
+        assert!(s.reset_mesh().is_err(), "no model image");
+        s.model_rect = Some([[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]);
+        s.glued = true;
+        assert_eq!(s.reset_mesh(), Err(RESET_NEEDS_NO_GLUE.into()));
+        s.glued = false;
+        s.reset_mesh().unwrap();
+        assert_eq!(s.graph.point(2), [20.0, 20.0]);
+        assert_eq!(s.preview.len(), 6);
+        // Merge two corners at their centroid.
+        s.set_selected(vec![1, 2]);
+        s.merge().unwrap();
+        assert_eq!(s.graph.len(), 3);
+        assert_eq!(s.graph.point(1), [20.0, 10.0]);
+        assert_eq!(s.selected, vec![1]);
+        // Coincident vertices are merged on Finish.
+        s.add_point([0.0, 0.0], 0.0);
+        let (g, note) = s.finished_graph();
+        assert_eq!((g.len(), note), (3, Some(OVERLAPPING_MERGED)));
     }
 
     #[test]
     fn connect_and_delete() {
-        let mut s = MeshEdit::start(0, &square()).unwrap();
+        let mut s = MeshEdit::start(0, &square(), MeshPrefs::new([10.0, 10.0])).unwrap();
+        s.auto_connect().unwrap();
+        assert!(s.graph.mesh.edge_priority.iter().all(|&p| p == EDGE_NORMAL));
         s.set_selected(vec![1, 3]);
-        s.connect();
-        assert!(s.graph.edge_index(1, 3).is_some());
-        s.delete_selected();
+        s.delete_selected(0.5);
         assert_eq!(s.graph.len(), 2);
         assert!(s.selected.is_empty());
     }
