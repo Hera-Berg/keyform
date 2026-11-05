@@ -75,6 +75,153 @@ pub fn current_cell(m: &Model, o: ObjectRef, values: &[f32]) -> Result<usize, Fo
     }
 }
 
+/// The Inspector's keyform fields of an object (inspector-fields.md:
+/// `ACDrawableForm`, `CPartForm`, `ACDeformerForm`, `CRotationDeformerForm`).
+/// `draw_order` exists for art meshes and parts, `angle` for rotation
+/// deformers; glue has none of these.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormFields {
+    pub draw_order: Option<f32>,
+    pub opacity: f32,
+    pub multiply: keyform_model::Color,
+    pub screen: keyform_model::Color,
+    pub angle: Option<f32>,
+}
+
+/// The fields of keyform `cell` of `o`.
+pub fn form_fields(m: &Model, o: ObjectRef, cell: usize) -> Option<FormFields> {
+    Some(match o {
+        ObjectRef::ArtMesh(i) => {
+            let f = m.art_meshes.get(i)?.grid.keyforms.get(cell)?;
+            FormFields {
+                draw_order: Some(f.draw_order),
+                opacity: f.opacity,
+                multiply: f.multiply,
+                screen: f.screen,
+                angle: None,
+            }
+        }
+        ObjectRef::Part(i) => {
+            let f = m.parts.get(i)?.grid.keyforms.get(cell)?;
+            FormFields {
+                draw_order: Some(f.draw_order),
+                opacity: f.opacity,
+                multiply: f.multiply,
+                screen: f.screen,
+                angle: None,
+            }
+        }
+        ObjectRef::Deformer(i) => match &m.deformers.get(i)?.kind {
+            DeformerKind::Warp(w) => {
+                let f = w.grid.keyforms.get(cell)?;
+                FormFields {
+                    draw_order: None,
+                    opacity: f.opacity,
+                    multiply: f.multiply,
+                    screen: f.screen,
+                    angle: None,
+                }
+            }
+            DeformerKind::Rotation(r) => {
+                let f = r.grid.keyforms.get(cell)?;
+                FormFields {
+                    draw_order: None,
+                    opacity: f.opacity,
+                    multiply: f.multiply,
+                    screen: f.screen,
+                    angle: Some(f.angle),
+                }
+            }
+        },
+        ObjectRef::Glue(_) => return None,
+    })
+}
+
+/// Writes the fields into keyform `cell` of `o` (draw order rounded to an
+/// integer in 0…1000, opacity clamped to 0…1). Returns whether anything
+/// changed.
+pub fn set_form_fields(
+    m: &mut Model,
+    o: ObjectRef,
+    cell: usize,
+    v: &FormFields,
+) -> Result<bool, FormError> {
+    if form_fields(m, o, cell).ok_or(FormError::Missing)? == *v {
+        return Ok(false);
+    }
+    let order = v.draw_order.map(|d| d.round().clamp(0.0, 1000.0));
+    let opacity = v.opacity.clamp(0.0, 1.0);
+    macro_rules! common {
+        ($f:expr) => {{
+            $f.opacity = opacity;
+            $f.multiply = v.multiply;
+            $f.screen = v.screen;
+        }};
+    }
+    match o {
+        ObjectRef::ArtMesh(i) => {
+            let f = &mut Arc::make_mut(&mut m.art_meshes[i]).grid.keyforms[cell];
+            common!(f);
+            if let Some(d) = order {
+                f.draw_order = d;
+            }
+        }
+        ObjectRef::Part(i) => {
+            let f = &mut Arc::make_mut(&mut m.parts[i]).grid.keyforms[cell];
+            common!(f);
+            if let Some(d) = order {
+                f.draw_order = d;
+            }
+        }
+        ObjectRef::Deformer(i) => match &mut Arc::make_mut(&mut m.deformers[i]).kind {
+            DeformerKind::Warp(w) => common!(w.grid.keyforms[cell]),
+            DeformerKind::Rotation(r) => {
+                let f = &mut r.grid.keyforms[cell];
+                common!(f);
+                if let Some(a) = v.angle {
+                    f.angle = a;
+                }
+            }
+        },
+        ObjectRef::Glue(_) => return Err(FormError::Missing),
+    }
+    Ok(true)
+}
+
+/// "Bulk Set Draw Order": every keyform of `o` gets draw order `d` (blend
+/// shape targets are left alone). Returns whether anything changed.
+/// spec: 50-ui/palettes.md §4
+pub fn set_draw_order_all(m: &mut Model, o: ObjectRef, d: f32) -> bool {
+    let d = d.round().clamp(0.0, 1000.0);
+    match o {
+        ObjectRef::ArtMesh(i) => {
+            let Some(a) = m.art_meshes.get(i) else {
+                return false;
+            };
+            if a.grid.keyforms.iter().all(|f| f.draw_order == d) {
+                return false;
+            }
+            for f in &mut Arc::make_mut(&mut m.art_meshes[i]).grid.keyforms {
+                f.draw_order = d;
+            }
+            true
+        }
+        ObjectRef::Part(i) => {
+            let Some(p) = m.parts.get(i) else {
+                return false;
+            };
+            if p.grid.keyforms.iter().all(|f| f.draw_order == d) {
+                return false;
+            }
+            for f in &mut Arc::make_mut(&mut m.parts[i]).grid.keyforms {
+                f.draw_order = d;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// The deformer whose map places `o` on the canvas (`None` = canvas root).
 pub fn parent_deformer(m: &Model, o: ObjectRef) -> Option<usize> {
     match o {

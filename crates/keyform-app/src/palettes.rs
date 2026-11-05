@@ -19,6 +19,56 @@ fn eye(ui: &mut egui::Ui, visible: bool, editable: bool) -> bool {
     editable && r.interact(Sense::click()).clicked()
 }
 
+/// A Parts palette row being dragged.
+#[derive(Clone, Copy)]
+struct DragRow(Selection);
+
+/// A selectable row label that can be dragged (when `dnd`) and reports a
+/// row dropped on it.
+fn row_label(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: &str,
+    me: Selection,
+    dnd: bool,
+    into_part: bool,
+) -> (egui::Response, Option<(Selection, bool)>) {
+    let sense = if dnd {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let r = ui.add(egui::Button::selectable(selected, text).sense(sense));
+    if dnd && r.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), DragRow(me));
+    }
+    let mut dropped = None;
+    if dnd {
+        // On a part row, the top third means "before it", the rest "into".
+        let before = !into_part
+            || ui
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|q| q.y < r.rect.top() + r.rect.height() / 3.0);
+        if let Some(p) = r.dnd_hover_payload::<DragRow>() {
+            if p.0 != me {
+                let st = egui::Stroke::new(1.5, ui.visuals().selection.stroke.color);
+                if before {
+                    ui.painter().hline(r.rect.x_range(), r.rect.top(), st);
+                } else {
+                    ui.painter()
+                        .rect_stroke(r.rect, 2.0, st, egui::StrokeKind::Inside);
+                }
+            }
+        }
+        if let Some(p) = r.dnd_release_payload::<DragRow>() {
+            if p.0 != me {
+                dropped = Some((p.0, before));
+            }
+        }
+    }
+    (r, dropped)
+}
+
 /// The Lock column: locked objects can't be selected on the canvas.
 fn lock(ui: &mut egui::Ui, locked: bool, editable: bool) -> bool {
     let r = icons::icon(ui, if locked { Icon::Locked } else { Icon::Unlocked });
@@ -57,7 +107,9 @@ pub fn parts_ui(
     doc: &mut Document,
     show_deformers: &mut bool,
     filter: &mut String,
-) {
+    dnd_disabled: &mut bool,
+) -> bool {
+    let mut open_settings = false;
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(filter)
@@ -84,6 +136,11 @@ pub fn parts_ui(
                 }
                 ui.close();
             }
+            if ui.button("Part Settings…").clicked() {
+                open_settings = true;
+                ui.close();
+            }
+            ui.checkbox(dnd_disabled, "Disable drag & drop");
             let mut bulk = None;
             parts_menu(ui, &mut bulk);
             if let Some(b) = bulk {
@@ -96,7 +153,7 @@ pub fn parts_ui(
     ui.separator();
     let Some(root) = doc.model.root_part else {
         ui.label("(no part tree)");
-        return;
+        return open_settings;
     };
     let filter = filter.to_lowercase();
     egui::ScrollArea::both()
@@ -106,6 +163,7 @@ pub fn parts_ui(
             let mut toggled = Vec::new();
             let mut reverse_lookup = None;
             let (mut lock_toggled, mut move_here, mut bulk) = (Vec::new(), None, None);
+            let mut drop = None;
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -129,6 +187,9 @@ pub fn parts_ui(
                 lock_toggled: &mut lock_toggled,
                 move_here: &mut move_here,
                 bulk: &mut bulk,
+                dnd: doc.editable() && !*dnd_disabled && doc.palette_from_children,
+                drop: &mut drop,
+                open_settings: &mut open_settings,
             };
             part_children(ui, model, root, &mut t, 0);
             if let Some(a) = reverse_lookup {
@@ -172,7 +233,15 @@ pub fn parts_ui(
             if let Some(b) = bulk {
                 parts_bulk(doc, b);
             }
+            if let Some((o, part, before)) = drop {
+                if let Err(e) = doc.try_edit("Move", |m| {
+                    keyform_edit::objects::place_in_part(m, o, part, before)
+                }) {
+                    doc.notice = Some(e);
+                }
+            }
         });
+    open_settings && doc.editable()
 }
 
 /// Show/Hide all, Lock/Unlock all (parts and art meshes), Delete empty
@@ -293,6 +362,12 @@ struct TreeCtx<'a> {
     /// "Move Here": the selected objects into this part.
     move_here: &'a mut Option<usize>,
     bulk: &'a mut Option<PartsBulk>,
+    /// Drag & drop allowed (palette menu "Disable drag & drop" off).
+    dnd: bool,
+    /// A row dropped: (dragged, target part, before this child).
+    drop: &'a mut Option<(Selection, usize, Option<Selection>)>,
+    /// Parts Settings requested (double-click or menu).
+    open_settings: &'a mut bool,
 }
 
 fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
@@ -318,10 +393,21 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                         t.lock_toggled.push(Selection::Part(p));
                     }
                     icons::icon(ui, Icon::Part);
-                    let r = ui
-                        .selectable_label(*t.sel == Some(Selection::Part(p)), info.display_name());
+                    let me = Selection::Part(p);
+                    let (r, dropped) =
+                        row_label(ui, *t.sel == Some(me), info.display_name(), me, t.dnd, true);
                     if r.clicked() {
-                        *t.sel = Some(Selection::Part(p));
+                        *t.sel = Some(me);
+                    }
+                    if r.double_clicked() {
+                        *t.open_settings = true;
+                    }
+                    if let Some((o, before)) = dropped {
+                        *t.drop = Some(if before {
+                            (o, part, Some(me))
+                        } else {
+                            (o, p, None)
+                        });
                     }
                     r.context_menu(|ui| {
                         if ui
@@ -330,6 +416,10 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                             .clicked()
                         {
                             *t.move_here = Some(p);
+                            ui.close();
+                        }
+                        if ui.button("Part Settings…").clicked() {
+                            *t.open_settings = true;
                             ui.close();
                         }
                         ui.separator();
@@ -354,12 +444,21 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                         t.lock_toggled.push(Selection::ArtMesh(a));
                     }
                     icons::icon(ui, Icon::ArtMesh);
-                    let r = ui.selectable_label(
-                        *t.sel == Some(Selection::ArtMesh(a)),
+                    let me = Selection::ArtMesh(a);
+                    let (r, dropped) = row_label(
+                        ui,
+                        *t.sel == Some(me),
                         info.display_name(),
+                        me,
+                        t.dnd,
+                        false,
                     );
                     if r.clicked() {
-                        *t.sel = Some(Selection::ArtMesh(a));
+                        *t.sel = Some(me);
+                    }
+                    if let Some((o, _)) = dropped {
+                        // Before this mesh, in its part.
+                        *t.drop = Some((o, part, Some(me)));
                     }
                     r.context_menu(|ui| {
                         if ui
@@ -932,6 +1031,8 @@ fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Lo
 pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
     if let Some(s) = doc.primary() {
         common_fields(ui, doc, s, log);
+        crate::inspector::fields_ui(ui, doc);
+        ui.separator();
     }
     let m = &doc.model;
     let row = |ui: &mut egui::Ui, k: &str, v: String| {

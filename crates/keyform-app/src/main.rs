@@ -12,11 +12,13 @@ mod export_image;
 mod fonts;
 mod glue_tool;
 mod icons;
+mod inspector;
 mod log;
 mod mesh_edit;
 mod new_model_dialog;
 mod palettes;
 mod param_dialog;
+mod parts_settings;
 mod psd_dialog;
 mod texture_atlas;
 mod theme;
@@ -36,6 +38,7 @@ fn main() -> eframe::Result<()> {
     let mut auto_mesh = false;
     let mut atlas = false;
     let mut tab = None;
+    let mut parts_settings = false;
     let mut glue_tool = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -47,6 +50,7 @@ fn main() -> eframe::Result<()> {
             "--auto-mesh" => auto_mesh = true,
             "--atlas" => atlas = true,
             "--tab" => tab = args.next(),
+            "--parts-settings" => parts_settings = true,
             "--glue-tool" => {
                 use keyform_edit::glue_brush::GlueBrush;
                 glue_tool = match args.next().as_deref() {
@@ -112,6 +116,7 @@ fn main() -> eframe::Result<()> {
             a.initial_auto_mesh = auto_mesh;
             a.initial_atlas = atlas;
             a.initial_tab = tab;
+            a.palettes.open_parts_settings = parts_settings;
             a.initial_glue_tool = glue_tool;
             Ok(Box::new(a))
         }),

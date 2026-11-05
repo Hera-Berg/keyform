@@ -85,6 +85,9 @@ pub struct PaletteState {
     pub parts_filter: String,
     pub param_filter: String,
     pub show_deformers: bool,
+    pub parts_dnd_disabled: bool,
+    /// The Parts palette asked for the Parts Settings dialog.
+    pub open_parts_settings: bool,
 }
 
 /// Debug aid: save a screenshot after N frames and quit (`--screenshot`).
@@ -103,7 +106,7 @@ pub struct KeyformApp {
     dark: bool,
     rs: Option<egui_wgpu::RenderState>,
     status: CanvasStatus,
-    palettes: PaletteState,
+    pub palettes: PaletteState,
     recent: Vec<PathBuf>,
     screenshot: Option<ScreenshotRequest>,
     frames: u32,
@@ -143,6 +146,7 @@ pub struct KeyformApp {
     auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
     atlas: crate::texture_atlas::AtlasWindow,
     new_model: crate::new_model_dialog::NewModelDialog,
+    parts_settings: crate::parts_settings::PartsSettings,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
     param_dialog: crate::param_dialog::ParamDialog,
@@ -261,6 +265,7 @@ impl KeyformApp {
             auto_mesh: Default::default(),
             atlas: Default::default(),
             new_model: Default::default(),
+            parts_settings: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
             export_image: cc
@@ -1667,7 +1672,15 @@ impl TabViewer for Viewer<'_> {
             {
                 Some(d) => {
                     let p = &mut *self.palettes;
-                    palettes::parts_ui(ui, d, &mut p.show_deformers, &mut p.parts_filter);
+                    if palettes::parts_ui(
+                        ui,
+                        d,
+                        &mut p.show_deformers,
+                        &mut p.parts_filter,
+                        &mut p.parts_dnd_disabled,
+                    ) {
+                        p.open_parts_settings = true;
+                    }
                 }
                 None => {
                     ui.weak("No model");
@@ -1705,7 +1718,11 @@ impl TabViewer for Viewer<'_> {
                     .and_then(|i| self.slots.get_mut(i))
                     .map(|s| &mut s.doc);
                 match doc {
-                    Some(d) => palettes::inspector_ui(ui, d, self.log),
+                    Some(d) => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| palettes::inspector_ui(ui, d, self.log));
+                    }
                     None => {
                         ui.weak("No model");
                     }
@@ -1952,6 +1969,16 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::texture_atlas::dialog(&ctx, &mut self.atlas, doc, &mut self.log);
+        if std::mem::take(&mut self.palettes.open_parts_settings) {
+            if let Some(d) = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc) {
+                self.parts_settings.show(d);
+            }
+        }
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::parts_settings::dialog(&ctx, &mut self.parts_settings, doc, &mut self.log);
         if let Some(mut p) = self.pending_psd.take() {
             let mut docs: Vec<(u64, &mut Document)> =
                 self.slots.iter_mut().map(|s| (s.uid, &mut s.doc)).collect();

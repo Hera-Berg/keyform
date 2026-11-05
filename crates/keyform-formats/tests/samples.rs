@@ -1393,12 +1393,40 @@ fn parts_editing_saves() {
         assert_eq!(move_to_part(m, &[ObjectRef::ArtMesh(0)], b), Ok(1));
         assert_eq!(m.art_meshes[0].info.parent_part, Some(b));
         assert_eq!(move_to_part(m, &[ObjectRef::ArtMesh(0)], b), Ok(0));
+        // Drag & drop: reorder within a part, and before another part.
+        use keyform_edit::objects::place_in_part;
+        use keyform_model::PartChild;
+        let c = create_part(m, "C", Some(a));
+        assert_eq!(
+            place_in_part(m, ObjectRef::Part(c), a, Some(ObjectRef::Part(b))),
+            Ok(true)
+        );
+        assert_eq!(
+            m.parts[a].children[..2],
+            [PartChild::Part(c), PartChild::Part(b)]
+        );
+        if let Some(q) = m.root_part {
+            let first = m.parts[q].children[0];
+            let first = match first {
+                PartChild::Part(i) => Some(ObjectRef::Part(i)),
+                PartChild::ArtMesh(i) => Some(ObjectRef::ArtMesh(i)),
+                _ => None,
+            };
+            assert_eq!(place_in_part(m, ObjectRef::Part(c), q, first), Ok(true));
+            assert_eq!(m.parts[q].children[0], PartChild::Part(c));
+            assert_eq!(m.parts[c].info.parent_part, Some(q));
+        }
+        assert!(
+            place_in_part(m, ObjectRef::Part(a), c, None).is_ok(),
+            "C is no longer below A"
+        );
         let e = create_part(m, "Empty", None);
         create_part(m, "Empty child", Some(e));
         // The sample's own empty parts go too.
         assert!(delete_empty_parts(m) >= 2);
         assert!(!m.parts.iter().any(|p| p.info.name.starts_with("Empty")));
         assert!(m.parts.iter().any(|p| p.info.name == "B"));
+        let _ = (a, b);
         let edited = doc.model.clone();
         let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
         let back = Cmo3Document::read(&bytes).unwrap();
@@ -1446,5 +1474,68 @@ fn random_pose_follows_parameters() {
             );
         }
         eprintln!("{path:?}: random pose synced ({n} parameters)");
+    }
+}
+
+/// Inspector edits (palettes.md §4, inspector-fields.md): keyform draw
+/// order, transparency, colours, rotation angle, Bulk Set Draw Order,
+/// blend modes, part offscreen / draw-order group, rotation handle and
+/// circle; saved and reloaded on every sample.
+#[test]
+fn inspector_edits_save() {
+    use keyform_edit::forms::{form_fields, set_draw_order_all, set_form_fields};
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::{AlphaComposition, ColorComposition, DeformerKind};
+    use std::sync::Arc;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        if m.art_meshes.len() < 2 || m.parts.len() < 2 {
+            continue;
+        }
+        let mut f = form_fields(m, ObjectRef::ArtMesh(0), 0).unwrap();
+        f.draw_order = Some(321.4);
+        f.opacity = 0.75;
+        f.multiply = [0.5, 0.6, 0.7, 1.0];
+        f.screen = [0.1, 0.0, 0.2, 1.0];
+        assert!(set_form_fields(m, ObjectRef::ArtMesh(0), 0, &f).unwrap());
+        assert_eq!(m.art_meshes[0].grid.keyforms[0].draw_order, 321.0);
+        set_draw_order_all(m, ObjectRef::ArtMesh(1), 777.0);
+        assert!(m.art_meshes[1]
+            .grid
+            .keyforms
+            .iter()
+            .all(|k| k.draw_order == 777.0));
+        let p = (0..m.parts.len())
+            .find(|&p| Some(p) != m.root_part)
+            .unwrap();
+        let mut pf = form_fields(m, ObjectRef::Part(p), 0).unwrap();
+        pf.opacity = 0.5;
+        set_form_fields(m, ObjectRef::Part(p), 0, &pf).unwrap();
+        {
+            let a = Arc::make_mut(&mut m.art_meshes[0]);
+            a.color_composition = ColorComposition::MultiplyR2;
+            a.alpha_composition = AlphaComposition::Atop;
+            let x = Arc::make_mut(&mut m.parts[p]);
+            x.offscreen = !x.offscreen;
+            x.draw_order_group = !x.draw_order_group;
+        }
+        if let Some(d) = (0..m.deformers.len())
+            .find(|&d| matches!(m.deformers[d].kind, DeformerKind::Rotation(_)))
+        {
+            let mut rf = form_fields(m, ObjectRef::Deformer(d), 0).unwrap();
+            rf.angle = Some(12.5);
+            set_form_fields(m, ObjectRef::Deformer(d), 0, &rf).unwrap();
+            if let DeformerKind::Rotation(r) = &mut Arc::make_mut(&mut m.deformers[d]).kind {
+                r.handle_length = 123.0;
+                r.circle_radius = 45.0;
+            }
+        }
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{path:?}");
     }
 }

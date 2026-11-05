@@ -751,33 +751,89 @@ pub fn move_to_part(
     }
     let mut moved = 0;
     for &o in objects {
-        let child = as_child(o);
-        let info_parent = match o {
+        let parent = match o {
             ObjectRef::Part(i) => m.parts.get(i).map(|x| x.info.parent_part),
             ObjectRef::Deformer(i) => m.deformers.get(i).map(|x| x.info.parent_part),
             ObjectRef::ArtMesh(i) => m.art_meshes.get(i).map(|x| x.info.parent_part),
             ObjectRef::Glue(i) => m.glues.get(i).map(|x| x.info.parent_part),
         };
-        let Some(old) = info_parent else { continue };
-        if old == Some(part) {
-            continue;
+        // Objects already in the part stay where they are.
+        if parent.is_some_and(|p| p != Some(part)) && place(m, o, part, None)? {
+            moved += 1;
         }
-        for x in &mut m.parts {
-            if x.children.contains(&child) {
-                Arc::make_mut(x).children.retain(|c| *c != child);
+    }
+    Ok(moved)
+}
+
+/// Parts palette drag & drop: puts `o` into part `part`, before its child
+/// `before` (at the end when `None` or not found). Moving within the same
+/// part reorders. Returns whether anything changed.
+/// spec: 50-ui/palettes.md §1
+pub fn place_in_part(
+    m: &mut Model,
+    o: ObjectRef,
+    part: PartIndex,
+    before: Option<ObjectRef>,
+) -> Result<bool, String> {
+    if part >= m.parts.len() {
+        return Err("no such part".into());
+    }
+    if let ObjectRef::Part(q) = o {
+        if Some(q) == m.root_part {
+            return Err("The root part cannot be moved.".into());
+        }
+        let mut cur = Some(part);
+        let mut guard = 0;
+        while let Some(c) = cur {
+            if c == q {
+                return Err(PART_INTO_ITSELF.into());
+            }
+            cur = m.parts.get(c).and_then(|x| x.info.parent_part);
+            guard += 1;
+            if guard > m.parts.len() {
+                break;
             }
         }
-        add_to_part(m, part, child, None);
-        let p = Some(part);
+    }
+    place(m, o, part, before)
+}
+
+/// Moves `o` into `part` before `before` (or to the end). No cycle check.
+fn place(
+    m: &mut Model,
+    o: ObjectRef,
+    part: PartIndex,
+    before: Option<ObjectRef>,
+) -> Result<bool, String> {
+    let child = as_child(o);
+    if before == Some(o) {
+        return Ok(false);
+    }
+    let old_children = m.parts[part].children.clone();
+    let old_parent = match o {
+        ObjectRef::Part(i) => m.parts.get(i).map(|x| x.info.parent_part),
+        ObjectRef::Deformer(i) => m.deformers.get(i).map(|x| x.info.parent_part),
+        ObjectRef::ArtMesh(i) => m.art_meshes.get(i).map(|x| x.info.parent_part),
+        ObjectRef::Glue(i) => m.glues.get(i).map(|x| x.info.parent_part),
+    }
+    .ok_or("no such object")?;
+    for x in &mut m.parts {
+        if x.children.contains(&child) {
+            Arc::make_mut(x).children.retain(|c| *c != child);
+        }
+    }
+    add_to_part(m, part, child, before.map(as_child));
+    let p = Some(part);
+    if old_parent != p {
         match o {
             ObjectRef::Part(i) => Arc::make_mut(&mut m.parts[i]).info.parent_part = p,
             ObjectRef::Deformer(i) => Arc::make_mut(&mut m.deformers[i]).info.parent_part = p,
             ObjectRef::ArtMesh(i) => Arc::make_mut(&mut m.art_meshes[i]).info.parent_part = p,
             ObjectRef::Glue(i) => Arc::make_mut(&mut m.glues[i]).info.parent_part = p,
         }
-        moved += 1;
+        return Ok(true);
     }
-    Ok(moved)
+    Ok(m.parts[part].children != old_children)
 }
 
 /// Delete empty parts: removes every part (other than the root) that has
