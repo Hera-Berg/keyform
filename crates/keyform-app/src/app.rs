@@ -27,10 +27,11 @@ pub enum Tab {
     Log,
     Project,
     ModelSettings,
+    ToolDetails,
 }
 
 impl Tab {
-    const PALETTES: [(Tab, &'static str); 7] = [
+    const PALETTES: [(Tab, &'static str); 8] = [
         (Tab::Parts, "Parts"),
         (Tab::Deformer, "Deformer"),
         (Tab::Parameter, "Parameter"),
@@ -38,6 +39,7 @@ impl Tab {
         (Tab::Log, "Log"),
         (Tab::Project, "Project"),
         (Tab::ModelSettings, "Model Settings"),
+        (Tab::ToolDetails, "Tool Details"),
     ];
 
     fn name(self) -> &'static str {
@@ -49,8 +51,8 @@ impl Tab {
 }
 
 /// Default layout (main-window.md §4, Modeling, with the viewer's Model
-/// Settings palette in the Tool Details slot):
-/// `H[ V[{Parts|Project},{Deformer|Log}], V[{Model Settings},{Inspector},{Parameter}], VIEW ]`
+/// Settings palette beside Tool Details):
+/// `H[ V[{Parts|Project},{Deformer|Log}], V[{Tool Details|Model Settings},{Inspector},{Parameter}], VIEW ]`
 pub fn default_layout(views: Vec<Tab>) -> DockState<Tab> {
     let contents = if views.is_empty() {
         vec![Tab::Welcome]
@@ -59,7 +61,11 @@ pub fn default_layout(views: Vec<Tab>) -> DockState<Tab> {
     };
     let mut dock = DockState::new(contents);
     let s = dock.main_surface_mut();
-    let [_view, mid] = s.split_left(NodeIndex::root(), 0.56, vec![Tab::ModelSettings]);
+    let [_view, mid] = s.split_left(
+        NodeIndex::root(),
+        0.56,
+        vec![Tab::ToolDetails, Tab::ModelSettings],
+    );
     let [mid, left] = s.split_left(mid, 0.5, vec![Tab::Parts, Tab::Project]);
     let [_settings, below] = s.split_below(mid, 0.28, vec![Tab::Inspector]);
     let [_inspector, _params] = s.split_below(below, 0.3, vec![Tab::Parameter]);
@@ -172,6 +178,26 @@ const RECENT_KEY: &str = "keyform.recent_files";
 const PLAYBACK_KEY: &str = "keyform.playback";
 /// Dock layout of the last session (main-window.md §4: layouts persist).
 const LAYOUT_KEY: &str = "keyform.dock_layout";
+/// Version of the stored layout; palettes added since are put in once.
+const LAYOUT_VERSION_KEY: &str = "keyform.dock_layout_version";
+const LAYOUT_VERSION: u32 = 2;
+
+/// Puts palettes newer than layout version `v` into a stored layout: Tool
+/// Details (version 2) beside Model Settings.
+fn upgrade_layout(mut dock: DockState<Tab>, v: u32) -> DockState<Tab> {
+    if v < 2 && dock.find_tab(&Tab::ToolDetails).is_none() {
+        let at = dock
+            .find_tab(&Tab::ModelSettings)
+            .or_else(|| dock.find_tab(&Tab::Inspector));
+        match at {
+            Some(p) => {
+                dock[p.surface][p.node].insert_tab(egui_dock::TabIndex(0), Tab::ToolDetails);
+            }
+            None => dock.push_to_focused_leaf(Tab::ToolDetails),
+        }
+    }
+    dock
+}
 
 /// The layout as stored: document views become the contents placeholder.
 fn storable_layout(dock: &DockState<Tab>) -> DockState<Tab> {
@@ -210,10 +236,15 @@ impl KeyformApp {
             .and_then(|s| s.get_string(RECENT_KEY))
             .map(|s| s.lines().map(PathBuf::from).collect())
             .unwrap_or_default();
+        let layout_version = cc
+            .storage
+            .and_then(|s| eframe::get_value::<u32>(s, LAYOUT_VERSION_KEY))
+            .unwrap_or(1);
         let dock = cc
             .storage
             .and_then(|s| eframe::get_value::<DockState<Tab>>(s, LAYOUT_KEY))
             .filter(usable_layout)
+            .map(|d| upgrade_layout(d, layout_version))
             .unwrap_or_else(|| default_layout(Vec::new()));
         let playback = cc
             .storage
@@ -1109,64 +1140,8 @@ impl KeyformApp {
                 }
                 ui.separator();
             }
-            if let Some(s) = self
-                .active
-                .and_then(|i| self.slots.get_mut(i))
-                .and_then(|s| s.doc.mesh_edit.as_mut())
-            {
-                use crate::mesh_edit::MeshTool;
-                ui.weak("Mesh:");
-                for (t, name, tip) in [
-                    (MeshTool::Select, "Select", "Select and move vertices"),
-                    (
-                        MeshTool::AddPoint,
-                        "Add Point",
-                        "Add a vertex; on an edge it splits the edge",
-                    ),
-                    (
-                        MeshTool::Erase,
-                        "Eraser",
-                        "Delete vertices and edges (Alt: edges only)",
-                    ),
-                    (
-                        MeshTool::Brush,
-                        "Brush",
-                        "Drag the vertices under a soft brush",
-                    ),
-                ] {
-                    if ui
-                        .add(egui::Button::selectable(s.tool == t, name))
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        s.tool = t;
-                    }
-                }
-                if s.tool == MeshTool::Brush {
-                    brush_controls(ui, &mut s.prefs);
-                }
-                if ui
-                    .button("Connect")
-                    .on_hover_text("Automatically join vertices (Ctrl+R)")
-                    .clicked()
-                {
-                    if let Err(e) = s.auto_connect() {
-                        self.log.warn(e);
-                    }
-                }
-                ui.checkbox(&mut s.prefs.protect_exterior, "Protect Edge exterior");
-                ui.checkbox(&mut s.prefs.reconstruct, "Mesh reconstruction");
-                ui.checkbox(&mut s.prefs.mirror_on, "Mirror")
-                    .on_hover_text("Mirror Edit: edits are mirrored across the axis");
-                if s.prefs.mirror_on {
-                    ui.weak("Mirror Editing in Progress");
-                }
-                if s.unresolved > 0 {
-                    ui.colored_label(
-                        self.tokens.warning,
-                        format!("{} crossing edges", s.unresolved),
-                    );
-                }
+            if self.active_doc().is_some_and(|d| d.mesh_edit.is_some()) {
+                ui.weak("Mesh edit");
                 if ui
                     .button("Finish")
                     .on_hover_text("Finish Mesh editing (Ctrl+E)")
@@ -1175,15 +1150,6 @@ impl KeyformApp {
                     self.toggle_mesh_edit();
                 }
                 ui.separator();
-            }
-            if let Some(d) = self
-                .active
-                .and_then(|i| self.slots.get_mut(i))
-                .map(|s| &mut s.doc)
-            {
-                if d.mesh_edit.is_none() {
-                    glue_controls(ui, d, &mut self.log);
-                }
             }
             if let Some(i) = self.active {
                 if ui.button("Reset parameters").clicked() {
@@ -1764,6 +1730,14 @@ impl TabViewer for Viewer<'_> {
                     None => {}
                 }
             }
+            Tab::ToolDetails => {
+                let tokens = *self.tokens;
+                let doc = self
+                    .active
+                    .and_then(|i| self.slots.get_mut(i))
+                    .map(|s| &mut s.doc);
+                tool_details_ui(ui, doc, self.log, &tokens);
+            }
             Tab::ModelSettings => {
                 let doc = self
                     .active
@@ -2036,6 +2010,7 @@ impl eframe::App for KeyformApp {
             .collect();
         storage.set_string(RECENT_KEY, recent.join("\n"));
         eframe::set_value(storage, LAYOUT_KEY, &storable_layout(&self.dock));
+        eframe::set_value(storage, LAYOUT_VERSION_KEY, &LAYOUT_VERSION);
         eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
         eframe::set_value(storage, EXPORT_IMAGE_KEY, &self.export_image);
@@ -2071,6 +2046,91 @@ fn mirror_controls(ui: &mut egui::Ui, s: &mut crate::mesh_edit::MeshEdit, canvas
             m.axis = c[k];
         }
     }
+}
+
+/// Tool Details palette: the options of the current tool (mesh edit,
+/// glue brushes, Arrow / Lasso). spec: 50-ui/palettes.md §5
+fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log, tokens: &Tokens) {
+    let Some(doc) = doc else {
+        ui.weak("No model");
+        return;
+    };
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if let Some(s) = doc.mesh_edit.as_mut() {
+                use crate::mesh_edit::MeshTool;
+                ui.strong("Mesh edit");
+                ui.horizontal_wrapped(|ui| {
+                    for (t, name, tip) in [
+                        (
+                            MeshTool::Select,
+                            "Select",
+                            "Select and move vertices (L: lasso)",
+                        ),
+                        (
+                            MeshTool::AddPoint,
+                            "Add Point",
+                            "Add a vertex; on an edge it splits the edge",
+                        ),
+                        (
+                            MeshTool::Erase,
+                            "Eraser",
+                            "Delete vertices and edges (Alt: edges only)",
+                        ),
+                        (
+                            MeshTool::Brush,
+                            "Brush",
+                            "Drag the vertices under a soft brush",
+                        ),
+                    ] {
+                        if ui
+                            .add(egui::Button::selectable(s.tool == t, name))
+                            .on_hover_text(tip)
+                            .clicked()
+                        {
+                            s.tool = t;
+                        }
+                    }
+                });
+                if s.tool == MeshTool::Brush {
+                    ui.horizontal_wrapped(|ui| brush_controls(ui, &mut s.prefs));
+                }
+                if ui
+                    .button("Connect")
+                    .on_hover_text("Automatically join vertices (Ctrl+R)")
+                    .clicked()
+                {
+                    if let Err(e) = s.auto_connect() {
+                        log.warn(e);
+                    }
+                }
+                ui.checkbox(&mut s.prefs.protect_exterior, "Protect Edge exterior");
+                ui.checkbox(&mut s.prefs.reconstruct, "Mesh reconstruction");
+                ui.checkbox(&mut s.prefs.mirror_on, "Mirror")
+                    .on_hover_text("Mirror Edit: edits are mirrored across the axis");
+                if s.prefs.mirror_on {
+                    ui.weak("Mirror Editing in Progress");
+                }
+                if s.unresolved > 0 {
+                    ui.colored_label(tokens.warning, format!("{} crossing edges", s.unresolved));
+                }
+                return;
+            }
+            if doc.glue_tool.is_some() {
+                glue_controls(ui, doc, log);
+                return;
+            }
+            if doc.lasso {
+                ui.strong("Lasso Tool");
+                ui.label(
+                    "Drag on empty space to lasso points of the selected objects (Shift adds).",
+                );
+            } else {
+                ui.strong("Arrow tool");
+                ui.label("Click to select (Shift toggles); drag on empty space for a rectangle.");
+            }
+        });
 }
 
 /// Mesh-edit brush settings. spec: 50-ui/canvas-and-tools.md §5.1 "Brush"
@@ -2148,15 +2208,17 @@ fn glue_controls(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
         }
     }
     let p = &mut doc.glue_prefs;
-    brush_fields(
-        ui,
-        "glue-brush-shape",
-        &mut p.size,
-        &mut p.level,
-        &mut p.hardness,
-        &mut p.angle,
-        &mut p.shape,
-    );
+    ui.horizontal_wrapped(|ui| {
+        brush_fields(
+            ui,
+            "glue-brush-shape",
+            &mut p.size,
+            &mut p.level,
+            &mut p.hardness,
+            &mut p.angle,
+            &mut p.shape,
+        )
+    });
     ui.add(
         egui::DragValue::new(&mut p.display_opacity)
             .range(0.0..=1.0)
@@ -2179,7 +2241,6 @@ fn glue_controls(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
             log.warn(e);
         }
     }
-    ui.separator();
 }
 
 #[cfg(test)]
