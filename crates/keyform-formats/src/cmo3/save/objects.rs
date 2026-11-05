@@ -314,6 +314,103 @@ fn color_attrs(c: &[f32; 4]) -> Vec<(&'static str, String)> {
 }
 
 /// The first shared element with this tag, as a template.
+/// Deformer prototypes, in the layout of the newest sample projects.
+const WARP_PROTOTYPE: &str = r##"<CWarpDeformerSource xs.id="#PROTO">
+<ACDeformerSource xs.n="super">
+<ACParameterControllableSource xs.n="super">
+<s xs.n="localName">Deformer</s>
+<b xs.n="isVisible">true</b>
+<b xs.n="isLocked">false</b>
+<null xs.n="parentGuid" />
+<KeyformGridSource xs.n="keyformGridSource" />
+<KeyFormMorphTargetSet xs.n="keyformMorphTargetSet">
+<carray_list xs.n="_morphTargets" count="0" />
+<MorphTargetBlendWeightConstraintSet xs.n="blendWeightConstraintSet">
+<carray_list xs.n="_constraints" count="0" />
+</MorphTargetBlendWeightConstraintSet>
+</KeyFormMorphTargetSet>
+<carray_list xs.n="_extensions" count="0" />
+<null xs.n="internalColor_direct_argb" />
+<CLabelColor xs.n="labelColor" customizedColorInt="-1">
+<CLabelColorType xs.n="labelType" v="UNDEFINED" />
+</CLabelColor>
+</ACParameterControllableSource>
+<CDeformerId xs.n="id" idstr="Deformer" />
+<null xs.n="guid" />
+<null xs.n="targetDeformerGuid" />
+</ACDeformerSource>
+<i xs.n="col">5</i>
+<i xs.n="row">5</i>
+<b xs.n="isQuadTransform">false</b>
+<carray_list xs.n="keyforms" count="1">
+<CWarpDeformerForm>
+<ACDeformerForm xs.n="super">
+<ACForm xs.n="super">
+<null xs.n="guid" />
+<b xs.n="isAnimatedForm">false</b>
+<b xs.n="isLocalAnimatedForm">false</b>
+<CWarpDeformerSource xs.n="_source" xs.ref="#PROTO" />
+<null xs.n="name" />
+<s xs.n="notes" />
+</ACForm>
+<f xs.n="opacity">1.0</f>
+<CFloatColor xs.n="multiplyColor" red="1.0" green="1.0" blue="1.0" alpha="1.0" />
+<CFloatColor xs.n="screenColor" red="0.0" green="0.0" blue="0.0" alpha="1.0" />
+<null xs.n="coordType" />
+</ACDeformerForm>
+<float-array xs.n="positions" count="0" />
+</CWarpDeformerForm>
+</carray_list>
+</CWarpDeformerSource>"##;
+
+const ROTATION_PROTOTYPE: &str = r##"<CRotationDeformerSource xs.id="#PROTO">
+<ACDeformerSource xs.n="super">
+<ACParameterControllableSource xs.n="super">
+<s xs.n="localName">Deformer</s>
+<b xs.n="isVisible">true</b>
+<b xs.n="isLocked">false</b>
+<null xs.n="parentGuid" />
+<KeyformGridSource xs.n="keyformGridSource" />
+<KeyFormMorphTargetSet xs.n="keyformMorphTargetSet">
+<carray_list xs.n="_morphTargets" count="0" />
+<MorphTargetBlendWeightConstraintSet xs.n="blendWeightConstraintSet">
+<carray_list xs.n="_constraints" count="0" />
+</MorphTargetBlendWeightConstraintSet>
+</KeyFormMorphTargetSet>
+<carray_list xs.n="_extensions" count="0" />
+<null xs.n="internalColor_direct_argb" />
+<CLabelColor xs.n="labelColor" customizedColorInt="-1">
+<CLabelColorType xs.n="labelType" v="UNDEFINED" />
+</CLabelColor>
+</ACParameterControllableSource>
+<CDeformerId xs.n="id" idstr="Deformer" />
+<null xs.n="guid" />
+<null xs.n="targetDeformerGuid" />
+</ACDeformerSource>
+<b xs.n="useBoneUi_testImpl">true</b>
+<carray_list xs.n="keyforms" count="1">
+<CRotationDeformerForm angle="0.0" originX="0.0" originY="0.0" scale="1.0" isReflectX="false" isReflectY="false">
+<ACDeformerForm xs.n="super">
+<ACForm xs.n="super">
+<null xs.n="guid" />
+<b xs.n="isAnimatedForm">false</b>
+<b xs.n="isLocalAnimatedForm">false</b>
+<CRotationDeformerSource xs.n="_source" xs.ref="#PROTO" />
+<null xs.n="name" />
+<s xs.n="notes" />
+</ACForm>
+<f xs.n="opacity">1.0</f>
+<CFloatColor xs.n="multiplyColor" red="1.0" green="1.0" blue="1.0" alpha="1.0" />
+<CFloatColor xs.n="screenColor" red="0.0" green="0.0" blue="0.0" alpha="1.0" />
+<null xs.n="coordType" />
+</ACDeformerForm>
+</CRotationDeformerForm>
+</carray_list>
+<f xs.n="handleLengthOnCanvas">50.0</f>
+<f xs.n="circleRadiusOnCanvas">100.0</f>
+<f xs.n="baseAngle">0.0</f>
+</CRotationDeformerSource>"##;
+
 /// A built-in element for a kind the document has no example of (a new
 /// model), in the layout the reference editor writes for new objects
 /// (observed in a new model it saved). Every reference in it is replaced
@@ -380,6 +477,8 @@ fn prototype(tag: &str) -> Option<Element> {
 <AlphaComposition xs.n="alphaComposition" v="OVER" />
 </CArtMeshSource>"##
         }
+        "CWarpDeformerSource" => WARP_PROTOTYPE,
+        "CRotationDeformerSource" => ROTATION_PROTOTYPE,
         _ => return None,
     };
     crate::xml::XmlDocument::parse(xml.as_bytes())

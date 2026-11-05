@@ -226,11 +226,29 @@ impl Cmo3Document {
         for name in super::schema_imports::imports_used(&xml.root) {
             ensure_import(&mut xml, name);
         }
-        if new_images {
-            for v in textures::TEXTURE_VERSIONS {
+        // Version markers of custom-encoded types that are new to the
+        // document (a type it already had keeps its marker, or none).
+        let had: std::collections::HashSet<&str> = {
+            let mut set = std::collections::HashSet::new();
+            let mut stack = vec![&self.xml.root];
+            while let Some(e) = stack.pop() {
+                set.insert(e.name.as_str());
+                stack.extend(e.children.iter());
+            }
+            set
+        };
+        for v in super::schema_imports::versions_used(&xml.root) {
+            let ty = v.split(':').next().unwrap_or(v);
+            let marked = xml
+                .pis
+                .iter()
+                .any(|p| p.target == "version" && p.data.split(':').next() == Some(ty));
+            let short = ty.rsplit('.').next().unwrap_or(ty);
+            if !marked && !had.contains(short) {
                 ensure_pi(&mut xml, "version", v);
             }
         }
+        let _ = new_images;
         let mut archive = self.archive.clone();
         textures::add_entries(&mut archive, &mut ctx.tex);
         if new

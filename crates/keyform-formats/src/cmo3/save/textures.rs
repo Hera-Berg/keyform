@@ -86,12 +86,6 @@ pub(super) const TEXTURE_IMPORTS: &[&str] = &[
     "com.live2d.graphics.psd.blend.ACBlend",
 ];
 
-/// Version markers the new elements need (cmo3-schema.md).
-pub(super) const TEXTURE_VERSIONS: &[&str] = &[
-    "CModelImage:3",
-    "com.live2d.cubism.doc.model.texture.textureAtlas.ModelImageEntry:2",
-];
-
 fn el(tag: &str, name: &str) -> Element {
     Element::new(tag).with_attr("xs.n", name)
 }

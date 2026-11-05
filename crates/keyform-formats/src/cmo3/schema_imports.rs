@@ -386,3 +386,67 @@ pub(crate) fn imports_used(root: &crate::xml::Element) -> std::collections::BTre
     }
     out
 }
+
+/// Element tag → `<?version …?>` marker of custom-encoded types, from
+/// cmo3-schema.md (generated; sorted by tag).
+pub(crate) const VERSIONS: &[(&str, &str)] = &[
+    ("ACDeformerOriginalShape", "ACDeformerOriginalShape:1"),
+    ("BrushExportData", "BrushExportData:1"),
+    ("CArtMeshSource", "CArtMeshSource:5"),
+    ("CArtPathBrush", "CArtPathBrush:1"),
+    ("CArtPathBrush_TextureInput", "CArtPathBrush_TextureInput:1"),
+    (
+        "CArtPathDefaultBrushSetting",
+        "CArtPathDefaultBrushSetting:1",
+    ),
+    ("CArtPathForm", "CArtPathForm:1"),
+    ("CArtPathPoint", "CArtPathPoint:1"),
+    (
+        "CArtPathPointToArtMeshExtension",
+        "CArtPathPointToArtMeshExtension_version:1",
+    ),
+    (
+        "CArtPathPointToArtMeshExtension_BindingData",
+        "CArtPathPointToArtMeshExtension_BindingData_version:1",
+    ),
+    ("CArtPathSource", "CArtPathSource:1"),
+    ("CFloatColor", "CFloatColor:1"),
+    ("CGuide_Modeling", "CGuide_Modeling:1"),
+    ("CLabelColor", "CLabelColor:0"),
+    ("CModelImage", "CModelImage:3"),
+    ("CModelSource", "CModelSource:15"),
+    ("CParameterGroup", "CParameterGroup:4"),
+    ("CPartForm", "CPartForm:2"),
+    ("CPartSource", "CPartSource:2"),
+    ("CRotationDeformerForm", "CRotationDeformerForm:1"),
+    ("CSplineCurvePoint", "CSplineCurvePoint:1"),
+    ("FixWidthData", "FixWidthData:1"),
+    ("KeyFormMorphTarget", "KeyFormMorphTarget:2"),
+    ("KeyformGridSource", "KeyformGridSource:1"),
+    (
+        "ModelImageEntry",
+        "com.live2d.cubism.doc.model.texture.textureAtlas.ModelImageEntry:2",
+    ),
+    (
+        "RotationDeformerOriginalShape",
+        "RotationDeformerOriginalShape:1",
+    ),
+    ("SpriteData", "SpriteData:1"),
+    ("TextureUvData", "TextureUvData:1"),
+    ("WarpDeformerOriginalShape", "WarpDeformerOriginalShape:1"),
+];
+
+/// Every version marker the elements under `root` need.
+pub(crate) fn versions_used(
+    root: &crate::xml::Element,
+) -> std::collections::BTreeSet<&'static str> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(e) = stack.pop() {
+        if let Ok(i) = VERSIONS.binary_search_by(|(t, _)| (*t).cmp(e.name.as_str())) {
+            out.insert(VERSIONS[i].1);
+        }
+        stack.extend(e.children.iter());
+    }
+    out
+}

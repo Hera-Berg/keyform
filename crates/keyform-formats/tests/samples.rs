@@ -1095,3 +1095,42 @@ fn psd_import_saves() {
     let mut again = back;
     assert_eq!(again.save_bytes().unwrap(), bytes);
 }
+
+/// A new model from a PSD can take new deformers (built-in prototypes for
+/// the first deformer of a project) and saves and reloads.
+#[test]
+fn new_model_with_deformers() {
+    use keyform_edit::objects::{create_rotation_deformer, create_warp_deformer, NewDeformer};
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::new_model_from_psd;
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let (mut doc, _) = new_model_from_psd("t.psd", &psd, &Default::default()).unwrap();
+    let defaults: Vec<f32> = doc.model.parameters.iter().map(|p| p.default).collect();
+    let m = &mut doc.model;
+    let kids = [ObjectRef::ArtMesh(0)];
+    let part = m.art_meshes[0].info.parent_part;
+    let nd = |name: &str, parent| NewDeformer {
+        name: name.into(),
+        part,
+        parent,
+        children: &kids,
+        values: &defaults,
+    };
+    let r = create_rotation_deformer(m, &nd("R", None)).unwrap();
+    create_warp_deformer(m, &nd("W", Some(r)), 4, 4, (2, 2)).unwrap();
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    assert_eq!(back.model.deformers.len(), 2);
+}

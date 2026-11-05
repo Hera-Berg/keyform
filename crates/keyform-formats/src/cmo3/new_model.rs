@@ -15,20 +15,6 @@ use super::Cmo3Document;
 /// `<root fileFormatVersion>` for 5.3.04 compatibility (cmo3.md §1).
 const FILE_FORMAT_VERSION: &str = "503040001";
 
-/// Version markers of the types the skeleton (and new objects) use.
-const VERSIONS: &[&str] = &[
-    "CArtMeshSource:5",
-    "KeyformGridSource:1",
-    "CParameterGroup:4",
-    "SerializeFormatVersion:2",
-    "CModelSource:15",
-    "CFloatColor:1",
-    "CPartForm:2",
-    "CPartSource:2",
-    "CLabelColor:0",
-    "CModelImage:3",
-];
-
 fn xml_text(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -257,11 +243,11 @@ impl Cmo3Document {
             icon16 = icons[2],
         );
         let mut doc = XmlDocument::parse(xml.as_bytes())?;
-        doc.pis = VERSIONS
-            .iter()
+        doc.pis = std::iter::once("SerializeFormatVersion:2")
+            .chain(super::schema_imports::versions_used(&doc.root))
             .map(|v| Pi {
                 target: "version".into(),
-                data: (*v).into(),
+                data: v.into(),
             })
             .chain(
                 super::schema_imports::imports_used(&doc.root)
