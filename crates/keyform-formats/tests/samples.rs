@@ -874,3 +874,224 @@ fn cmo3_save_after_mesh_and_glue_edits() {
         assert!(back.model.same_data(&original), "{path:?}: after undo");
     }
 }
+
+/// PSD reader on the sample PSDs: layer tree and pixels (psd-import.md §3).
+/// Writes a reduced composite of the visible layers for inspection when
+/// `KEYFORM_PSD_PREVIEW` names a folder.
+#[test]
+fn psd_samples() {
+    use keyform_formats::psd::{Psd, PsdNode};
+    for path in sample_files("psd") {
+        let data = std::fs::read(&path).unwrap();
+        let psd = Psd::parse(&data).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        fn count(n: &[PsdNode], depth: usize, groups: &mut usize, out: &mut Vec<String>) {
+            for x in n {
+                match x {
+                    PsdNode::Layer(l) => out.push(format!(
+                        "{}{} {:?} {}x{}{}",
+                        "  ".repeat(depth),
+                        l.name,
+                        std::str::from_utf8(&l.blend).unwrap_or("?"),
+                        l.bounds.width,
+                        l.bounds.height,
+                        if l.visible { "" } else { " (hidden)" }
+                    )),
+                    PsdNode::Group(g) => {
+                        *groups += 1;
+                        out.push(format!(
+                            "{}[{}]{}",
+                            "  ".repeat(depth),
+                            g.name,
+                            if g.visible { "" } else { " (hidden)" }
+                        ));
+                        count(&g.children, depth + 1, groups, out);
+                    }
+                }
+            }
+        }
+        let (mut groups, mut lines) = (0, Vec::new());
+        count(&psd.nodes, 0, &mut groups, &mut lines);
+        let layers = psd.layers();
+        eprintln!(
+            "{path:?}: {}x{}, {} layers, {groups} groups; first lines:\n{}",
+            psd.width,
+            psd.height,
+            layers.len(),
+            lines
+                .iter()
+                .take(25)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(!layers.is_empty());
+        // Decode every layer (one at a time) and composite the visible ones
+        // at 1/8 scale, ignoring group visibility for simplicity.
+        let k = 8u32;
+        let (w, h) = (psd.width / k, psd.height / k);
+        let mut comp = vec![255.0f32; (w * h * 3) as usize];
+        fn visible_layers<'a>(
+            n: &'a [PsdNode],
+            vis: bool,
+            out: &mut Vec<(&'a keyform_formats::psd::PsdLayer, bool)>,
+        ) {
+            for x in n {
+                match x {
+                    PsdNode::Layer(l) => out.push((l, vis && l.visible)),
+                    PsdNode::Group(g) => visible_layers(&g.children, vis && g.visible, out),
+                }
+            }
+        }
+        let mut order = Vec::new();
+        visible_layers(&psd.nodes, true, &mut order);
+        // Bottom first.
+        for (l, vis) in order.into_iter().rev() {
+            let img = psd
+                .pixels(l)
+                .unwrap_or_else(|e| panic!("{path:?} {}: {e}", l.name));
+            assert_eq!(
+                img.data.len(),
+                (l.bounds.width * l.bounds.height * 4) as usize
+            );
+            if !vis {
+                continue;
+            }
+            let op = f32::from(l.opacity) / 255.0;
+            for y in 0..h {
+                for x in 0..w {
+                    let (sx, sy) = (
+                        (x * k) as i64 - i64::from(l.bounds.left),
+                        (y * k) as i64 - i64::from(l.bounds.top),
+                    );
+                    if sx < 0
+                        || sy < 0
+                        || sx >= i64::from(l.bounds.width)
+                        || sy >= i64::from(l.bounds.height)
+                    {
+                        continue;
+                    }
+                    let j = 4 * (sy as usize * l.bounds.width as usize + sx as usize);
+                    let a = f32::from(img.data[j + 3]) / 255.0 * op;
+                    let o = 3 * (y * w + x) as usize;
+                    for c in 0..3 {
+                        comp[o + c] = comp[o + c] * (1.0 - a) + f32::from(img.data[j + c]) * a;
+                    }
+                }
+            }
+        }
+        if let Some(dir) = std::env::var_os("KEYFORM_PSD_PREVIEW") {
+            let mut out = keyform_formats::image::RgbaImage::new(w, h);
+            for (p, c) in out.data.chunks_exact_mut(4).zip(comp.chunks_exact(3)) {
+                p.copy_from_slice(&[c[0] as u8, c[1] as u8, c[2] as u8, 255]);
+            }
+            let name = path.file_stem().unwrap().to_string_lossy().to_string();
+            std::fs::write(
+                Path::new(&dir).join(format!("{name}.png")),
+                out.encode_png().unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// Texture manager data: layered images, model image groups and sources,
+/// atlas entries (psd-import.md §8, texture-atlas.md §1).
+#[test]
+fn texture_manager_loads() {
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &doc.model;
+        let sourced = m.model_images.iter().filter(|i| i.source.is_some()).count();
+        let grouped = m.model_images.iter().filter(|i| i.group.is_some()).count();
+        let entries: usize = m.textures.iter().map(|t| t.entries.len()).sum();
+        eprintln!(
+            "{path:?}: {} layered images {:?}, {} groups, {} model images ({grouped} grouped, {sourced} with a PSD layer), {entries} atlas entries",
+            m.layered_images.len(),
+            m.layered_images.iter().map(|l| (&l.name, l.width, l.height, l.replaced)).collect::<Vec<_>>(),
+            m.model_image_groups.len(),
+            m.model_images.len(),
+        );
+        assert_eq!(grouped, m.model_images.len());
+        // Every model image's source names a known layered image.
+        for mi in &m.model_images {
+            if let Some((psd, _)) = &mi.source {
+                assert!(m.layered_images.iter().any(|l| &l.guid == psd), "{path:?}");
+            }
+        }
+        // Atlas entries map the model image to where its mesh UVs point:
+        // the canvas → atlas transform of an art mesh's vertices gives
+        // its UVs (texture-atlas.md §4).
+        let mut checked = 0;
+        for a in m.art_meshes.iter().take(20) {
+            let (Some(t), Some(mi)) = (a.texture, a.model_image) else {
+                continue;
+            };
+            let tex = &m.textures[t];
+            let Some(e) = tex.entries.iter().find(|e| e.model_image == mi) else {
+                continue;
+            };
+            let c = e.atlas_to_canvas;
+            let det = c[0] * c[4] - c[1] * c[3];
+            let (x, y) = (a.positions[0] - c[2], a.positions[1] - c[5]);
+            let px = (c[4] * x - c[1] * y) / det;
+            let py = (-c[3] * x + c[0] * y) / det;
+            let (u, v) = (px / tex.width as f32, py / tex.height as f32);
+            assert!(
+                (u - a.uvs[0]).abs() < 2e-3 && (v - a.uvs[1]).abs() < 2e-3,
+                "{path:?} {}: uv {u},{v} vs {:?}",
+                a.info.id,
+                &a.uvs[..2]
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "{path:?}");
+    }
+}
+
+/// PSD import into a project (psd-import.md §6.1): layered image, model
+/// images, art meshes, parts and an atlas page are saved and reload as the
+/// edited model; a second save with nothing changed is byte-stable.
+#[test]
+fn psd_import_saves() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{add_psd_layers, ImportOptions};
+    // The smaller PSD keeps the test quick.
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let Some(cmo3) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.to_string_lossy().contains("taka"))
+    else {
+        return;
+    };
+    let mut doc = Cmo3Document::read(&std::fs::read(&cmo3).unwrap()).unwrap();
+    let n = doc.model.art_meshes.len();
+    let r = add_psd_layers(
+        &mut doc.model,
+        "import.psd",
+        &psd,
+        &ImportOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(r.art_meshes.len(), psd.layers().len());
+    assert_eq!(doc.model.art_meshes.len(), n + r.art_meshes.len());
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    // The new art meshes use the new atlas and read their model image.
+    let a = &back.model.art_meshes[n];
+    assert_eq!(a.texture, r.atlas);
+    assert!(a.model_image.is_some());
+    let mut again = back;
+    assert_eq!(again.save_bytes().unwrap(), bytes);
+}

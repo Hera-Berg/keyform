@@ -20,6 +20,9 @@ const USAGE: &str = "usage:
   kf automesh <in.cmo3> <out.cmo3> [--preset NAME] [--preview DIR] MESH_ID ...
                                    automatic mesh generation (auto-mesh.md); the preview
                                    draws each new mesh over its model image
+  kf psd <in.cmo3> <file.psd> <out.cmo3|out.png> [--register] [--legacy]
+                                   PSD import (psd-import.md §6); a .png output renders
+                                   the result instead of saving
   kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
                                    render a .cmo3/.moc3 at parameter values
   kf gpudiff <model> <diff.png> [render options]
@@ -55,6 +58,9 @@ fn main() -> ExitCode {
         ["automesh", input, output, rest @ ..] => {
             automesh::run(Path::new(input), Path::new(output), rest)
         }
+        ["psd", input, psd, out, rest @ ..] => {
+            psd::run(Path::new(input), Path::new(psd), Path::new(out), rest)
+        }
         ["render", model, out, rest @ ..] => {
             render::render_cmd(Path::new(model), Path::new(out), rest)
         }
@@ -86,6 +92,7 @@ fn main() -> ExitCode {
 mod automesh;
 mod compare;
 mod edit;
+mod psd;
 mod render;
 
 type R = Result<(), Box<dyn std::error::Error>>;
@@ -109,6 +116,7 @@ fn load_any(path: &Path) -> Result<Model, Box<dyn std::error::Error>> {
                 height: h,
                 png: Some(png),
                 locked: true,
+                entries: Vec::new(),
             }));
         }
         return Ok(m);

@@ -465,6 +465,7 @@ fn new_object(
     // The new object's own GUID object, and its first form GUID.
     let gtag = match id_tag {
         "CPartId" => "CPartGuid",
+        "CDrawableId" => "CDrawableGuid",
         _ => "CDeformerGuid",
     };
     let gid = guid_id(root, ctx, &info.guid, gtag, &info.id)?;
@@ -787,6 +788,310 @@ pub(super) const GLUE_IMPORTS: [&str; 8] = [
     "com.live2d.type.CAffecterGuid",
     "com.live2d.type.CDrawableGuid",
 ];
+
+/// Creates the element of a new art mesh (cloned from an existing one for
+/// the document's layout, then rewritten): mesh, UVs, keyform, texture
+/// (a new atlas page of this save), editable mesh, texture input and mesh
+/// generator extensions, icons. spec: psd-import.md §5.3,
+/// texture-atlas.md §4, cmo3.md §4
+pub(super) fn create_art_mesh(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    archive: &crate::caff::CaffArchive,
+    new: &Model,
+    a: &keyform_model::ArtMesh,
+) -> Result<ElementPath> {
+    use super::textures::{affine_el, icon};
+    let Some(t) = a.texture else {
+        return unsupported(format!("art mesh {}: no texture", a.info.id));
+    };
+    let Some((_, gtex)) = ctx.tex.atlases.get(&t).cloned() else {
+        return unsupported(format!("art mesh {}: a texture made earlier", a.info.id));
+    };
+    let Some(mi) = a.model_image.and_then(|k| new.model_images.get(k)) else {
+        return unsupported(format!("art mesh {}: no model image", a.info.id));
+    };
+    let Some(entry) = new.textures[t]
+        .entries
+        .iter()
+        .find(|e| Some(e.model_image) == a.model_image)
+    else {
+        return unsupported(format!(
+            "art mesh {}: its image is not on its atlas",
+            a.info.id
+        ));
+    };
+    let fg = a.grid.guids.first().cloned().unwrap_or_default();
+    let f0 = a.grid.keyforms.first().cloned().unwrap_or_default();
+    let img = mi
+        .png
+        .as_deref()
+        .map(crate::image::RgbaImage::decode_png)
+        .transpose()?
+        .unwrap_or_else(|| crate::image::RgbaImage::new(1, 1));
+    let icon32 = icon(archive, &mut ctx.tex, "icon32", &img, 32)?;
+    let icon16 = icon(archive, &mut ctx.tex, "icon16", &img, 16)?;
+    let path = new_object(
+        root,
+        ctx,
+        new,
+        "CArtMeshSource",
+        "drawableSourceSet",
+        &a.info,
+        "CDrawableId",
+        &|_root, _ctx, e| {
+            super::set_array(e, "positions", "float-array", &a.positions);
+            super::set_array(e, "uvs", "float-array", &a.uvs);
+            super::set_array_text(
+                e,
+                "indices",
+                "int-array",
+                a.indices.len(),
+                a.indices
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            clear_list(e, "clipGuidList");
+            set_scalar(e, "invertClippingMask", "b", a.invert_clip.to_string());
+            set_scalar(e, "culling", "b", a.culling.to_string());
+            set_scalar(e, "userData", "s", xml_text(&a.user_data));
+            super::set_field_attrs(
+                e,
+                "colorComposition",
+                "ColorComposition",
+                &[("v", a.color_composition.name().into())],
+            );
+            if holder_depth(e, "alphaComposition").is_some() {
+                super::set_field_attrs(
+                    e,
+                    "alphaComposition",
+                    "AlphaComposition",
+                    &[("v", a.alpha_composition.name().into())],
+                );
+            }
+            super::set_field_attrs(
+                e,
+                "textureState",
+                "TextureState",
+                &[("v", "TEXTURE_ATLAS".into())],
+            );
+            for (name, ic) in [("icon32", &icon32), ("icon16", &icon16)] {
+                if let Some(d) = holder_depth(e, name) {
+                    let h = super::level_mut(e, d);
+                    if let Some(c) = h.children.iter_mut().find(|c| c.field_name() == Some(name)) {
+                        *c = (*ic).clone();
+                    }
+                }
+            }
+            if let Some(f) = first_form_mut(e) {
+                super::set_array(f, "positions", "float-array", &f0.positions);
+                set_scalar(
+                    f,
+                    "drawOrder",
+                    "i",
+                    (f0.draw_order.round() as i32).to_string(),
+                );
+                set_scalar(f, "opacity", "f", format_f32(f0.opacity));
+                let col = |c: &keyform_model::Color| {
+                    ["red", "green", "blue", "alpha"]
+                        .iter()
+                        .zip(c)
+                        .map(|(k, v)| (*k, format_f32(*v)))
+                        .collect::<Vec<_>>()
+                };
+                super::set_field_attrs(f, "multiplyColor", "CFloatColor", &col(&f0.multiply));
+                super::set_field_attrs(f, "screenColor", "CFloatColor", &col(&f0.screen));
+            }
+            Ok(())
+        },
+        &fg,
+    )?;
+    let me = element_at(root, Some(&path))?
+        .attr("xs.id")
+        .map(str::to_owned)
+        .unwrap_or_default();
+    // The texture.
+    {
+        let e = element_at(root, Some(&path))?;
+        if let Some(d) = holder_depth(e, "texture") {
+            let h = super::level_mut(e, d);
+            if let Some(c) = h
+                .children
+                .iter_mut()
+                .find(|c| c.field_name() == Some("texture"))
+            {
+                *c = stub("GTexture2D", Some("texture"), &gtex);
+            }
+        }
+    }
+    write_target(root, ctx, &path, new, a.target)?;
+    // Clip sources.
+    let mut clips = Vec::new();
+    for &k in &a.clip {
+        if let Some(c) = new.art_meshes.get(k) {
+            let id = guid_id(
+                root,
+                ctx,
+                &c.info.guid,
+                "CDrawableGuid",
+                c.info.display_name(),
+            )?;
+            clips.push(stub("CDrawableGuid", None, &id));
+        }
+    }
+    if !clips.is_empty() {
+        let cl = field_path(root, &path, "clipGuidList")?;
+        let l = element_at(root, Some(&cl))?;
+        l.children = clips;
+        set_count(l);
+    }
+    // Extensions.
+    let basic = coord_id(root, ctx, "Basic Coord")?;
+    let ext_guid = || {
+        Element::new("CExtensionGuid")
+            .with_attr("xs.n", "guid")
+            .with_attr("uuid", keyform_model::new_guid())
+            .with_attr("note", "(no debug info)")
+    };
+    let sup = |guid: Element| {
+        let mut e = Element::new("ACExtension").with_attr("xs.n", "super");
+        e.children = vec![guid, stub("CArtMeshSource", Some("_owner"), &me)];
+        e
+    };
+    let m = &a.mesh;
+    let join = |v: Vec<String>| v.join(" ");
+    let arr = |tag: &str, name: &str, n: usize, text: String| {
+        let mut e = Element::new(tag)
+            .with_attr("xs.n", name)
+            .with_attr("count", n.to_string());
+        e.text = text;
+        e
+    };
+    let mut prio = m.point_priority.clone();
+    prio.resize(a.vertex_count(), keyform_model::POINT_NORMAL);
+    let mut gem = Element::new("GEditableMesh2")
+        .with_attr("xs.n", "editableMesh")
+        .with_attr("nextPointUid", m.next_point_uid.to_string())
+        .with_attr("useDelaunayTriangulation", m.delaunay.to_string());
+    gem.children = vec![
+        arr(
+            "float-array",
+            "point",
+            a.positions.len(),
+            join(a.positions.iter().map(|v| format_f32(*v)).collect()),
+        ),
+        arr(
+            "byte-array",
+            "pointPriority",
+            prio.len(),
+            join(prio.iter().map(|v| v.to_string()).collect()),
+        ),
+        arr(
+            "short-array",
+            "edge",
+            2 * m.edges.len(),
+            join(
+                m.edges
+                    .iter()
+                    .flatten()
+                    .map(|&v| (v as u16 as i16).to_string())
+                    .collect(),
+            ),
+        ),
+        arr(
+            "byte-array",
+            "edgePriority",
+            m.edge_priority.len(),
+            join(m.edge_priority.iter().map(|v| v.to_string()).collect()),
+        ),
+        arr(
+            "int-array",
+            "pointUid",
+            a.point_uids.len(),
+            join(a.point_uids.iter().map(|v| v.to_string()).collect()),
+        ),
+        Element::new("GEditableMeshGuid")
+            .with_attr("xs.n", "meshGuid")
+            .with_attr("uuid", keyform_model::new_guid())
+            .with_attr("note", "(no debug info)"),
+        stub("CoordType", Some("coordType"), &basic),
+    ];
+    let mut editable = Element::new("CEditableMeshExtension");
+    editable.children = vec![sup(ext_guid()), gem, scalar("b", "isLocked", "false")];
+    // Texture inputs: the model image, and the atlas region (current).
+    let ext = add_shared(root, ctx, Element::new("CTextureInputExtension"))?;
+    let input_super = |ext: &str| {
+        let mut e = Element::new("ACTextureInput").with_attr("xs.n", "super");
+        e.children = vec![
+            affine_el("optionalTransformOnCanvas", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            stub("CTextureInputExtension", Some("_owner"), ext),
+        ];
+        e
+    };
+    let mg = guid_id(root, ctx, &mi.guid, "CModelImageGuid", "(no debug info)")?;
+    let tg = guid_id(
+        root,
+        ctx,
+        &new.textures[t].guid,
+        "CTextureAtlasGuid",
+        "(no debug info)",
+    )?;
+    let mut region = Element::new("CTextureInput_TextureAtlasRegion");
+    region.children = vec![
+        input_super(&ext),
+        stub("CTextureAtlasGuid", Some("textureAtlasGuid"), &tg),
+        affine_el("inputImageLocalToCanvasTransform", entry.atlas_to_canvas),
+    ];
+    let region = add_shared(root, ctx, region)?;
+    let mut mi_input = Element::new("CTextureInput_ModelImage");
+    mi_input.children = vec![
+        input_super(&ext),
+        stub("CModelImageGuid", Some("_modelImageGuid"), &mg),
+    ];
+    let mut inputs = Element::new("carray_list").with_attr("xs.n", "_textureInputs");
+    inputs.children = vec![
+        mi_input,
+        stub("CTextureInput_TextureAtlasRegion", None, &region),
+    ];
+    set_count(&mut inputs);
+    find_shared(root, &ext)?.children = vec![
+        sup(ext_guid()),
+        inputs,
+        stub(
+            "CTextureInput_TextureAtlasRegion",
+            Some("currentTextureInputData"),
+            &region,
+        ),
+    ];
+    let g = &a.generator;
+    let mut setting = Element::new("MeshGenerateSetting").with_attr("xs.n", "meshGenerateSetting");
+    setting.children = [
+        ("polygonOuterDensity", g.outer_density),
+        ("polygonInnerDensity", g.inner_density),
+        ("polygonMargin", g.margin),
+        ("polygonInnerMargin", g.inner_margin),
+        ("polygonMinMargin", g.min_margin),
+        ("polygonMinBoundsPt", g.min_bounds_pt),
+        ("thresholdAlpha", g.threshold_alpha),
+    ]
+    .iter()
+    .map(|(n, v)| scalar("i", n, v.to_string()))
+    .collect();
+    let mut generator = Element::new("CMeshGeneratorExtension");
+    generator.children = vec![sup(ext_guid()), setting];
+    let ep = field_path(root, &path, "_extensions")?;
+    let l = element_at(root, Some(&ep))?;
+    l.children = vec![
+        editable,
+        stub("CTextureInputExtension", None, &ext),
+        generator,
+    ];
+    set_count(l);
+    finish_grid(root, ctx, &path, &a.info.id, &a.grid, &a.blend_shapes)?;
+    Ok(path)
+}
 
 /// Vertex UIDs of glue `g`'s pairs in `m`, interleaved (uidA, uidB).
 pub(super) fn glue_uids(m: &Model, g: &keyform_model::Glue) -> Option<Vec<i64>> {

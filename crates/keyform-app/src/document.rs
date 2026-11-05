@@ -337,6 +337,7 @@ fn load_runtime_textures(m: &mut Model, dir: &Path, files: &[String], log: &mut 
                     height: h,
                     png: Some(png),
                     locked: true,
+                    entries: Vec::new(),
                 }));
             }
             Err(e) => log.warn(format!("texture {t}: {e}")),

@@ -44,6 +44,8 @@ pub(super) struct Ctx<'a> {
     pub orphans: Vec<String>,
     /// Whether any element was added or removed (sources must be reloaded).
     pub structural: bool,
+    /// New texture-manager elements and archive entries of this save.
+    pub(crate) tex: super::textures::TexState,
 }
 
 impl Ctx<'_> {
@@ -103,6 +105,7 @@ impl<'a> Ctx<'a> {
             next_id: id,
             next_idx: idx,
             deleted: Vec::new(),
+            tex: Default::default(),
             orphans: Vec::new(),
             structural: false,
         }

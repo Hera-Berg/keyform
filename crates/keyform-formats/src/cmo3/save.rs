@@ -21,6 +21,7 @@ mod grid;
 mod mesh;
 mod objects;
 mod params;
+mod textures;
 
 use grid::Ctx;
 
@@ -72,6 +73,9 @@ impl Cmo3Document {
         ctx.next_idx = ctx.next_idx.max(self.retired.next_idx);
         let ctx = &mut ctx;
         params::sync_parameters(&mut root, ctx, s, old, new)?;
+        // New layered images, model images and atlas pages (art meshes
+        // created below refer to them).
+        textures::sync_textures(&mut root, ctx, &self.archive, old, new)?;
         params::sync_physics(&mut root, ctx, old, new)?;
         // Parts and deformers are matched by GUID: new ones first (others
         // may refer to them), then edits, then deletions.
@@ -136,7 +140,9 @@ impl Cmo3Document {
         let new_meshes = objects::index_by_guid(&new.art_meshes, |a| &a.info.guid);
         for n in &new.art_meshes {
             let Some(&i) = old_meshes.get(&n.info.guid) else {
-                return unsupported(format!("creating art mesh {}", n.info.id));
+                objects::create_art_mesh(&mut root, ctx, &self.archive, new, n)?;
+                ctx.structural = true;
+                continue;
             };
             let o = &old.art_meshes[i];
             if !Arc::ptr_eq(o, n) && **o != **n {
@@ -196,6 +202,17 @@ impl Cmo3Document {
         for name in grid::GRID_IMPORTS {
             ensure_import(&mut xml, name);
         }
+        let new_images = !ctx.tex.imports.is_empty();
+        for name in std::mem::take(&mut ctx.tex.imports) {
+            ensure_import(&mut xml, name);
+        }
+        if new_images {
+            for v in textures::TEXTURE_VERSIONS {
+                ensure_pi(&mut xml, "version", v);
+            }
+        }
+        let mut archive = self.archive.clone();
+        textures::add_entries(&mut archive, &mut ctx.tex);
         if new
             .glues
             .iter()
@@ -211,7 +228,7 @@ impl Cmo3Document {
         }
         // The rewritten document must load back as exactly the edited model.
         let mut warnings = Vec::new();
-        let (loaded, sources) = super::load_model(&self.archive, &xml, &mut warnings)?;
+        let (loaded, sources) = super::load_model(&archive, &xml, &mut warnings)?;
         if !loaded.same_data(&self.model) {
             return invalid(format!(
                 "the rewritten document does not reload as the edited model ({})",
@@ -219,6 +236,7 @@ impl Cmo3Document {
             ));
         }
         self.xml = xml;
+        self.archive = archive;
         self.sources = sources;
         self.saved = self.model.clone();
         let r = &mut self.retired;
@@ -345,10 +363,50 @@ fn first_difference(a: &Model, b: &Model) -> String {
             })
         })
         .or_else(|| diff("glue", &a.glues, &b.glues, |p| p.info.id.clone()))
+        .or_else(|| diff("texture", &a.textures, &b.textures, |p| p.name.clone()))
+        .or_else(|| {
+            diff("model image", &a.model_images, &b.model_images, |p| {
+                p.name.clone()
+            })
+        })
+        .or_else(|| {
+            diff(
+                "model image group",
+                &a.model_image_groups,
+                &b.model_image_groups,
+                |p| p.name.clone(),
+            )
+        })
+        .or_else(|| {
+            diff("layered image", &a.layered_images, &b.layered_images, |p| {
+                p.name.clone()
+            })
+        })
         .unwrap_or_else(|| "model-level data".into())
 }
 
 /// Adds `<?import name?>` unless present, keeping the imports sorted.
+/// Adds a `<?target data?>` processing instruction if missing (after the
+/// last one of the same target).
+fn ensure_pi(xml: &mut crate::xml::XmlDocument, target: &str, data: &str) {
+    use crate::xml::Pi;
+    if xml.pis.iter().any(|p| p.target == target && p.data == data) {
+        return;
+    }
+    let at = xml
+        .pis
+        .iter()
+        .rposition(|p| p.target == target)
+        .map_or(xml.pis.len(), |i| i + 1);
+    xml.pis.insert(
+        at,
+        Pi {
+            target: target.into(),
+            data: data.into(),
+        },
+    );
+}
+
 fn ensure_import(xml: &mut crate::xml::XmlDocument, name: &str) {
     use crate::xml::Pi;
     if xml
@@ -409,12 +467,6 @@ fn unsupported<T>(what: impl Into<String>) -> Result<T> {
 
 /// Model-wide data other than the object lists must be unchanged.
 fn check_model_level(old: &Model, new: &Model) -> Result<()> {
-    let same_textures = old.textures.len() == new.textures.len()
-        && old
-            .textures
-            .iter()
-            .zip(&new.textures)
-            .all(|(a, b)| Arc::ptr_eq(a, b) || a == b);
     // Groups: only their child lists may change (rewritten with parameters).
     let same_groups = old.parameter_groups.len() == new.parameter_groups.len()
         && old
@@ -432,7 +484,6 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
                     }
             });
     let checks = [
-        (same_textures, "textures"),
         (same_groups, "parameter groups"),
         (
             old.root_part.map(|p| &old.parts[p].info.guid)
@@ -444,15 +495,6 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
         (old.name == new.name, "model name"),
         (old.guid == new.guid, "model GUID"),
         (old.target_version == new.target_version, "SDK target"),
-        (
-            old.model_images.len() == new.model_images.len()
-                && old
-                    .model_images
-                    .iter()
-                    .zip(&new.model_images)
-                    .all(|(a, b)| Arc::ptr_eq(a, b) || a == b),
-            "model images",
-        ),
     ];
     match checks.iter().find(|(ok, _)| !ok) {
         Some((_, what)) => unsupported(*what),

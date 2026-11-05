@@ -202,6 +202,111 @@ fn color(o: Option<O>, default: Color) -> Result<Color> {
     ])
 }
 
+const IDENTITY_AFFINE: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+/// A `CAffine` as row-major [m00, m01, m02, m10, m11, m12].
+fn affine(a: &O) -> [f32; 6] {
+    let mut out = IDENTITY_AFFINE;
+    for (k, name) in ["m00", "m01", "m02", "m10", "m11", "m12"]
+        .iter()
+        .enumerate()
+    {
+        if let Some(v) = a.attr(name).and_then(parse_f32) {
+            out[k] = v;
+        }
+    }
+    out
+}
+
+/// A `GTransform2` (position, scale, euler angle in degrees) as an affine:
+/// translate · rotate · scale.
+fn gtransform(t: &O) -> Result<[f32; 6]> {
+    let v = |name: &str| -> Result<[f32; 2]> {
+        Ok(match t.field(name)? {
+            Some(g) => [g.f32("x")?.unwrap_or(0.0), g.f32("y")?.unwrap_or(0.0)],
+            None => [0.0, 0.0],
+        })
+    };
+    let (p, sc) = (v("position")?, v("scale")?);
+    let (s, c) = t.f32("eulerAngle")?.unwrap_or(0.0).to_radians().sin_cos();
+    Ok([c * sc[0], -s * sc[1], p[0], s * sc[0], c * sc[1], p[1]])
+}
+
+fn affine_mul(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+    [
+        a[0] * b[0] + a[1] * b[3],
+        a[0] * b[1] + a[1] * b[4],
+        a[0] * b[2] + a[1] * b[5] + a[2],
+        a[3] * b[0] + a[4] * b[3],
+        a[3] * b[1] + a[4] * b[4],
+        a[3] * b[2] + a[4] * b[5] + a[5],
+    ]
+}
+
+fn affine_inverse(a: [f32; 6]) -> Option<[f32; 6]> {
+    let det = a[0] * a[4] - a[1] * a[3];
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let (i00, i01, i10, i11) = (a[4] / det, -a[1] / det, -a[3] / det, a[0] / det);
+    Some([
+        i00,
+        i01,
+        -(i00 * a[2] + i01 * a[5]),
+        i10,
+        i11,
+        -(i10 * a[2] + i11 * a[5]),
+    ])
+}
+
+/// The layered image and layer a model image is cut from: its current
+/// image GUID and the first layer input mapped to it.
+/// spec: psd-import.md §5.1
+fn model_image_source(mi: &O) -> Result<Option<(Guid, Guid)>> {
+    let Some(env) = mi.field("inputFilterEnv")? else {
+        return Ok(None);
+    };
+    let (mut current, mut layers) = (None, Vec::new());
+    for entry in env.list("envValues")? {
+        let Some(v) = entry.field("value")? else {
+            continue;
+        };
+        let Some(value) = v.field("value")? else {
+            continue;
+        };
+        match value.tag() {
+            "CLayeredImageGuid" => current = value.attr("uuid").map(str::to_owned),
+            "CLayerSelectorMap" => {
+                for e in value.list("_imageToLayerInput")? {
+                    let Some(img) = e
+                        .field("key")?
+                        .and_then(|k| k.attr("uuid").map(str::to_owned))
+                    else {
+                        continue;
+                    };
+                    let first = e
+                        .field("value")?
+                        .map(|l| l.items())
+                        .transpose()?
+                        .and_then(|items| items.into_iter().next());
+                    if let Some(input) = first {
+                        if let Some(layer) = input.field("layer")? {
+                            if let Some(g) = layer.guid("guid")? {
+                                layers.push((img, g.to_owned()));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(match current {
+        Some(c) => layers.into_iter().find(|(i, _)| *i == c),
+        None => layers.into_iter().next(),
+    })
+}
+
 /// Generator settings; out-of-range values are clamped to the UI ranges.
 /// Older files' single `polygonDensity` is ignored, as the reference does:
 /// both intervals then take their default. spec: 70-advanced/auto-mesh.md §2
@@ -506,6 +611,61 @@ impl<'a, 'd> Loader<'a, 'd> {
         let Some(tm) = root.field("textureManager")? else {
             return Ok(());
         };
+        // Layered images (imported PSDs). spec: psd-import.md §8
+        for w in tm.list("_rawImages")? {
+            let Some(img) = w.field("image")? else {
+                continue;
+            };
+            m.layered_images.push(std::sync::Arc::new(LayeredImage {
+                guid: img.guid("guid")?.unwrap_or_default().to_owned(),
+                name: img.string("name")?.unwrap_or_default(),
+                width: img.i32("width")?.unwrap_or(0).max(0) as u32,
+                height: img.i32("height")?.unwrap_or(0).max(0) as u32,
+                path: img.scalar("psdFile")?.unwrap_or_default().to_owned(),
+                imported_ms: w.i64("importedTimeMSec")?.unwrap_or(0),
+                modified_ms: w.i64("lastModifiedTimeMSec")?.unwrap_or(0),
+                replaced: w.bool("isReplaced")?.unwrap_or(false),
+                tree: None,
+            }));
+        }
+        // Model images (per-mesh source rasters), grouped per PSD.
+        for group in tm.list("_modelImageGroups")? {
+            let gi = m.model_image_groups.len();
+            m.model_image_groups
+                .push(std::sync::Arc::new(ModelImageGroup {
+                    name: group.string("groupName")?.unwrap_or_default(),
+                    linked: group
+                        .list("_linkedRawImageGuids")?
+                        .iter()
+                        .filter_map(|g| g.attr("uuid").map(str::to_owned))
+                        .collect(),
+                }));
+            for mi in group.list("_modelImages")? {
+                let Some(guid) = mi.guid("guid")? else {
+                    continue;
+                };
+                let guid = guid.to_owned();
+                let png = match mi.field("_filteredImage")? {
+                    Some(img) => self.image_payload(&img)?,
+                    None => None,
+                };
+                let local_to_canvas = match mi.field("_materialLocalToCanvasTransform")? {
+                    Some(a) => affine(&a),
+                    None => IDENTITY_AFFINE,
+                };
+                self.idx
+                    .model_images_by_guid
+                    .insert(guid.clone(), m.model_images.len());
+                m.model_images.push(std::sync::Arc::new(ModelImage {
+                    guid,
+                    name: mi.string("name")?.unwrap_or_default(),
+                    png,
+                    local_to_canvas,
+                    group: Some(gi),
+                    source: model_image_source(&mi)?,
+                }));
+            }
+        }
         for atlas in tm.list("_textureAtlases")? {
             let guid = atlas.guid("guid")?.unwrap_or_default().to_owned();
             let image = atlas.field("cachedAtlasImage")?;
@@ -518,6 +678,34 @@ impl<'a, 'd> Loader<'a, 'd> {
                 self.idx.texture_images.insert(img.identity(), ti);
             }
             self.idx.textures_by_guid.insert(guid.clone(), ti);
+            let mut entries = Vec::new();
+            for e in atlas.list("modelImages")? {
+                let Some(k) = e
+                    .guid("modelImageGuid")?
+                    .and_then(|g| self.idx.model_images_by_guid.get(g).copied())
+                else {
+                    continue;
+                };
+                let atlas_to_canvas = match e.field("atlasLocalToCanvasTransform")? {
+                    Some(a) => affine(&a),
+                    // Version 1: material-local → atlas; convert.
+                    // spec: texture-atlas.md §1
+                    None => match e.field("materialLocalToAtlasTransform")? {
+                        Some(t) => {
+                            let to_atlas = gtransform(&t)?;
+                            match affine_inverse(to_atlas) {
+                                Some(inv) => affine_mul(m.model_images[k].local_to_canvas, inv),
+                                None => continue,
+                            }
+                        }
+                        None => continue,
+                    },
+                };
+                entries.push(AtlasEntry {
+                    model_image: k,
+                    atlas_to_canvas,
+                });
+            }
             m.textures.push(std::sync::Arc::new(Texture {
                 sampling: Default::default(),
                 guid,
@@ -526,40 +714,8 @@ impl<'a, 'd> Loader<'a, 'd> {
                 height: atlas.i32("height")?.unwrap_or(0).max(0) as u32,
                 png,
                 locked: atlas.bool("lockCachedAtlasImage")?.unwrap_or(false),
+                entries,
             }));
-        }
-        // Model images (per-mesh source rasters), grouped per PSD.
-        for group in tm.list("_modelImageGroups")? {
-            for mi in group.list("_modelImages")? {
-                let Some(guid) = mi.guid("guid")? else {
-                    continue;
-                };
-                let guid = guid.to_owned();
-                let png = match mi.field("_filteredImage")? {
-                    Some(img) => self.image_payload(&img)?,
-                    None => None,
-                };
-                let mut local_to_canvas = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-                if let Some(a) = mi.field("_materialLocalToCanvasTransform")? {
-                    for (k, name) in ["m00", "m01", "m02", "m10", "m11", "m12"]
-                        .iter()
-                        .enumerate()
-                    {
-                        if let Some(v) = a.attr(name).and_then(parse_f32) {
-                            local_to_canvas[k] = v;
-                        }
-                    }
-                }
-                self.idx
-                    .model_images_by_guid
-                    .insert(guid.clone(), m.model_images.len());
-                m.model_images.push(std::sync::Arc::new(ModelImage {
-                    guid,
-                    name: mi.string("name")?.unwrap_or_default(),
-                    png,
-                    local_to_canvas,
-                }));
-            }
         }
         Ok(())
     }

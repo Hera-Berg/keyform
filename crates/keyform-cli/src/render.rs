@@ -84,8 +84,14 @@ fn options(m: &Model, a: &Args) -> RenderOptions {
 }
 
 pub fn render_cmd(model: &Path, out: &Path, rest: &[&str]) -> super::R {
-    let a = parse(rest)?;
     let m = super::load_any(model)?;
+    render_model(&m, out, rest)
+}
+
+/// Renders an in-memory model (render options as for `kf render`).
+pub fn render_model(m: &keyform_model::Model, out: &Path, rest: &[&str]) -> super::R {
+    let a = parse(rest)?;
+    let m = m.clone();
     let frame = Evaluator::new(&m).evaluate(&values(&m, &a.values)?);
     let t = std::time::Instant::now();
     let img = if a.gpu {

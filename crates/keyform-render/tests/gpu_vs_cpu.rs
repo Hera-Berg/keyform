@@ -81,6 +81,7 @@ fn scene() -> Model {
         height: 64,
         png: Some(texture_png()),
         locked: true,
+        entries: Vec::new(),
     }));
     // Background row strips for every blend test cell.
     m.art_meshes.push(std::sync::Arc::new(quad(

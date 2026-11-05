@@ -91,6 +91,10 @@ pub struct Model {
     pub textures: Vec<Arc<Texture>>,
     /// Per-mesh source rasters (texture manager model images).
     pub model_images: Vec<Arc<ModelImage>>,
+    /// Groups of model images (one per imported PSD, usually).
+    pub model_image_groups: Vec<Arc<ModelImageGroup>>,
+    /// Imported layered images (PSDs), oldest first.
+    pub layered_images: Vec<Arc<LayeredImage>>,
     pub physics: PhysicsRig,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
@@ -115,6 +119,8 @@ impl Model {
             && same(&self.glues, &other.glues)
             && same(&self.textures, &other.textures)
             && same(&self.model_images, &other.model_images)
+            && same(&self.model_image_groups, &other.model_image_groups)
+            && same(&self.layered_images, &other.layered_images)
             && self.guid == other.guid
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
@@ -144,6 +150,8 @@ impl Model {
             && same(&self.glues, &other.glues)
             && same(&self.textures, &other.textures)
             && same(&self.model_images, &other.model_images)
+            && same(&self.model_image_groups, &other.model_image_groups)
+            && same(&self.layered_images, &other.layered_images)
             && self.guid == other.guid
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
@@ -693,6 +701,98 @@ pub struct ModelImage {
     pub png: Option<Vec<u8>>,
     /// Image pixels → canvas pixels, row-major [m00, m01, m02, m10, m11, m12].
     pub local_to_canvas: [f32; 6],
+    /// Index into [`Model::model_image_groups`].
+    pub group: Option<usize>,
+    /// The layered image (GUID) and layer (GUID) it is cut from.
+    pub source: Option<(Guid, Guid)>,
+}
+
+/// A group of model images linked to layered images.
+/// spec: 70-advanced/psd-import.md §5.1
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelImageGroup {
+    pub name: String,
+    /// Linked layered images (GUIDs).
+    pub linked: Vec<Guid>,
+}
+
+/// An imported layered image (PSD) kept in the project.
+/// spec: 70-advanced/psd-import.md §3, §8
+#[derive(Clone, Debug, Default)]
+pub struct LayeredImage {
+    pub guid: Guid,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// The original file path.
+    pub path: String,
+    /// Import time and file modification time (ms since the epoch).
+    pub imported_ms: i64,
+    pub modified_ms: i64,
+    pub replaced: bool,
+    /// The layer tree of an image imported in this session (written when
+    /// saving); `None` for stored images, which are kept as they are.
+    pub tree: Option<Arc<Vec<LayerEntry>>>,
+}
+
+/// Layered images compare by their stored fields: the layer tree never
+/// changes after import (it is identified by the GUID) and is only carried
+/// until it has been written.
+impl PartialEq for LayeredImage {
+    fn eq(&self, o: &Self) -> bool {
+        self.guid == o.guid
+            && self.name == o.name
+            && self.width == o.width
+            && self.height == o.height
+            && self.path == o.path
+            && self.imported_ms == o.imported_ms
+            && self.modified_ms == o.modified_ms
+            && self.replaced == o.replaced
+    }
+}
+
+/// A layer or group of a layered image.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LayerEntry {
+    Group(LayerGroup),
+    Layer(ImageLayer),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerCommon {
+    pub guid: Guid,
+    pub name: String,
+    pub visible: bool,
+    pub clipping: bool,
+    pub opacity: u8,
+    /// PSD blend mode key (`norm`, `mul `, …).
+    pub blend: [u8; 4],
+    /// PSD layer ID string (`00-00-01-2C`).
+    pub layer_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerGroup {
+    pub common: LayerCommon,
+    pub children: Vec<LayerEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageLayer {
+    pub common: LayerCommon,
+    /// Left, top, width, height in document pixels.
+    pub bounds: [i32; 4],
+    /// Straight-alpha PNG of the layer pixels.
+    pub png: Arc<Vec<u8>>,
+}
+
+/// Where a model image sits on an atlas page. spec: texture-atlas.md §1
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AtlasEntry {
+    /// Index into [`Model::model_images`].
+    pub model_image: usize,
+    /// Atlas-page pixel → canvas pixel, row-major 2×3.
+    pub atlas_to_canvas: [f32; 6],
 }
 
 pub const POINT_LOCKED: i8 = 30;
@@ -754,6 +854,8 @@ pub struct Texture {
     /// images. spec: 70-advanced/texture-atlas.md §1, §6
     pub locked: bool,
     pub sampling: TextureSampling,
+    /// The model images placed on this page.
+    pub entries: Vec<AtlasEntry>,
 }
 
 #[cfg(test)]
