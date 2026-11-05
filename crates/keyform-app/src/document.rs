@@ -1141,6 +1141,37 @@ impl Document {
         Ok(())
     }
 
+    /// Unbind Glue Vertices [Ctrl+Shift+G] in the Modeling view: removes
+    /// the pair of the one selected vertex on each of two art meshes.
+    /// spec: 30-algorithms/glue.md "Bind / unbind"
+    pub fn unglue_selected_vertices(&mut self) -> Result<(), String> {
+        let pts: Vec<(usize, usize)> = self
+            .selection
+            .points
+            .iter()
+            .filter_map(|&(o, k)| match o {
+                Selection::ArtMesh(a) => Some((a, k)),
+                _ => None,
+            })
+            .collect();
+        let [p, q] = pts[..] else {
+            return Err(keyform_edit::objects::GLUE_SELECT_TWO.into());
+        };
+        if p.0 == q.0 {
+            return Err(keyform_edit::objects::GLUE_SELECT_TWO.into());
+        }
+        let sel = self.selection.clone();
+        let removed = self.try_edit("Unbind Glue", |m| {
+            keyform_edit::objects::unbind_vertices(m, p, q)
+        })?;
+        self.set_selection(sel);
+        if removed {
+            Ok(())
+        } else {
+            Err("The selected vertices are not glued.".into())
+        }
+    }
+
     /// Start Mesh editing on the selected art mesh (canvas-and-tools.md §5).
     pub fn start_mesh_edit(&mut self) -> Result<(), String> {
         if !self.editable() || self.mode != Mode::Modeling {

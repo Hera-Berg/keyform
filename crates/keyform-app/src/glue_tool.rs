@@ -362,5 +362,20 @@ mod tests {
         assert_eq!(back.model.glues[g].weights, after);
         doc.undo();
         assert_eq!(doc.model.glues[g].weights, before);
+        // Unbind the pair's vertices, then undo.
+        let ib = glue.pairs[k].1.unwrap();
+        let mb = glue.mesh_b.unwrap();
+        doc.set_glue_tool(None).unwrap();
+        doc.set_selection(crate::document::SelectionSet {
+            objects: vec![Selection::ArtMesh(ma), Selection::ArtMesh(mb)],
+            points: vec![(Selection::ArtMesh(ma), ia), (Selection::ArtMesh(mb), ib)],
+        });
+        let n = glue.pairs.len();
+        doc.unglue_selected_vertices().unwrap();
+        assert_eq!(doc.model.glues[g].pairs.len(), n - 1);
+        assert!(doc.unglue_selected_vertices().is_err());
+        // The selection is restored as its own step.
+        while doc.undo().is_some_and(|name| name != "Unbind Glue") {}
+        assert_eq!(doc.model.glues[g].pairs.len(), n);
     }
 }

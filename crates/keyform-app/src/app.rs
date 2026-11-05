@@ -764,11 +764,29 @@ impl KeyformApp {
             }
             ui.separator();
             if ui
-                .add_enabled(ok, egui::Button::new("Generate and Register Glue"))
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Generate and Register Glue").shortcut_text("Ctrl+G"),
+                )
                 .on_hover_text("Glue the selected vertex of each of two ArtMeshes")
                 .clicked()
             {
                 if let Err(e) = doc.glue_selected_vertices() {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Unbind Glue Vertices").shortcut_text("Ctrl+Shift+G"),
+                )
+                .on_hover_text(
+                    "Remove the glue between the selected vertex of each of two ArtMeshes",
+                )
+                .clicked()
+            {
+                if let Err(e) = doc.unglue_selected_vertices() {
                     self.log.warn(e);
                 }
                 ui.close();
@@ -1343,6 +1361,25 @@ impl KeyformApp {
             })
         {
             self.delete_active();
+        }
+        // Glue Vertices [Ctrl+G] / unbind [Ctrl+Shift+G] in the Modeling
+        // view (glue.md "Bind / unbind").
+        if !ctx.egui_wants_keyboard_input() {
+            let unbind = ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::G)));
+            let bind =
+                !unbind && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::G)));
+            if bind || unbind {
+                if let Some(d) = self.active_doc().filter(|d| d.mesh_edit.is_none()) {
+                    let r = if bind {
+                        d.glue_selected_vertices()
+                    } else {
+                        d.unglue_selected_vertices()
+                    };
+                    if let Err(e) = r {
+                        self.log.warn(e);
+                    }
+                }
+            }
         }
         // Edit Texture Atlas [Ctrl+T] (menus.md "Texture Atlas").
         if !ctx.egui_wants_keyboard_input()
