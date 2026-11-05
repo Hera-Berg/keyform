@@ -292,6 +292,10 @@ pub struct Document {
     pub mesh_edit: Option<crate::mesh_edit::MeshEdit>,
     /// Mesh editor settings kept between mesh-edit sessions.
     mesh_prefs: Option<crate::mesh_edit::MeshPrefs>,
+    /// Glue weight brush tool, when active (canvas-and-tools.md "Glue").
+    pub glue_tool: Option<crate::glue_tool::GlueTool>,
+    /// Glue brush settings, kept while the tool is off.
+    pub glue_prefs: crate::glue_tool::GluePrefs,
     /// Never saved yet: the first save asks for a location.
     pub untitled: bool,
 }
@@ -608,6 +612,8 @@ impl Document {
             saved_revision: 0,
             mesh_edit: None,
             mesh_prefs: None,
+            glue_tool: None,
+            glue_prefs: Default::default(),
             untitled: false,
             drag: None,
             edit_level: 2,
@@ -634,7 +640,7 @@ impl Document {
         self.history.revision() != self.saved_revision
     }
 
-    fn edit_state(&self) -> EditState {
+    pub(crate) fn edit_state(&self) -> EditState {
         EditState {
             model: self.model.clone(),
             selection: self.selection.clone(),
@@ -1416,7 +1422,7 @@ impl Document {
     }
 
     /// Rebuilds what is derived from the model after an edit, undo or redo.
-    fn model_changed(&mut self) {
+    pub(crate) fn model_changed(&mut self) {
         if self.drag.is_none() {
             self.mask_issues = keyform_edit::mask_issues(&self.model);
         }

@@ -4,6 +4,7 @@
 pub mod automesh;
 pub mod checks;
 pub mod forms;
+pub mod glue_brush;
 pub mod history;
 pub mod keys;
 pub mod mesh;

@@ -10,6 +10,7 @@ mod create_deformer;
 mod document;
 mod export_image;
 mod fonts;
+mod glue_tool;
 mod icons;
 mod log;
 mod mesh_edit;
@@ -33,6 +34,7 @@ fn main() -> eframe::Result<()> {
     let mut mesh_edit = false;
     let mut auto_mesh = false;
     let mut atlas = false;
+    let mut glue_tool = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -42,6 +44,16 @@ fn main() -> eframe::Result<()> {
             "--mesh-edit" => mesh_edit = true,
             "--auto-mesh" => auto_mesh = true,
             "--atlas" => atlas = true,
+            "--glue-tool" => {
+                use keyform_edit::glue_brush::GlueBrush;
+                glue_tool = match args.next().as_deref() {
+                    Some("A") => Some(GlueBrush::A),
+                    Some("B") => Some(GlueBrush::B),
+                    Some("AB") => Some(GlueBrush::AB),
+                    Some("BA") => Some(GlueBrush::BA),
+                    _ => Some(GlueBrush::Remerge),
+                }
+            }
             "--frames" => frames = args.next().and_then(|n| n.parse().ok()).unwrap_or(frames),
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
@@ -96,6 +108,7 @@ fn main() -> eframe::Result<()> {
             a.initial_mesh_edit = mesh_edit;
             a.initial_auto_mesh = auto_mesh;
             a.initial_atlas = atlas;
+            a.initial_glue_tool = glue_tool;
             Ok(Box::new(a))
         }),
     )

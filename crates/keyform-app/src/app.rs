@@ -114,6 +114,8 @@ pub struct KeyformApp {
     pub initial_auto_mesh: bool,
     /// Then open Edit Texture Atlas (`--atlas`).
     pub initial_atlas: bool,
+    /// Then pick a glue tool (`--glue-tool A|B|AB|BA|remerge`, with `--select`).
+    pub initial_glue_tool: Option<keyform_edit::glue_brush::GlueBrush>,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
     /// first (main-window.md §5).
     closing: Vec<u64>,
@@ -251,6 +253,7 @@ impl KeyformApp {
             initial_mesh_edit: false,
             initial_auto_mesh: false,
             initial_atlas: false,
+            initial_glue_tool: None,
             closing: Vec::new(),
             quit_after_closing: false,
             allow_quit: false,
@@ -747,6 +750,19 @@ impl KeyformApp {
             }
         });
         ui.menu_button("Glue", |ui| {
+            for t in keyform_edit::glue_brush::GlueBrush::ALL {
+                let on = doc.glue_tool.as_ref().is_some_and(|g| g.tool == t);
+                if ui
+                    .add_enabled(ok, egui::Button::selectable(on, t.label()))
+                    .clicked()
+                {
+                    if let Err(e) = doc.set_glue_tool((!on).then_some(t)) {
+                        self.log.warn(e);
+                    }
+                    ui.close();
+                }
+            }
+            ui.separator();
             if ui
                 .add_enabled(ok, egui::Button::new("Generate and Register Glue"))
                 .on_hover_text("Glue the selected vertex of each of two ArtMeshes")
@@ -1081,6 +1097,15 @@ impl KeyformApp {
                     self.toggle_mesh_edit();
                 }
                 ui.separator();
+            }
+            if let Some(d) = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc)
+            {
+                if d.mesh_edit.is_none() {
+                    glue_controls(ui, d, &mut self.log);
+                }
             }
             if let Some(i) = self.active {
                 if ui.button("Reset parameters").clicked() {
@@ -1698,8 +1723,19 @@ impl eframe::App for KeyformApp {
                         .iter()
                         .position(|x| x.info.id == id)
                         .map(Selection::Part)
+                })
+                .or_else(|| {
+                    m.glues
+                        .iter()
+                        .position(|x| x.info.id == id)
+                        .map(Selection::Glue)
                 });
             s.doc.select(sel);
+            if let Some(t) = self.initial_glue_tool.take() {
+                if let Err(e) = s.doc.set_glue_tool(Some(t)) {
+                    self.log.warn(e);
+                }
+            }
             if self.initial_mesh_edit {
                 match s.doc.start_mesh_edit() {
                     Ok(()) => {
@@ -1903,38 +1939,111 @@ fn mirror_controls(ui: &mut egui::Ui, s: &mut crate::mesh_edit::MeshEdit, canvas
 
 /// Mesh-edit brush settings. spec: 50-ui/canvas-and-tools.md §5.1 "Brush"
 fn brush_controls(ui: &mut egui::Ui, b: &mut crate::mesh_edit::MeshPrefs) {
+    brush_fields(
+        ui,
+        "brush-shape",
+        &mut b.brush_size,
+        &mut b.brush_level,
+        &mut b.brush_hardness,
+        &mut b.brush_angle,
+        &mut b.brush_shape,
+    );
+}
+
+/// Brush size, level, hardness, angle and shape fields.
+fn brush_fields(
+    ui: &mut egui::Ui,
+    id: &str,
+    size: &mut f32,
+    level: &mut f32,
+    hardness: &mut f32,
+    angle: &mut f32,
+    shape: &mut crate::mesh_edit::BrushShape,
+) {
     use crate::mesh_edit::BrushShape;
     ui.add(
-        egui::DragValue::new(&mut b.brush_size)
+        egui::DragValue::new(size)
             .range(2.0..=4000.0)
             .prefix("size ")
             .suffix(" px"),
     );
     ui.add(
-        egui::DragValue::new(&mut b.brush_level)
+        egui::DragValue::new(level)
             .range(0.0..=1.0)
             .speed(0.01)
             .prefix("level "),
     );
     ui.add(
-        egui::DragValue::new(&mut b.brush_hardness)
+        egui::DragValue::new(hardness)
             .range(0.0..=1.0)
             .speed(0.01)
             .prefix("hardness "),
     );
     ui.add(
-        egui::DragValue::new(&mut b.brush_angle)
+        egui::DragValue::new(angle)
             .range(-180.0..=180.0)
             .prefix("angle ")
             .suffix("°"),
     );
-    egui::ComboBox::from_id_salt("brush-shape")
-        .selected_text(format!("{:?}", b.brush_shape))
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(format!("{shape:?}"))
         .show_ui(ui, |ui| {
             for s in [BrushShape::Circle, BrushShape::Square, BrushShape::Line] {
-                ui.selectable_value(&mut b.brush_shape, s, format!("{s:?}"));
+                ui.selectable_value(shape, s, format!("{s:?}"));
             }
         });
+}
+
+/// Glue tool bar: the tools, brush settings, and "Glue Weight A : B" of
+/// the painted glue. spec: 30-algorithms/glue.md "Weight brushes"
+fn glue_controls(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
+    use keyform_edit::glue_brush::{ui_weights, GlueBrush};
+    let Some(cur) = doc.glue_tool.as_ref().map(|t| t.tool) else {
+        return;
+    };
+    ui.weak("Glue:");
+    let mut chosen = None;
+    for t in GlueBrush::ALL {
+        if ui
+            .add(egui::Button::selectable(cur == t, t.label()))
+            .clicked()
+        {
+            chosen = Some(Some(t));
+        }
+    }
+    let p = &mut doc.glue_prefs;
+    brush_fields(
+        ui,
+        "glue-brush-shape",
+        &mut p.size,
+        &mut p.level,
+        &mut p.hardness,
+        &mut p.angle,
+        &mut p.shape,
+    );
+    ui.add(
+        egui::DragValue::new(&mut p.display_opacity)
+            .range(0.0..=1.0)
+            .speed(0.01)
+            .prefix("display "),
+    );
+    match ui_weights(&doc.model, &doc.glue_targets()) {
+        Some([a, b]) => ui.label(format!("Glue Weight A : B  {a:.2} : {b:.2}")),
+        None => ui.weak("Glue Weight A : B  —"),
+    };
+    if ui
+        .button("Done")
+        .on_hover_text("Back to the Arrow tool")
+        .clicked()
+    {
+        chosen = Some(None);
+    }
+    if let Some(t) = chosen {
+        if let Err(e) = doc.set_glue_tool(t) {
+            log.warn(e);
+        }
+    }
+    ui.separator();
 }
 
 #[cfg(test)]

@@ -123,6 +123,9 @@ pub fn canvas_ui(
         track_cursor(ui, &response, doc, rect);
     } else if doc.mesh_edit.is_some() {
         mesh_tool(ui, &response, doc, gpu, rect, ppp);
+    } else if doc.glue_tool.is_some() && !ui.input(|i| i.modifiers.command) && !doc.is_dragging() {
+        // Ctrl gives the Arrow tool temporarily (canvas-and-tools.md §3).
+        crate::glue_tool::input(ui, &response, doc, rect, ppp);
     } else {
         arrow_tool(ui, &response, doc, gpu, rect, ppp);
     }
@@ -243,6 +246,9 @@ pub fn canvas_ui(
         draw_mesh_edit(ui.ctx(), &painter, doc, gpu, rect, &to_screen, tokens);
     } else {
         draw_selection(&painter, doc, &to_screen, tokens);
+        if doc.glue_tool.is_some() {
+            crate::glue_tool::draw(ui.ctx(), &painter, doc, rect, &to_screen, tokens);
+        }
     }
     if let (Some((a, _)), Some(b)) = (gpu.rect, ui.input(|i| i.pointer.interact_pos())) {
         let r = Rect::from_two_pos(a, b);
@@ -620,32 +626,15 @@ fn draw_mesh_edit(
             let o = to_screen([0.0, 0.0]);
             let b = &s.prefs;
             let r = (to_screen([b.brush_size / 2.0, 0.0]) - o).length();
-            let stroke = egui::Stroke::new(1.0, tokens.accent);
-            let inner = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.4));
-            let rot = egui::emath::Rot2::from_angle(b.brush_angle.to_radians());
-            match b.brush_shape {
-                crate::mesh_edit::BrushShape::Circle => {
-                    painter.circle_stroke(c, r, stroke);
-                    painter.circle_stroke(c, r * b.brush_hardness, inner);
-                }
-                crate::mesh_edit::BrushShape::Square => {
-                    for (k, st) in [(1.0, stroke), (b.brush_hardness, inner)] {
-                        let pts: Vec<Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
-                            .iter()
-                            .map(|&(x, y)| c + rot * egui::vec2(x * r * k, y * r * k))
-                            .collect();
-                        painter.add(egui::Shape::closed_line(pts, st));
-                    }
-                }
-                crate::mesh_edit::BrushShape::Line => {
-                    // A band |y| ≤ r along the brush angle.
-                    for y in [-r, r] {
-                        let a = c + rot * egui::vec2(-4.0 * r, y);
-                        let e = c + rot * egui::vec2(4.0 * r, y);
-                        painter.line_segment([a, e], stroke);
-                    }
-                }
-            }
+            brush_outline(
+                painter,
+                c,
+                r,
+                b.brush_hardness,
+                b.brush_angle,
+                b.brush_shape,
+                tokens.accent,
+            );
         }
     }
     // Mirror Edit axis.
@@ -882,6 +871,45 @@ fn navigate(
             doc.view.rotation = 0.0;
         } else {
             fit(doc, rect);
+        }
+    }
+}
+
+/// A brush outline at screen point `c` with radius `r` (screen points):
+/// the outer shape and the hardness core. spec: canvas-and-tools.md §5.1
+pub fn brush_outline(
+    painter: &egui::Painter,
+    c: Pos2,
+    r: f32,
+    hardness: f32,
+    angle: f32,
+    shape: crate::mesh_edit::BrushShape,
+    accent: Color32,
+) {
+    let stroke = egui::Stroke::new(1.0, accent);
+    let inner = egui::Stroke::new(1.0, accent.gamma_multiply(0.4));
+    let rot = egui::emath::Rot2::from_angle(angle.to_radians());
+    match shape {
+        crate::mesh_edit::BrushShape::Circle => {
+            painter.circle_stroke(c, r, stroke);
+            painter.circle_stroke(c, r * hardness, inner);
+        }
+        crate::mesh_edit::BrushShape::Square => {
+            for (k, st) in [(1.0, stroke), (hardness, inner)] {
+                let pts: Vec<Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                    .iter()
+                    .map(|&(x, y)| c + rot * egui::vec2(x * r * k, y * r * k))
+                    .collect();
+                painter.add(egui::Shape::closed_line(pts, st));
+            }
+        }
+        crate::mesh_edit::BrushShape::Line => {
+            // A band |y| ≤ r along the brush angle.
+            for y in [-r, r] {
+                let a = c + rot * egui::vec2(-4.0 * r, y);
+                let e = c + rot * egui::vec2(4.0 * r, y);
+                painter.line_segment([a, e], stroke);
+            }
         }
     }
 }
