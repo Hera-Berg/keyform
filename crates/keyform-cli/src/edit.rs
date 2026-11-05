@@ -285,6 +285,31 @@ fn apply(m: &mut Model, edit: &str) -> R {
                             .for_each(|f| shift(&mut f.positions, d));
                     }
                     "culling" => a.culling = value.parse()?,
+                    "multiply" | "screen" => {
+                        let c: Vec<f32> = value
+                            .split(',')
+                            .map(|x| x.trim().parse())
+                            .collect::<Result<_, _>>()?;
+                        let [r, g, b] = c[..] else {
+                            return Err("expected r,g,b".into());
+                        };
+                        for f in &mut a.grid.keyforms {
+                            let col = if field == "multiply" {
+                                &mut f.multiply
+                            } else {
+                                &mut f.screen
+                            };
+                            *col = [r, g, b, col[3]];
+                        }
+                    }
+                    "blend" => {
+                        a.color_composition = keyform_model::ColorComposition::from_name(value)
+                            .ok_or("unknown blend name (e.g. MULTIPLY_R2)")?;
+                    }
+                    "alpha" => {
+                        a.alpha_composition = keyform_model::AlphaComposition::from_name(value)
+                            .ok_or("unknown alpha name (OVER, ATOP, …)")?;
+                    }
                     _ => return Err(unknown().into()),
                 }
             }

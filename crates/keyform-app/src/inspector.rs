@@ -18,6 +18,15 @@ use crate::document::{Document, Selection};
 
 /// Multiply and screen colour need SDK target ≥ 4.2.
 const COLOR_TARGET: i32 = 4_020_000;
+/// Advanced blend modes need SDK target ≥ 5.3 (40-rendering/blending.md §5;
+/// `targetVersionNo` grows with the version, 10-formats/cmo3.md §2).
+const BLEND_TARGET: i32 = 5_030_000;
+
+/// Blend modes offered for a target: only Normal and the legacy ones (and
+/// Over) before 5.3.
+fn legacy_only(target: i32) -> bool {
+    target != 0 && target < BLEND_TARGET
+}
 
 /// UI labels of the colour blend modes (40-rendering/blending.md §1).
 const BLEND_LABELS: [(ColorComposition, &str); 18] = [
@@ -354,7 +363,9 @@ fn blend_combos(
     id: (&str, usize),
     (c, a): (ColorComposition, AlphaComposition),
     editable: bool,
+    target: i32,
 ) -> Option<(ColorComposition, AlphaComposition)> {
+    let legacy = legacy_only(target);
     let (mut c2, mut a2) = (c, a);
     let label = |c: ColorComposition| {
         BLEND_LABELS
@@ -374,14 +385,25 @@ fn blend_combos(
                 .selected_text(label(c))
                 .show_ui(ui, |ui| {
                     for (v, l) in BLEND_LABELS {
-                        ui.selectable_value(&mut c2, v, l);
+                        let ok = !legacy
+                            || matches!(
+                                v,
+                                ColorComposition::Normal
+                                    | ColorComposition::Add
+                                    | ColorComposition::Multiply
+                            );
+                        if ok {
+                            ui.selectable_value(&mut c2, v, l);
+                        }
                     }
                 });
             egui::ComboBox::from_id_salt(("alpha", id))
                 .selected_text(alabel(a))
                 .show_ui(ui, |ui| {
                     for (v, l) in ALPHA_LABELS {
-                        ui.selectable_value(&mut a2, v, l);
+                        if !legacy || v == AlphaComposition::Over {
+                            ui.selectable_value(&mut a2, v, l);
+                        }
                     }
                 });
         });
@@ -391,13 +413,14 @@ fn blend_combos(
 
 /// Object-level settings (not per keyform).
 fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool) {
+    let target = doc.model.target_version;
     match s {
         Selection::ArtMesh(i) => {
             let x = &doc.model.art_meshes[i];
             let blend = (x.color_composition, x.alpha_composition);
             ui.horizontal(|ui| {
                 ui.weak("Blend mode");
-                if let Some((c, a)) = blend_combos(ui, ("mesh", i), blend, editable) {
+                if let Some((c, a)) = blend_combos(ui, ("mesh", i), blend, editable, target) {
                     doc.edit("Change Blend Mode", |m| {
                         let x = Arc::make_mut(&mut m.art_meshes[i]);
                         x.color_composition = c;
@@ -432,7 +455,7 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
             if off {
                 ui.horizontal(|ui| {
                     ui.weak("Blend mode");
-                    if let Some((c, a)) = blend_combos(ui, ("part", p), blend, editable) {
+                    if let Some((c, a)) = blend_combos(ui, ("part", p), blend, editable, target) {
                         doc.edit("Change Blend Mode", |m| {
                             let x = Arc::make_mut(&mut m.parts[p]);
                             x.color_composition = c;
