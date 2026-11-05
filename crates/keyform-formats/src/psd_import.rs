@@ -225,11 +225,12 @@ fn rect_mesh(b: [i32; 4], m: f32) -> (Vec<f32>, Vec<u32>, EditableMesh) {
     let (x0, y0) = (b[0] as f32 - m, b[1] as f32 - m);
     let (x1, y1) = ((b[0] + b[2]) as f32 + m, (b[1] + b[3]) as f32 + m);
     let positions = vec![x1, y0, x0, y0, x1, y1, x0, y1];
-    // Positive area in y-down canvas pixels; the diagonal TL–BR.
-    let indices = vec![0, 2, 1, 1, 2, 3];
+    // As the reference writes it: the diagonal TR–BL as an auto edge,
+    // triangles (0, 2, 3) and (0, 3, 1) (positive area, y down).
+    let indices = vec![0, 2, 3, 0, 3, 1];
     let mesh = EditableMesh {
         point_priority: vec![POINT_NORMAL; 4],
-        edges: vec![[0, 1], [0, 2], [1, 3], [2, 3], [1, 2]],
+        edges: vec![[0, 1], [0, 2], [1, 3], [2, 3], [0, 3]],
         edge_priority: vec![
             EDGE_NORMAL,
             EDGE_NORMAL,
@@ -331,10 +332,25 @@ impl Builder<'_> {
         };
         let mut grid = KeyformGrid::single(form);
         grid.guids = vec![new_guid()];
+        // Model-image texture mode: UVs relative to the image padded to a
+        // multiple of 64 (as the editor's cache), y down.
+        let (pw, ph) = (
+            (l.bounds[2].max(1) as u32).div_ceil(64) as f32 * 64.0,
+            (l.bounds[3].max(1) as u32).div_ceil(64) as f32 * 64.0,
+        );
+        let uvs: Vec<f32> = positions
+            .chunks_exact(2)
+            .flat_map(|p| {
+                [
+                    (p[0] - l.bounds[0] as f32) / pw,
+                    (p[1] - l.bounds[1] as f32) / ph,
+                ]
+            })
+            .collect();
         let a = ArtMesh {
             info,
             target: None,
-            uvs: vec![0.0; positions.len()],
+            uvs,
             positions,
             indices,
             texture: None,
@@ -443,9 +459,11 @@ pub fn add_psd_layers(
         part_ids,
     };
     b.build(&tree, top);
-    let mut report = b.report;
-    report.atlas = pack_new_atlas(m, &images, &report.art_meshes)?;
-    Ok(report)
+    // The meshes draw from their model images (texture state MODEL_IMAGE);
+    // an atlas is made later. TODO(Q-0018): whether §6.1 "re-pack
+    // textures" also places the new images on an atlas.
+    let _ = images;
+    Ok(b.report)
 }
 
 /// Packs `images` onto a new atlas page (named `Texture<N>`, the size of
@@ -612,7 +630,8 @@ mod tests {
 
     #[test]
     fn rect_mesh_is_positive() {
-        let (p, ix, _) = rect_mesh([10, 20, 30, 40], 1.0);
+        let (p, ix, m) = rect_mesh([10, 20, 30, 40], 1.0);
+        assert_eq!(m.edges[4], [0, 3]);
         assert_eq!(p[..4], [41.0, 19.0, 9.0, 19.0]);
         for t in ix.chunks_exact(3) {
             let q = |i: u32| [p[2 * i as usize], p[2 * i as usize + 1]];

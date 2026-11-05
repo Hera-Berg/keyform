@@ -341,11 +341,12 @@ impl GpuRenderer {
         };
         let max_side = device.limits().max_texture_dimension_2d;
         let textures = model
-            .textures
-            .iter()
+            .texture_sources()
+            .into_iter()
             .map(|t| {
-                let img = match t.png.as_deref().map(RgbaImage::decode_png) {
-                    Some(Ok(img)) => img,
+                let t = t?;
+                let img = match t.png.map(RgbaImage::decode_png) {
+                    Some(Ok(img)) => crate::image::pad_image(&img, t.uv_pad),
                     Some(Err(e)) => {
                         warnings.push(format!("texture {:?}: {e}", t.name));
                         return None;
@@ -390,7 +391,7 @@ impl GpuRenderer {
                         base.height as u32,
                         chain.levels.len() as u32,
                         &bytes,
-                        &t.name,
+                        t.name,
                     ),
                     uv_scale: chain.uv_scale,
                     sampler,
@@ -581,9 +582,7 @@ impl GpuRenderer {
         };
 
         let tex_of = |mi: MeshIndex| -> Option<&GpuTex> {
-            m.art_meshes
-                .get(mi)?
-                .texture
+            m.texture_slot(m.art_meshes.get(mi)?)
                 .and_then(|t| self.textures.get(t))
                 .and_then(Option::as_ref)
         };

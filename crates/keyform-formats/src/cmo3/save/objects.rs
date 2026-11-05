@@ -802,24 +802,50 @@ pub(super) fn create_art_mesh(
     a: &keyform_model::ArtMesh,
 ) -> Result<ElementPath> {
     use super::textures::{affine_el, icon};
-    let Some(t) = a.texture else {
-        return unsupported(format!("art mesh {}: no texture", a.info.id));
-    };
-    let Some((_, gtex)) = ctx.tex.atlases.get(&t).cloned() else {
-        return unsupported(format!("art mesh {}: a texture made earlier", a.info.id));
-    };
     let Some(mi) = a.model_image.and_then(|k| new.model_images.get(k)) else {
         return unsupported(format!("art mesh {}: no model image", a.info.id));
     };
-    let Some(entry) = new.textures[t]
-        .entries
-        .iter()
-        .find(|e| Some(e.model_image) == a.model_image)
-    else {
-        return unsupported(format!(
-            "art mesh {}: its image is not on its atlas",
-            a.info.id
-        ));
+    // Atlas mode: the atlas page's texture; model-image mode: a texture of
+    // its own on the model image (texture-atlas.md §4).
+    let atlas = match a.texture {
+        Some(t) => {
+            let Some((_, gtex)) = ctx.tex.atlases.get(&t).cloned() else {
+                return unsupported(format!("art mesh {}: a texture made earlier", a.info.id));
+            };
+            let Some(entry) = new.textures[t]
+                .entries
+                .iter()
+                .find(|e| Some(e.model_image) == a.model_image)
+            else {
+                return unsupported(format!(
+                    "art mesh {}: its image is not on its atlas",
+                    a.info.id
+                ));
+            };
+            Some((t, gtex, *entry))
+        }
+        None => None,
+    };
+    let gtex = match &atlas {
+        Some((_, g, _)) => g.clone(),
+        None => {
+            let Some((_, res)) = mi
+                .source
+                .as_ref()
+                .and_then(|(_, layer)| ctx.tex.layers.get(layer).cloned())
+            else {
+                return unsupported(format!(
+                    "art mesh {}: a model image made earlier",
+                    a.info.id
+                ));
+            };
+            let size = mi
+                .png
+                .as_deref()
+                .and_then(crate::image::png_size)
+                .unwrap_or((1, 1));
+            super::textures::model_image_texture(root, ctx, &a.info.name, &res, size)?
+        }
     };
     let fg = a.grid.guids.first().cloned().unwrap_or_default();
     let f0 = a.grid.keyforms.first().cloned().unwrap_or_default();
@@ -871,12 +897,12 @@ pub(super) fn create_art_mesh(
                     &[("v", a.alpha_composition.name().into())],
                 );
             }
-            super::set_field_attrs(
-                e,
-                "textureState",
-                "TextureState",
-                &[("v", "TEXTURE_ATLAS".into())],
-            );
+            let state = if atlas.is_some() {
+                "TEXTURE_ATLAS"
+            } else {
+                "MODEL_IMAGE"
+            };
+            super::set_field_attrs(e, "textureState", "TextureState", &[("v", state.into())]);
             for (name, ic) in [("icon32", &icon32), ("icon16", &icon16)] {
                 if let Some(d) = holder_depth(e, name) {
                     let h = super::level_mut(e, d);
@@ -1031,40 +1057,50 @@ pub(super) fn create_art_mesh(
         e
     };
     let mg = guid_id(root, ctx, &mi.guid, "CModelImageGuid", "(no debug info)")?;
-    let tg = guid_id(
-        root,
-        ctx,
-        &new.textures[t].guid,
-        "CTextureAtlasGuid",
-        "(no debug info)",
-    )?;
-    let mut region = Element::new("CTextureInput_TextureAtlasRegion");
-    region.children = vec![
-        input_super(&ext),
-        stub("CTextureAtlasGuid", Some("textureAtlasGuid"), &tg),
-        affine_el("inputImageLocalToCanvasTransform", entry.atlas_to_canvas),
-    ];
-    let region = add_shared(root, ctx, region)?;
     let mut mi_input = Element::new("CTextureInput_ModelImage");
     mi_input.children = vec![
         input_super(&ext),
         stub("CModelImageGuid", Some("_modelImageGuid"), &mg),
     ];
     let mut inputs = Element::new("carray_list").with_attr("xs.n", "_textureInputs");
-    inputs.children = vec![
-        mi_input,
-        stub("CTextureInput_TextureAtlasRegion", None, &region),
-    ];
+    let current = match &atlas {
+        Some((t, _, entry)) => {
+            let tg = guid_id(
+                root,
+                ctx,
+                &new.textures[*t].guid,
+                "CTextureAtlasGuid",
+                "(no debug info)",
+            )?;
+            let mut region = Element::new("CTextureInput_TextureAtlasRegion");
+            region.children = vec![
+                input_super(&ext),
+                stub("CTextureAtlasGuid", Some("textureAtlasGuid"), &tg),
+                affine_el("inputImageLocalToCanvasTransform", entry.atlas_to_canvas),
+            ];
+            let region = add_shared(root, ctx, region)?;
+            inputs.children = vec![
+                mi_input,
+                stub("CTextureInput_TextureAtlasRegion", None, &region),
+            ];
+            stub(
+                "CTextureInput_TextureAtlasRegion",
+                Some("currentTextureInputData"),
+                &region,
+            )
+        }
+        None => {
+            let input = add_shared(root, ctx, mi_input)?;
+            inputs.children = vec![stub("CTextureInput_ModelImage", None, &input)];
+            stub(
+                "CTextureInput_ModelImage",
+                Some("currentTextureInputData"),
+                &input,
+            )
+        }
+    };
     set_count(&mut inputs);
-    find_shared(root, &ext)?.children = vec![
-        sup(ext_guid()),
-        inputs,
-        stub(
-            "CTextureInput_TextureAtlasRegion",
-            Some("currentTextureInputData"),
-            &region,
-        ),
-    ];
+    find_shared(root, &ext)?.children = vec![sup(ext_guid()), inputs, current];
     let g = &a.generator;
     let mut setting = Element::new("MeshGenerateSetting").with_attr("xs.n", "meshGenerateSetting");
     setting.children = [

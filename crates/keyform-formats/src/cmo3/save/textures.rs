@@ -1278,3 +1278,42 @@ pub(super) fn add_entries(archive: &mut CaffArchive, tex: &mut TexState) {
         });
     }
 }
+
+/// The `GTexture2D` of an art mesh in model-image texture mode, on the
+/// model image's resource (`name` is the mesh's). The resource → logical
+/// transform maps the image into its 64-padded cache. Returns its id.
+pub(super) fn model_image_texture(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    name: &str,
+    res: &str,
+    (w, h): (u32, u32),
+) -> Result<String> {
+    let g = add_shared(root, ctx, Element::new("GTexture2D"))?;
+    find_shared(root, &g)?.children = vec![
+        with(
+            el("GTexture", "super"),
+            vec![
+                scalar("s", "name", xml_text(name)),
+                el("WrapMode", "wrapMode").with_attr("v", "CLAMP_TO_BORDER"),
+                with(
+                    el("FilterMode", "filterMode"),
+                    vec![
+                        stub("GTexture2D", Some("owner"), &g),
+                        el("MinFilter", "minFilter").with_attr("v", "LINEAR_MIPMAP_LINEAR"),
+                        el("MagFilter", "magFilter").with_attr("v", "LINEAR"),
+                    ],
+                ),
+                el("GTextureGuid", "guid")
+                    .with_attr("uuid", keyform_model::new_guid())
+                    .with_attr("note", "(no debug info)"),
+                el("Anisotropy", "anisotropy").with_attr("v", "ON"),
+            ],
+        ),
+        stub("CImageResource", Some("srcImageResource"), res),
+        affine_el("transformImageResource01toLogical01", cache_transform(w, h)),
+        scalar("i", "mipmapLevel", "64"),
+        scalar("b", "isPremultiplied", "true"),
+    ];
+    Ok(g)
+}

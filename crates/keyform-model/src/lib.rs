@@ -164,6 +164,57 @@ impl Model {
             && self.target_version == other.target_version
     }
 
+    /// The renderer's texture slot of art mesh `a`: its atlas page, or, in
+    /// model-image texture mode (no atlas input), its model image, placed
+    /// after the pages. spec: 70-advanced/texture-atlas.md §4,
+    /// psd-import.md §5.3
+    pub fn texture_slot(&self, a: &ArtMesh) -> Option<usize> {
+        match (a.texture, a.model_image) {
+            (Some(t), _) => Some(t),
+            (None, Some(k)) if k < self.model_images.len() => Some(self.textures.len() + k),
+            _ => None,
+        }
+    }
+
+    /// What each texture slot is made from (see [`Self::texture_slot`]):
+    /// the atlas pages, then the model images that meshes draw directly
+    /// (`None` for unused ones, which needn't be decoded).
+    pub fn texture_sources(&self) -> Vec<Option<TextureSource<'_>>> {
+        let mut used = vec![false; self.model_images.len()];
+        for a in &self.art_meshes {
+            if let (None, Some(k)) = (a.texture, a.model_image) {
+                if let Some(u) = used.get_mut(k) {
+                    *u = true;
+                }
+            }
+        }
+        self.textures
+            .iter()
+            .map(|t| {
+                Some(TextureSource {
+                    name: &t.name,
+                    png: t.png.as_deref(),
+                    sampling: t.sampling,
+                    uv_pad: 0,
+                })
+            })
+            .chain(self.model_images.iter().zip(used).map(|(mi, u)| {
+                // Model images are padded to a multiple of 64 like the
+                // editor's cache; their UVs are relative to that size.
+                u.then(|| TextureSource {
+                    name: &mi.name,
+                    png: mi.png.as_deref(),
+                    sampling: TextureSampling {
+                        mipmaps: true,
+                        anisotropy: true,
+                        pad_to: 64,
+                    },
+                    uv_pad: 64,
+                })
+            }))
+            .collect()
+    }
+
     /// GUID to write as `targetDeformerGuid` for an object attached to
     /// `target` (the ROOT GUID when attached to the canvas).
     pub fn target_deformer_guid(&self, target: Option<DeformerIndex>) -> &str {
@@ -784,6 +835,17 @@ pub struct ImageLayer {
     pub bounds: [i32; 4],
     /// Straight-alpha PNG of the layer pixels.
     pub png: Arc<Vec<u8>>,
+}
+
+/// The image data of one renderer texture slot.
+#[derive(Clone, Copy, Debug)]
+pub struct TextureSource<'a> {
+    pub name: &'a str,
+    pub png: Option<&'a [u8]>,
+    pub sampling: TextureSampling,
+    /// UVs refer to the image padded (transparent, right and bottom) to a
+    /// multiple of this size, not to the image itself (model images: 64).
+    pub uv_pad: u32,
 }
 
 /// Where a model image sits on an atlas page. spec: texture-atlas.md §1

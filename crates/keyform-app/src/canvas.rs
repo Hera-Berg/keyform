@@ -148,7 +148,7 @@ pub fn canvas_ui(
         if gpu
             .renderer
             .as_ref()
-            .is_some_and(|r| r.texture_count() != doc.model.textures.len())
+            .is_some_and(|r| r.texture_count() != doc.model.texture_sources().len())
         {
             gpu.renderer = None;
             gpu.mesh_texture = None;

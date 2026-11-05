@@ -85,6 +85,25 @@ pub struct Texture {
     pub sampling: TextureSampling,
 }
 
+/// `img` padded with transparent pixels (right and bottom) to a multiple of
+/// `m` on both axes.
+pub fn pad_image(img: &RgbaImage, m: u32) -> RgbaImage {
+    if m <= 1 {
+        return img.clone();
+    }
+    let (w, h) = (img.width.div_ceil(m) * m, img.height.div_ceil(m) * m);
+    if (w, h) == (img.width, img.height) {
+        return img.clone();
+    }
+    let mut out = RgbaImage::new(w, h);
+    let row = 4 * img.width as usize;
+    for y in 0..img.height as usize {
+        let o = 4 * y * w as usize;
+        out.data[o..o + row].copy_from_slice(&img.data[y * row..(y + 1) * row]);
+    }
+    out
+}
+
 /// Premultiplied level 0, padded to a multiple of `pad_to`.
 pub fn premultiplied_level(img: &RgbaImage, pad_to: u32) -> (Level, [f32; 2]) {
     let (w, h) = (img.width as usize, img.height as usize);

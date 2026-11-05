@@ -139,17 +139,22 @@ impl<'m> CpuRenderer<'m> {
     pub fn new(model: &'m Model) -> Self {
         let mut warnings = Vec::new();
         let textures = model
-            .textures
-            .iter()
-            .map(|t| match t.png.as_deref().map(RgbaImage::decode_png) {
-                Some(Ok(img)) => Some(Texture::new(&img, t.sampling)),
-                Some(Err(e)) => {
-                    warnings.push(format!("texture {:?}: {e}", t.name));
-                    None
-                }
-                None => {
-                    warnings.push(format!("texture {:?} has no image data", t.name));
-                    None
+            .texture_sources()
+            .into_iter()
+            .map(|t| {
+                let t = t?;
+                match t.png.map(RgbaImage::decode_png) {
+                    Some(Ok(img)) => {
+                        Some(Texture::new(&image::pad_image(&img, t.uv_pad), t.sampling))
+                    }
+                    Some(Err(e)) => {
+                        warnings.push(format!("texture {:?}: {e}", t.name));
+                        None
+                    }
+                    None => {
+                        warnings.push(format!("texture {:?} has no image data", t.name));
+                        None
+                    }
                 }
             })
             .collect();
@@ -198,8 +203,8 @@ impl<'m> CpuRenderer<'m> {
             if !ms.is_drawn() {
                 continue;
             }
-            let Some(tex) = am
-                .texture
+            let Some(tex) = m
+                .texture_slot(am)
                 .and_then(|ti| self.textures.get(ti))
                 .and_then(Option::as_ref)
             else {
@@ -307,8 +312,8 @@ impl<'m> CpuRenderer<'m> {
             let (Some(am), Some(ms)) = (m.art_meshes.get(ci), frame.meshes.get(ci)) else {
                 continue;
             };
-            let Some(tex) = am
-                .texture
+            let Some(tex) = m
+                .texture_slot(am)
                 .and_then(|ti| self.textures.get(ti))
                 .and_then(Option::as_ref)
             else {
