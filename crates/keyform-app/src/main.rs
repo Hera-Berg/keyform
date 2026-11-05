@@ -15,6 +15,7 @@ mod log;
 mod mesh_edit;
 mod palettes;
 mod param_dialog;
+mod psd_dialog;
 mod theme;
 mod viewer_settings;
 

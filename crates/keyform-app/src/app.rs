@@ -129,6 +129,8 @@ pub struct KeyformApp {
     export_image: crate::export_image::ExportImageState,
     create_deformer: crate::create_deformer::CreateDeformerState,
     auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
+    /// A PSD waiting for the import dialogs.
+    pending_psd: Option<crate::psd_dialog::PendingPsd>,
     param_dialog: crate::param_dialog::ParamDialog,
 }
 
@@ -218,6 +220,7 @@ impl KeyformApp {
             mask_dialog: false,
             create_deformer: Default::default(),
             auto_mesh: Default::default(),
+            pending_psd: None,
             param_dialog: Default::default(),
             export_image: cc
                 .storage
@@ -265,6 +268,17 @@ impl KeyformApp {
     }
 
     pub fn open(&mut self, path: &Path) {
+        // A PSD goes to the import dialogs (psd-import.md §1).
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("psd") || e.eq_ignore_ascii_case("psb"))
+        {
+            match crate::psd_dialog::read(path) {
+                Ok(p) => self.pending_psd = Some(p),
+                Err(e) => self.log.error(e),
+            }
+            return;
+        }
         // Re-opening an open file just activates it.
         if let Some(i) = self.slots.iter().position(|s| s.doc.path == path) {
             self.activate(i);
@@ -409,8 +423,9 @@ impl KeyformApp {
 
     fn open_dialog(&mut self) {
         let files = rfd::FileDialog::new()
-            .add_filter("Models", &["cmo3", "moc3", "json"])
+            .add_filter("Models", &["cmo3", "moc3", "json", "psd"])
             .add_filter("Model project (*.cmo3)", &["cmo3"])
+            .add_filter("Photoshop document (*.psd)", &["psd"])
             .add_filter("Runtime model (*.moc3, *.model3.json)", &["moc3", "json"])
             .pick_files();
         for f in files.unwrap_or_default() {
@@ -1728,6 +1743,19 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::auto_mesh_dialog::dialog(&ctx, &mut self.auto_mesh, doc, &mut self.log);
+        if let Some(mut p) = self.pending_psd.take() {
+            let mut docs: Vec<(u64, &mut Document)> =
+                self.slots.iter_mut().map(|s| (s.uid, &mut s.doc)).collect();
+            match crate::psd_dialog::dialog(&ctx, &mut p, &mut docs, &mut self.log) {
+                crate::psd_dialog::Outcome::None => self.pending_psd = Some(p),
+                crate::psd_dialog::Outcome::Cancel => {}
+                crate::psd_dialog::Outcome::Done(uid) => {
+                    if let Some(i) = self.slots.iter().position(|s| s.uid == uid) {
+                        self.activate(i);
+                    }
+                }
+            }
+        }
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

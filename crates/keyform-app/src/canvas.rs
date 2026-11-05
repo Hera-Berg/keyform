@@ -144,6 +144,15 @@ pub fn canvas_ui(
     ));
 
     if let (Some(rs), Some(frame)) = (rs, doc.frame.as_ref()) {
+        // Textures were added or removed (PSD import, undo): new renderer.
+        if gpu
+            .renderer
+            .as_ref()
+            .is_some_and(|r| r.texture_count() != doc.model.textures.len())
+        {
+            gpu.renderer = None;
+            gpu.mesh_texture = None;
+        }
         if gpu.renderer.is_none() {
             let r = GpuRenderer::with_device(
                 rs.device.clone(),

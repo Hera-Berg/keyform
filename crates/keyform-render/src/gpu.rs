@@ -81,6 +81,11 @@ pub struct GpuRenderer {
 }
 
 impl GpuRenderer {
+    /// Number of texture slots (the model's texture count at creation).
+    pub fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
     /// Creates a headless device. Fails when no adapter is available.
     pub fn new(model: &Model) -> Result<Self, RenderError> {
         pollster::block_on(Self::new_async(model))
