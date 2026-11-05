@@ -125,6 +125,11 @@ pub fn canvas_ui(
         track_cursor(ui, &response, doc, rect);
     } else if doc.mesh_edit.is_some() {
         mesh_tool(ui, &response, doc, gpu, rect, ppp);
+    } else if doc.soft_select.is_some()
+        && !ui.input(|i| i.modifiers.command && !i.modifiers.shift)
+        && !doc.is_dragging()
+    {
+        crate::soft_select::input(ui, &response, doc, rect, ppp);
     } else if doc.glue_tool.is_some() && !ui.input(|i| i.modifiers.command) && !doc.is_dragging() {
         // Ctrl gives the Arrow tool temporarily (canvas-and-tools.md §3).
         crate::glue_tool::input(ui, &response, doc, rect, ppp);
@@ -251,6 +256,16 @@ pub fn canvas_ui(
         if doc.glue_tool.is_some() {
             crate::glue_tool::draw(ui.ctx(), &painter, doc, rect, &to_screen, tokens);
         }
+        if doc.soft_select.is_some() {
+            if let Some(c) = ui
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| rect.contains(*p))
+            {
+                let p = &doc.soft_prefs;
+                let r = (to_screen([p.size / 2.0, 0.0]) - to_screen([0.0, 0.0])).length();
+                brush_outline(&painter, c, r, p.hardness, p.angle, p.shape, tokens.accent);
+            }
+        }
     }
     if gpu.rect.is_some() && doc.lasso && gpu.lasso.len() > 1 {
         painter.add(egui::Shape::closed_line(
@@ -342,20 +357,20 @@ fn arrow_tool(
         if let Some(pt) = doc.point_hit(q, radius) {
             // A point of a selected object.
             if shift {
-                if let Some(i) = set.points.iter().position(|p| *p == pt) {
-                    set.points.remove(i);
+                if set.points.contains(&pt) {
+                    set.retain_points(|p| *p != pt);
                 } else {
                     set.points.push(pt);
                 }
             } else if !set.points.contains(&pt) {
-                set.points = vec![pt];
+                set.set_points(vec![pt]);
             }
             drag_points = true;
         } else if let Some(hit) = doc.hit_test(q) {
             if shift {
                 if let Some(i) = set.objects.iter().position(|o| *o == hit) {
                     set.objects.remove(i);
-                    set.points.retain(|p| p.0 != hit);
+                    set.retain_points(|p| p.0 != hit);
                 } else {
                     set.objects.push(hit);
                 }
@@ -390,6 +405,7 @@ fn arrow_tool(
                     SelectionSet {
                         objects: doc.selection.objects.clone(),
                         points: Vec::new(),
+                        point_weights: Vec::new(),
                     }
                 } else {
                     SelectionSet::default()
@@ -457,6 +473,7 @@ fn mesh_tool(
     let tolerance = 1.0 / doc.view.zoom.max(1e-6);
     let flip = doc.view.mirror;
     let lasso = doc.lasso;
+    let zoom = doc.view.zoom;
     let Some(s) = doc.mesh_edit.as_mut() else {
         return;
     };
@@ -531,6 +548,15 @@ fn mesh_tool(
             }
         }
         MeshTool::Brush => {
+            let b = &mut s.prefs;
+            if crate::soft_select::brush_adjust(
+                ui,
+                response,
+                zoom,
+                (&mut b.brush_size, &mut b.brush_angle, &mut b.brush_hardness),
+            ) {
+                return;
+            }
             if response.drag_started_by(primary) {
                 if let Some(press) = press {
                     s.brush_begin(to_canvas(press), tolerance, flip);
@@ -785,11 +811,22 @@ fn draw_selection(
         }
     }
     // Selected points on top.
-    for &(o, i) in &doc.selection.points {
+    let weighted = !doc.selection.point_weights.is_empty();
+    for (k, &(o, i)) in doc.selection.points.iter().enumerate() {
         if let Some(p) = doc.object_points(o).get(i) {
             let c = to_screen(*p);
-            painter.circle_filled(c, 3.5, tokens.accent);
-            painter.circle_stroke(c, 3.5, egui::Stroke::new(1.0, Color32::WHITE));
+            if weighted {
+                // Soft selection: the weight colour (#80ff0000) by weight.
+                let w = doc.selection.weight(k);
+                painter.circle_filled(
+                    c,
+                    4.0,
+                    Color32::from_rgba_unmultiplied(255, 0, 0, (w * 200.0) as u8 + 30),
+                );
+            } else {
+                painter.circle_filled(c, 3.5, tokens.accent);
+                painter.circle_stroke(c, 3.5, egui::Stroke::new(1.0, Color32::WHITE));
+            }
         }
     }
 }

@@ -81,6 +81,7 @@ impl Document {
             return Err("The glue tools work in the Modeling workspace of a project.".into());
         }
         self.glue_tool = Some(GlueTool { tool, stroke: None });
+        self.soft_select = None;
         Ok(())
     }
 
@@ -185,6 +186,16 @@ pub fn input(
         )
     });
     if space || rkey {
+        return;
+    }
+    let zoom = doc.view.zoom;
+    let p = &mut doc.glue_prefs;
+    if crate::soft_select::brush_adjust(
+        ui,
+        response,
+        zoom,
+        (&mut p.size, &mut p.angle, &mut p.hardness),
+    ) {
         return;
     }
     let view = crate::canvas::view_of(doc, rect, ppp);
@@ -392,6 +403,7 @@ mod tests {
         doc.set_selection(crate::document::SelectionSet {
             objects: vec![Selection::ArtMesh(ma), Selection::ArtMesh(mb)],
             points: vec![(Selection::ArtMesh(ma), ia), (Selection::ArtMesh(mb), ib)],
+            point_weights: Vec::new(),
         });
         let n = glue.pairs.len();
         doc.unglue_selected_vertices().unwrap();

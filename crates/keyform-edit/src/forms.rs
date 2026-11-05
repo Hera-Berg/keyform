@@ -237,17 +237,18 @@ fn move_points(
     points: &mut [f32],
     parent: Option<&DeformerMap>,
     delta: [f32; 2],
-    which: Option<&[usize]>,
+    which: Option<&[(usize, f32)]>,
 ) -> Result<(), FormError> {
     let n = points.len() / 2;
     let mut moved = points.to_vec();
-    let mut each = |i: usize| -> Result<(), FormError> {
+    let mut each = |i: usize, w: f32| -> Result<(), FormError> {
+        let d = [delta[0] * w, delta[1] * w];
         let p = [points[2 * i], points[2 * i + 1]];
         let q = match parent {
-            None => [p[0] + delta[0], p[1] + delta[1]],
+            None => [p[0] + d[0], p[1] + d[1]],
             Some(map) => {
                 let c = map.map(p);
-                map.inverse([c[0] + delta[0], c[1] + delta[1]])
+                map.inverse([c[0] + d[0], c[1] + d[1]])
                     .ok_or(FormError::NotInvertible)?
             }
         };
@@ -257,13 +258,13 @@ fn move_points(
     };
     match which {
         Some(list) => {
-            for &i in list.iter().filter(|&&i| i < n) {
-                each(i)?;
+            for &(i, w) in list.iter().filter(|(i, w)| *i < n && *w != 0.0) {
+                each(i, w)?;
             }
         }
         None => {
             for i in 0..n {
-                each(i)?;
+                each(i, 1.0)?;
             }
         }
     }
@@ -284,6 +285,20 @@ pub fn translate(
     delta: [f32; 2],
     which: Option<&[usize]>,
 ) -> Result<bool, FormError> {
+    let list: Option<Vec<(usize, f32)>> = which.map(|w| w.iter().map(|&i| (i, 1.0)).collect());
+    translate_weighted(m, o, cell, parent, delta, list.as_deref())
+}
+
+/// Like [`translate`], each listed point moving by its weight × `delta`
+/// (soft selection; canvas-and-tools.md §4 "Soft Selection").
+pub fn translate_weighted(
+    m: &mut Model,
+    o: ObjectRef,
+    cell: usize,
+    parent: Option<&DeformerMap>,
+    delta: [f32; 2],
+    which: Option<&[(usize, f32)]>,
+) -> Result<bool, FormError> {
     if delta == [0.0, 0.0] {
         return Ok(false);
     }
@@ -302,7 +317,10 @@ pub fn translate(
                 }
                 DeformerKind::Rotation(r) => {
                     let f = r.grid.keyforms.get_mut(cell).ok_or(FormError::Missing)?;
-                    move_points(&mut f.origin, parent, delta, None)?;
+                    let w = which
+                        .and_then(|l| l.iter().find(|x| x.0 == 0))
+                        .map_or(1.0, |x| x.1);
+                    move_points(&mut f.origin, parent, delta, Some(&[(0, w)]))?;
                 }
             }
         }

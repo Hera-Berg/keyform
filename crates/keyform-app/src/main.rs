@@ -21,6 +21,7 @@ mod palettes;
 mod param_dialog;
 mod parts_settings;
 mod psd_dialog;
+mod soft_select;
 mod texture_atlas;
 mod theme;
 mod viewer_settings;

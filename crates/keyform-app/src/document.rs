@@ -54,8 +54,8 @@ struct MoveTarget {
     cell: usize,
     /// The parent deformer's map at drag start.
     parent: Option<keyform_eval::DeformerMap>,
-    /// Points to move; all if `None`.
-    points: Option<Vec<usize>>,
+    /// Points to move with their soft-selection weights; all if `None`.
+    points: Option<Vec<(usize, f32)>>,
     /// Warp net level when the points are Bezier net points.
     net_level: Option<u8>,
 }
@@ -145,13 +145,45 @@ pub struct SelectionSet {
     pub objects: Vec<Selection>,
     /// (object, point index): mesh vertices, warp grid points, rotation origin.
     pub points: Vec<(Selection, usize)>,
+    /// Soft-selection weight per entry of `points` (0…1); empty = all 1.
+    /// spec: canvas-and-tools.md §4 "Soft Selection"
+    pub point_weights: Vec<f32>,
 }
 
 impl SelectionSet {
+    /// Soft-selection weight of point entry `i` (1 when unweighted).
+    pub fn weight(&self, i: usize) -> f32 {
+        self.point_weights.get(i).copied().unwrap_or(1.0)
+    }
+
+    /// Keeps the point entries for which `keep` holds, with their weights.
+    pub fn retain_points(&mut self, keep: impl Fn(&(Selection, usize)) -> bool) {
+        let mut w = Vec::new();
+        let weighted = !self.point_weights.is_empty();
+        let mut pts = Vec::new();
+        for (i, p) in self.points.iter().enumerate() {
+            if keep(p) {
+                pts.push(*p);
+                if weighted {
+                    w.push(self.weight(i));
+                }
+            }
+        }
+        self.points = pts;
+        self.point_weights = w;
+    }
+
+    /// Sets the point entries (unweighted).
+    pub fn set_points(&mut self, pts: Vec<(Selection, usize)>) {
+        self.points = pts;
+        self.point_weights.clear();
+    }
+
     pub fn of(o: Option<Selection>) -> Self {
         Self {
             objects: o.into_iter().collect(),
             points: Vec::new(),
+            point_weights: Vec::new(),
         }
     }
 }
@@ -306,6 +338,10 @@ pub struct Document {
     /// Lasso Tool [L] instead of the Arrow tool's rectangle [A]: dragging
     /// on empty space draws a lasso. spec: canvas-and-tools.md §3
     pub lasso: bool,
+    /// Soft Selection tool, when active.
+    pub soft_select: Option<crate::soft_select::SoftSelect>,
+    /// Soft Selection brush settings (size 100 px, weight 100 %).
+    pub soft_prefs: crate::glue_tool::GluePrefs,
     /// Copy Form data (form-tools.md §1).
     pub form_clipboard: Vec<keyform_edit::form_tools::CopiedForm>,
     /// Never saved yet: the first save asks for a location.
@@ -627,6 +663,8 @@ impl Document {
             glue_tool: None,
             glue_prefs: Default::default(),
             lasso: false,
+            soft_select: None,
+            soft_prefs: Default::default(),
             form_clipboard: Vec::new(),
             untitled: false,
             drag: None,
@@ -862,8 +900,9 @@ impl Document {
                 self.selection
                     .points
                     .iter()
-                    .filter(|p| p.0 == o)
-                    .map(|p| p.1)
+                    .enumerate()
+                    .filter(|(_, p)| p.0 == o)
+                    .map(|(k, p)| (p.1, self.selection.weight(k)))
                     .collect()
             });
             let net_level = (points && self.uses_net(o)).then_some(self.edit_level);
@@ -950,16 +989,19 @@ impl Document {
         let r = match &d.kind {
             DragKind::Move(targets) => targets.iter().try_for_each(|t| {
                 match (t.net_level, t.points.as_deref()) {
-                    (Some(level), Some(which)) => keyform_edit::translate_net(
-                        &mut m,
-                        t.object,
-                        t.cell,
-                        t.parent.as_ref(),
-                        total,
-                        which,
-                        level,
-                    ),
-                    _ => keyform_edit::translate(
+                    (Some(level), Some(which)) => {
+                        let idx: Vec<usize> = which.iter().map(|w| w.0).collect();
+                        keyform_edit::translate_net(
+                            &mut m,
+                            t.object,
+                            t.cell,
+                            t.parent.as_ref(),
+                            total,
+                            &idx,
+                            level,
+                        )
+                    }
+                    _ => keyform_edit::forms::translate_weighted(
                         &mut m,
                         t.object,
                         t.cell,
@@ -1416,7 +1458,7 @@ impl Document {
         }
         self.edit_level = level;
         // Point indices mean different things per level.
-        self.selection.points.clear();
+        self.selection.set_points(Vec::new());
         self.history.commit(
             "Edit Level",
             StepKind::SelectionOnly,
@@ -1559,7 +1601,7 @@ impl Document {
         self.model = state.model;
         let mut sel = state.selection;
         sel.objects.retain(|s| self.selection_valid(*s));
-        sel.points.retain(|(s, _)| self.selection_valid(*s));
+        sel.retain_points(|(s, _)| self.selection_valid(*s));
         self.selection = sel;
         self.edit_level = state.edit_level;
         self.model_changed();
@@ -2422,6 +2464,7 @@ mod tests {
         doc.set_selection(SelectionSet {
             objects: vec![sel],
             points: vec![hit],
+            point_weights: Vec::new(),
         });
         doc.drag_begin(true).unwrap();
         doc.drag_update([0.0, 7.0], false);
@@ -2547,6 +2590,7 @@ mod tests {
         doc.set_selection(SelectionSet {
             objects: vec![sel],
             points: vec![(sel, centre)],
+            point_weights: Vec::new(),
         });
         doc.drag_begin(true).unwrap();
         doc.drag_update([12.0, 0.0], false);
@@ -2664,11 +2708,13 @@ mod tests {
         doc.set_selection(SelectionSet {
             objects: vec![Selection::ArtMesh(0), Selection::ArtMesh(1)],
             points: vec![(Selection::ArtMesh(0), 0)],
+            point_weights: Vec::new(),
         });
         assert!(doc.glue_selected_vertices().is_err());
         doc.set_selection(SelectionSet {
             objects: vec![Selection::ArtMesh(0), Selection::ArtMesh(1)],
             points: vec![(Selection::ArtMesh(0), 0), (Selection::ArtMesh(1), 0)],
+            point_weights: Vec::new(),
         });
         doc.glue_selected_vertices().unwrap();
         assert_eq!(doc.model.glues.len(), n_glue + 1);

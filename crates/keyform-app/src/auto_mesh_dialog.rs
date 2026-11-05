@@ -227,6 +227,7 @@ pub fn dialog(
             doc.set_selection(crate::document::SelectionSet {
                 objects: meshes.into_iter().map(Selection::ArtMesh).collect(),
                 points: Vec::new(),
+                point_weights: Vec::new(),
             });
             if c > 0 {
                 log.warn(format!("{c} crossing edges could not be kept in the mesh."));

@@ -198,6 +198,7 @@ pub fn parts_ui(
                 doc.set_selection(crate::document::SelectionSet {
                     objects: users.into_iter().map(Selection::ArtMesh).collect(),
                     points: Vec::new(),
+                    point_weights: Vec::new(),
                 });
             } else if sel != doc.primary() {
                 doc.select(sel);

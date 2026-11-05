@@ -1212,7 +1212,7 @@ impl KeyformApp {
                 .map(|s| &mut s.doc)
                 .filter(|d| d.mode == crate::document::Mode::Modeling)
             {
-                let arrow = !d.lasso && d.glue_tool.is_none();
+                let arrow = !d.lasso && d.glue_tool.is_none() && d.soft_select.is_none();
                 if ui
                     .add(egui::Button::selectable(arrow, "Arrow"))
                     .on_hover_text("Arrow tool (A): click to select, drag for a rectangle")
@@ -1227,6 +1227,15 @@ impl KeyformApp {
                     .clicked()
                 {
                     d.lasso = true;
+                    let _ = d.set_soft_select(false);
+                }
+                if ui
+                    .add(egui::Button::selectable(d.soft_select.is_some(), "Soft"))
+                    .on_hover_text("Brush Selection tool (B): paint weighted point selections")
+                    .clicked()
+                {
+                    let on = d.soft_select.is_none();
+                    let _ = d.set_soft_select(on);
                 }
                 ui.separator();
             }
@@ -1499,17 +1508,35 @@ impl KeyformApp {
         }
         // Arrow tool [A] / Lasso Tool [L] (menus.md "Keyboard-only commands").
         if !ctx.egui_wants_keyboard_input() {
-            let (a, l) = ctx.input_mut(|i| {
+            let (a, l, b) = ctx.input_mut(|i| {
                 (
                     i.consume_shortcut(&K::new(M::NONE, Key::A)),
                     i.consume_shortcut(&K::new(M::NONE, Key::L)),
+                    i.key_pressed(Key::B) && i.modifiers.is_none(),
                 )
             });
             if a || l {
                 if let Some(d) = self.active_doc() {
                     d.lasso = l;
+                    let _ = d.set_soft_select(false);
                     if a {
                         let _ = d.set_glue_tool(None);
+                    }
+                }
+            }
+            // Brush Selection tool [B]; in a brush tool B + drag sizes the
+            // brush instead (canvas-and-tools.md §1).
+            if b {
+                if let Some(d) = self.active_doc() {
+                    let brush = d.glue_tool.is_some()
+                        || d.soft_select.is_some()
+                        || d.mesh_edit
+                            .as_ref()
+                            .is_some_and(|s| s.tool == crate::mesh_edit::MeshTool::Brush);
+                    if !brush {
+                        if let Err(e) = d.set_soft_select(true) {
+                            self.log.warn(e);
+                        }
                     }
                 }
             }
@@ -2280,6 +2307,10 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
             }
             if doc.glue_tool.is_some() {
                 glue_controls(ui, doc, log);
+                return;
+            }
+            if doc.soft_select.is_some() {
+                crate::soft_select::controls(ui, doc);
                 return;
             }
             if doc.lasso {
