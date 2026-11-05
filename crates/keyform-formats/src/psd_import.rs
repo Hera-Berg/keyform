@@ -26,6 +26,8 @@ pub struct ImportOptions {
     pub path: String,
     pub modified_ms: i64,
     pub imported_ms: i64,
+    /// New model only: the preview reduction ratio chosen (§3.1).
+    pub preview_reduction: u32,
 }
 
 impl Default for ImportOptions {
@@ -36,8 +38,57 @@ impl Default for ImportOptions {
             path: String::new(),
             modified_ms: 0,
             imported_ms: 0,
+            preview_reduction: 1,
         }
     }
+}
+
+/// One choice of the preview resolution prompt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewChoice {
+    /// 1, 2, 4 or 8.
+    pub factor: u32,
+    /// `"<label> ( W x H px / MMB )"` (no space before MB, observed), plus
+    /// `" < Recommended"`.
+    pub label: String,
+}
+
+/// The preview resolution prompt (§3.1): the choices, the preselected
+/// one, and whether to ask at all (not when Full Scale qualifies).
+pub fn preview_choices(psd: &Psd) -> (Vec<PreviewChoice>, usize, bool) {
+    const LIMIT: f64 = 209_715_200.0;
+    let total: f64 = psd
+        .layers()
+        .iter()
+        .map(|l| f64::from(l.bounds.width) * f64::from(l.bounds.height) * 4.0)
+        .sum();
+    let names = ["Full Scale", "1/2 preview", "1/4 preview", "1/8 preview"];
+    let factors = [1u32, 2, 4, 8];
+    let fits = |f: u32| total / f64::from(f * f) < LIMIT;
+    let pre = factors.iter().position(|&f| fits(f)).unwrap_or(3);
+    let choices = names
+        .iter()
+        .zip(factors)
+        .enumerate()
+        .map(|(k, (name, f))| {
+            let mb = total / f64::from(f * f) / (1024.0 * 1024.0);
+            let mb = if mb <= 10.0 {
+                format!("{mb:.2}")
+            } else {
+                format!("{}", mb as u64)
+            };
+            PreviewChoice {
+                factor: f,
+                label: format!(
+                    "{name} ( {} x {} px / {mb}MB ){}",
+                    psd.width / f,
+                    psd.height / f,
+                    if k == pre { " < Recommended" } else { "" }
+                ),
+            }
+        })
+        .collect();
+    (choices, pre, pre != 0)
 }
 
 /// What an import created.
@@ -790,6 +841,7 @@ pub fn new_model_from_psd(
     let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
     let mut doc = crate::cmo3::Cmo3Document::new_model(stem, psd.width, psd.height)?;
     let m = &mut doc.model;
+    m.preview_reduction = o.preview_reduction.max(1);
     for (id, name, min, max, def, desc) in STANDARD_PARAMETERS {
         let mut p = Parameter::new(id, min, max, def);
         p.guid = new_guid();

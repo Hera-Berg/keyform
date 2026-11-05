@@ -24,6 +24,9 @@ pub struct PendingPsd {
     target: Option<u64>,
     add_layers: bool,
     register_only: bool,
+    /// New model: the preview resolution prompt (legacy blend flag,
+    /// choices, selected index). spec: psd-import.md §3.1
+    resolution: Option<(bool, Vec<keyform_formats::psd_import::PreviewChoice>, usize)>,
 }
 
 /// Reads and checks a dropped/opened PSD. spec: psd-import.md §1, §3
@@ -47,6 +50,7 @@ pub fn read(path: &Path) -> Result<PendingPsd, String> {
         target: None,
         add_layers: true,
         register_only: false,
+        resolution: None,
     })
 }
 
@@ -79,6 +83,34 @@ pub fn dialog(
     let mut outcome = Outcome::None;
     let mut open = true;
     let mut new_model = None;
+    // The preview resolution prompt of a new model.
+    if let Some((legacy, choices, sel)) = p.resolution.as_mut() {
+        let (mut ok, mut cancel) = (false, false);
+        egui::Window::new("Confirm")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Please select the resolution for displaying the model image");
+                for (k, c) in choices.iter().enumerate() {
+                    ui.radio_value(sel, k, &c.label);
+                }
+                ui.horizontal(|ui| {
+                    ok = ui.button("OK").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if cancel || !open {
+            return Outcome::Cancel;
+        }
+        if !ok {
+            return Outcome::None;
+        }
+        let factor = choices[*sel].factor;
+        let legacy = *legacy;
+        p.resolution = None;
+        return make_new_model(p, &name, legacy, factor, log);
+    }
     match p.target {
         None => {
             egui::Window::new("Select an action or a model to integrate PSD")
@@ -194,32 +226,17 @@ pub fn dialog(
         }
     }
     if let Some(legacy) = new_model {
-        // spec: psd-import.md §4
-        let o = ImportOptions {
-            legacy_blend: legacy,
-            path: p.path.to_string_lossy().to_string(),
-            modified_ms: std::fs::metadata(&p.path)
-                .and_then(|m| m.modified())
-                .map_or(0, millis),
-            imported_ms: millis(std::time::SystemTime::now()),
-            ..ImportOptions::default()
-        };
-        let made = Psd::parse(&p.data)
-            .map_err(|e| e.to_string())
-            .and_then(|psd| new_model_from_psd(&name, &psd, &o).map_err(|e| e.to_string()));
-        return match made {
-            Ok((doc, report)) => {
-                for w in report.warnings {
-                    log.warn(w);
-                }
-                log.info(format!(
-                    "New model from {name}: {} art meshes.",
-                    report.art_meshes.len()
-                ));
-                Outcome::NewModel(p.path.with_extension("cmo3"), Box::new(doc))
+        // spec: psd-import.md §3.1: ask only when Full Scale is too large.
+        let choices =
+            Psd::parse(&p.data).map(|psd| keyform_formats::psd_import::preview_choices(&psd));
+        return match choices {
+            Ok((choices, pre, true)) => {
+                p.resolution = Some((legacy, choices, pre));
+                Outcome::None
             }
+            Ok((_, _, false)) => make_new_model(p, &name, legacy, 1, log),
             Err(e) => {
-                log.error(e);
+                log.error(e.to_string());
                 Outcome::Cancel
             }
         };
@@ -228,4 +245,38 @@ pub fn dialog(
         outcome = Outcome::Cancel;
     }
     outcome
+}
+
+/// A new model from the PSD (spec: psd-import.md §4) with preview
+/// reduction `factor`.
+fn make_new_model(p: &PendingPsd, name: &str, legacy: bool, factor: u32, log: &mut Log) -> Outcome {
+    let o = ImportOptions {
+        legacy_blend: legacy,
+        path: p.path.to_string_lossy().to_string(),
+        modified_ms: std::fs::metadata(&p.path)
+            .and_then(|m| m.modified())
+            .map_or(0, millis),
+        imported_ms: millis(std::time::SystemTime::now()),
+        preview_reduction: factor,
+        ..ImportOptions::default()
+    };
+    let made = Psd::parse(&p.data)
+        .map_err(|e| e.to_string())
+        .and_then(|psd| new_model_from_psd(name, &psd, &o).map_err(|e| e.to_string()));
+    match made {
+        Ok((doc, report)) => {
+            for w in report.warnings {
+                log.warn(w);
+            }
+            log.info(format!(
+                "New model from {name}: {} art meshes.",
+                report.art_meshes.len()
+            ));
+            Outcome::NewModel(p.path.with_extension("cmo3"), Box::new(doc))
+        }
+        Err(e) => {
+            log.error(e);
+            Outcome::Cancel
+        }
+    }
 }

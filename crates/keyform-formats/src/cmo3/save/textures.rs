@@ -527,6 +527,10 @@ pub(super) fn sync_textures(
         new.model_images[..old.model_images.len()] == old.model_images[..],
         "model images",
     )?;
+    if old.preview_reduction != new.preview_reduction {
+        let p = manager_list(root, "previewReductionRatio")?;
+        element_at(root, Some(&p))?.text = new.preview_reduction.max(1).to_string();
+    }
     // Existing atlas pages that changed are rewritten in place.
     for t in 0..old.textures.len() {
         let (o, n) = (&old.textures[t], &new.textures[t]);

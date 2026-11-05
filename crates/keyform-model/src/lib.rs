@@ -102,6 +102,9 @@ pub struct Model {
     pub lip_sync_parameters: Vec<ParamIndex>,
     /// SDK target (`targetVersionNo`), 0 when unselected. spec: 10-formats/cmo3.md §2
     pub target_version: i32,
+    /// On-screen model-image resolution divisor (1, 2, 4, 8); 0 = not
+    /// stored (1). Display only. spec: 70-advanced/psd-import.md §3.1
+    pub preview_reduction: u32,
 }
 
 impl Model {
@@ -131,6 +134,7 @@ impl Model {
             && self.eye_blink_parameters == other.eye_blink_parameters
             && self.lip_sync_parameters == other.lip_sync_parameters
             && self.target_version == other.target_version
+            && self.preview_reduction == other.preview_reduction
     }
 
     /// True if `other` holds the same data. Shared objects are compared by
@@ -162,6 +166,7 @@ impl Model {
             && self.eye_blink_parameters == other.eye_blink_parameters
             && self.lip_sync_parameters == other.lip_sync_parameters
             && self.target_version == other.target_version
+            && self.preview_reduction == other.preview_reduction
     }
 
     /// The renderer's texture slot of art mesh `a`: its atlas page, or, in

@@ -1249,3 +1249,41 @@ fn create_art_mesh_from_stored_layers() {
         std::fs::write(Path::new(&dir).join("taka_layer_mesh.cmo3"), &bytes).unwrap();
     }
 }
+
+/// Preview resolution prompt (psd-import.md §3.1): labels and the
+/// recommended choice; a chosen ratio is saved with the new model.
+#[test]
+fn preview_resolution_choices() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{new_model_from_psd, preview_choices, ImportOptions};
+    let mut smallest = None;
+    for path in sample_files("psd") {
+        let data = std::fs::read(&path).unwrap();
+        let psd = Psd::parse(&data).unwrap();
+        let (choices, pre, ask) = preview_choices(&psd);
+        eprintln!("{path:?}: preselect {pre}, ask {ask}");
+        for c in &choices {
+            eprintln!("  {}", c.label);
+        }
+        assert_eq!(choices.len(), 4);
+        assert!(choices[pre].label.ends_with(" < Recommended"));
+        assert_eq!(ask, pre != 0);
+        if smallest
+            .as_ref()
+            .is_none_or(|(n, _): &(usize, _)| data.len() < *n)
+        {
+            smallest = Some((data.len(), data));
+        }
+    }
+    let Some((_, data)) = smallest else { return };
+    let psd = Psd::parse(&data).unwrap();
+    let o = ImportOptions {
+        preview_reduction: 2,
+        ..ImportOptions::default()
+    };
+    let (mut doc, _) = new_model_from_psd("t.psd", &psd, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert_eq!(back.model.preview_reduction, 2);
+}

@@ -646,6 +646,7 @@ impl<'a, 'd> Loader<'a, 'd> {
         let Some(tm) = root.field("textureManager")? else {
             return Ok(());
         };
+        m.preview_reduction = tm.i32("previewReductionRatio")?.unwrap_or(0).max(0) as u32;
         // Layered images (imported PSDs). spec: psd-import.md §8
         for w in tm.list("_rawImages")? {
             let Some(img) = w.field("image")? else {
