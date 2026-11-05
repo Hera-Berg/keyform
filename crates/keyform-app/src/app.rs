@@ -112,6 +112,8 @@ pub struct KeyformApp {
     pub initial_mesh_edit: bool,
     /// Then open the Automatic Mesh generator (`--auto-mesh`).
     pub initial_auto_mesh: bool,
+    /// Then open Edit Texture Atlas (`--atlas`).
+    pub initial_atlas: bool,
     /// Documents (by uid) waiting to be closed; modified ones ask to save
     /// first (main-window.md §5).
     closing: Vec<u64>,
@@ -129,6 +131,7 @@ pub struct KeyformApp {
     export_image: crate::export_image::ExportImageState,
     create_deformer: crate::create_deformer::CreateDeformerState,
     auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
+    atlas: crate::texture_atlas::AtlasWindow,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
     param_dialog: crate::param_dialog::ParamDialog,
@@ -220,6 +223,7 @@ impl KeyformApp {
             mask_dialog: false,
             create_deformer: Default::default(),
             auto_mesh: Default::default(),
+            atlas: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
             export_image: cc
@@ -246,6 +250,7 @@ impl KeyformApp {
             initial_select: None,
             initial_mesh_edit: false,
             initial_auto_mesh: false,
+            initial_atlas: false,
             closing: Vec::new(),
             quit_after_closing: false,
             allow_quit: false,
@@ -768,6 +773,29 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        ui.separator();
+        ui.menu_button("Texture Atlas", |ui| {
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new("Edit Texture Atlas…").shortcut_text("Ctrl+T"),
+                )
+                .clicked()
+            {
+                self.open_atlas();
+                ui.close();
+            }
+        });
+    }
+
+    /// Modeling ▸ Texture Atlas ▸ Edit Texture Atlas [Ctrl+T].
+    fn open_atlas(&mut self) {
+        let Some(doc) = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc) else {
+            return;
+        };
+        if let Err(e) = self.atlas.show(doc) {
+            self.log.warn(e);
+        }
     }
 
     /// The "Mesh Edit mode" menu (subset). spec: 50-ui/menus.md "Mesh Edit mode"
@@ -1291,6 +1319,12 @@ impl KeyformApp {
         {
             self.delete_active();
         }
+        // Edit Texture Atlas [Ctrl+T] (menus.md "Texture Atlas").
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::T)))
+        {
+            self.open_atlas();
+        }
         // Automatic Mesh generator [Ctrl+Shift+A] (menus.md "ArtMesh").
         if !ctx.egui_wants_keyboard_input()
             && ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::A)))
@@ -1639,6 +1673,12 @@ impl eframe::App for KeyformApp {
         if let (Some(n), Some(s)) = (self.initial_motion.take(), self.slots.first_mut()) {
             s.doc.play_motion(n);
         }
+        if let (true, Some(s)) = (self.initial_atlas, self.slots.first()) {
+            self.initial_atlas = false;
+            if let Err(e) = self.atlas.show(&s.doc) {
+                self.log.warn(e);
+            }
+        }
         if let (Some(id), Some(s)) = (self.initial_select.take(), self.slots.first_mut()) {
             use crate::document::Selection;
             let m = &s.doc.model;
@@ -1753,6 +1793,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::auto_mesh_dialog::dialog(&ctx, &mut self.auto_mesh, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::texture_atlas::dialog(&ctx, &mut self.atlas, doc, &mut self.log);
         if let Some(mut p) = self.pending_psd.take() {
             let mut docs: Vec<(u64, &mut Document)> =
                 self.slots.iter_mut().map(|s| (s.uid, &mut s.doc)).collect();

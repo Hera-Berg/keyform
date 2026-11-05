@@ -23,6 +23,10 @@ const USAGE: &str = "usage:
   kf psd <in.cmo3> <file.psd> <out.cmo3|out.png> [--register] [--legacy]
                                    PSD import (psd-import.md §6); a .png output renders
                                    the result instead of saving
+  kf atlas <in.cmo3> <out.cmo3|out.png> new [WxH] [visible|all|none]
+  kf atlas <in.cmo3> <out.cmo3|out.png> layout <page> [--margin M] [--scale S] [--no-rotate] [--images]
+                                   texture atlas pages (texture-atlas.md); a .png output
+                                   writes the last page image
   kf newpsd <file.psd> <out.cmo3|out.png>
                                    a new model from a PSD (psd-import.md §4)
   kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
@@ -60,6 +64,9 @@ fn main() -> ExitCode {
         ["automesh", input, output, rest @ ..] => {
             automesh::run(Path::new(input), Path::new(output), rest)
         }
+        ["atlas", input, output, rest @ ..] => {
+            atlas::run(Path::new(input), Path::new(output), rest)
+        }
         ["newpsd", psd, out, rest @ ..] => psd::new_model(Path::new(psd), Path::new(out), rest),
         ["psd", input, psd, out, rest @ ..] => {
             psd::run(Path::new(input), Path::new(psd), Path::new(out), rest)
@@ -92,6 +99,7 @@ fn main() -> ExitCode {
     }
 }
 
+mod atlas;
 mod automesh;
 mod compare;
 mod edit;

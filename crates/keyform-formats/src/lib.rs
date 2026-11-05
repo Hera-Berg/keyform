@@ -2,6 +2,7 @@
 //! input as untrusted.
 
 pub mod atlas;
+pub mod atlas_edit;
 mod bytes;
 pub mod caff;
 pub mod cmo3;

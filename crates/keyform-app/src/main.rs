@@ -16,6 +16,7 @@ mod mesh_edit;
 mod palettes;
 mod param_dialog;
 mod psd_dialog;
+mod texture_atlas;
 mod theme;
 mod viewer_settings;
 
@@ -31,6 +32,7 @@ fn main() -> eframe::Result<()> {
     let mut select = None;
     let mut mesh_edit = false;
     let mut auto_mesh = false;
+    let mut atlas = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -39,6 +41,7 @@ fn main() -> eframe::Result<()> {
             "--select" => select = args.next(),
             "--mesh-edit" => mesh_edit = true,
             "--auto-mesh" => auto_mesh = true,
+            "--atlas" => atlas = true,
             "--frames" => frames = args.next().and_then(|n| n.parse().ok()).unwrap_or(frames),
             "--size" => {
                 if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
@@ -92,6 +95,7 @@ fn main() -> eframe::Result<()> {
             a.initial_select = select;
             a.initial_mesh_edit = mesh_edit;
             a.initial_auto_mesh = auto_mesh;
+            a.initial_atlas = atlas;
             Ok(Box::new(a))
         }),
     )

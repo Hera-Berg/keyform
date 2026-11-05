@@ -21,6 +21,9 @@ pub struct ViewGpu {
     rect: Option<(Pos2, bool)>,
     /// The texture page shown in mesh edit mode (texture index).
     mesh_texture: Option<(usize, egui::TextureHandle)>,
+    /// The texture images the renderer was built with (data address and
+    /// length per slot), to rebuild it when a page is re-rendered.
+    textures_key: Vec<Option<(usize, usize)>>,
 }
 
 /// Pick radius for points, in screen points.
@@ -145,15 +148,22 @@ pub fn canvas_ui(
 
     if let (Some(rs), Some(frame)) = (rs, doc.frame.as_ref()) {
         // Textures were added or removed (PSD import, undo): new renderer.
-        if gpu
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.texture_count() != doc.model.texture_sources().len())
-        {
+        let key: Vec<Option<(usize, usize)>> = doc
+            .model
+            .texture_sources()
+            .iter()
+            .map(|s| {
+                s.as_ref()
+                    .and_then(|s| s.png)
+                    .map(|p| (p.as_ptr() as usize, p.len()))
+            })
+            .collect();
+        if gpu.renderer.is_some() && gpu.textures_key != key {
             gpu.renderer = None;
             gpu.mesh_texture = None;
         }
         if gpu.renderer.is_none() {
+            gpu.textures_key = key;
             let r = GpuRenderer::with_device(
                 rs.device.clone(),
                 rs.queue.clone(),

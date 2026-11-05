@@ -250,7 +250,7 @@ impl Cmo3Document {
         }
         let _ = new_images;
         let mut archive = self.archive.clone();
-        textures::add_entries(&mut archive, &mut ctx.tex);
+        textures::add_entries(&mut archive, &mut ctx.tex, &xml.root);
         if new
             .glues
             .iter()
@@ -1141,6 +1141,22 @@ fn write_art_mesh(
     o: &ArtMesh,
     n: &ArtMesh,
 ) -> Result<()> {
+    // Errors name the mesh.
+    write_art_mesh_fields(root, ctx, src, o, n).map_err(|e| match e {
+        FormatError::Invalid(m) if !m.contains(&*n.info.id) => {
+            FormatError::Invalid(format!("art mesh {}: {m}", n.info.id))
+        }
+        e => e,
+    })
+}
+
+fn write_art_mesh_fields(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    o: &ArtMesh,
+    n: &ArtMesh,
+) -> Result<()> {
     let rest_same = ArtMesh {
         info: o.info.clone(),
         target: o.target,
@@ -1159,10 +1175,17 @@ fn write_art_mesh(
         generator: o.generator,
         clip: o.clip.clone(),
         clip_missing: o.clip_missing,
+        texture: o.texture,
         ..n.clone()
     } == *o;
     if !rest_same {
         return unsupported(format!("art mesh {}: texture", o.info.id));
+    }
+    if mesh::texture_input_changed(ctx, o, n) {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        mesh::write_texture_input(root, ctx, &path, o, n)?;
     }
     if mesh::topology_changed(o, n) {
         let Some(path) = src.element.clone() else {

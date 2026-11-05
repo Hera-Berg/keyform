@@ -1134,3 +1134,45 @@ fn new_model_with_deformers() {
     assert!(back.model.same_data(&edited));
     assert_eq!(back.model.deformers.len(), 2);
 }
+
+/// Texture atlas on a new model from a PSD (texture-atlas.md §3–6): a new
+/// page switches the art meshes from their model images to the atlas;
+/// Auto Layout of that saved page rewrites it in place. Both saves reload
+/// as the edited model.
+#[test]
+fn atlas_create_and_layout_saves() {
+    use keyform_formats::atlas::LayoutSettings;
+    use keyform_formats::atlas_edit::{auto_layout, create_atlas, default_size, Insert};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::new_model_from_psd;
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let (mut doc, _) = new_model_from_psd("t.psd", &psd, &Default::default()).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    let (w, h) = default_size(&doc.model);
+    let t = create_atlas(&mut doc.model, "Texture0", w, h, Insert::All).unwrap();
+    assert!(doc.model.art_meshes.iter().all(|a| a.texture == Some(t)));
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited), "after create");
+    let mut doc = back;
+    let missed = auto_layout(&mut doc.model, t, &LayoutSettings::default(), true).unwrap();
+    eprintln!("auto layout: {missed} images did not fit");
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited), "after layout");
+    let mut again = back;
+    assert_eq!(again.save_bytes().unwrap(), bytes);
+}

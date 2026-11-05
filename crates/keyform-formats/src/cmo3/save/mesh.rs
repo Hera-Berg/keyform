@@ -233,3 +233,185 @@ pub(super) fn write_clip_list(
     ctx.structural = true;
     Ok(())
 }
+
+/// The atlas entry of `a`'s model image on page `t` of `m`.
+fn entry_of(m: &keyform_model::Model, t: usize, a: &ArtMesh) -> Option<keyform_model::AtlasEntry> {
+    let k = a.model_image?;
+    m.textures
+        .get(t)?
+        .entries
+        .iter()
+        .find(|e| e.model_image == k)
+        .copied()
+}
+
+/// The `GTexture2D` id of page `t` of the new model: made by this save, or
+/// the one an existing art mesh on that page refers to.
+fn atlas_texture_id(root: &mut Element, ctx: &Ctx, t: usize) -> Result<String> {
+    if let Some((_, g)) = ctx.tex.atlases.get(&t) {
+        return Ok(g.clone());
+    }
+    let guid = &ctx.new_model.textures[t].guid;
+    let old = ctx.old_model;
+    for a in &old.art_meshes {
+        if a.texture
+            .and_then(|k| old.textures.get(k))
+            .is_some_and(|x| &x.guid == guid)
+        {
+            if let Some(path) = ctx.object_paths.get(&a.info.guid).cloned() {
+                let f = field_path(root, &path, "texture")?;
+                if let Some(id) = element_at(root, Some(&f))?.attr("xs.ref") {
+                    return Ok(id.to_owned());
+                }
+            }
+        }
+    }
+    unsupported(format!(
+        "texture {}: no art mesh uses it yet",
+        ctx.new_model.textures[t].name
+    ))
+}
+
+/// Whether `a`'s texture input changed between the models: another page,
+/// or its entry on the same page moved.
+pub(super) fn texture_input_changed(ctx: &Ctx, o: &ArtMesh, n: &ArtMesh) -> bool {
+    let (om, nm) = (ctx.old_model, ctx.new_model);
+    let og = o.texture.and_then(|t| om.textures.get(t)).map(|t| &t.guid);
+    let ng = n.texture.and_then(|t| nm.textures.get(t)).map(|t| &t.guid);
+    if og != ng {
+        return true;
+    }
+    match (o.texture, n.texture) {
+        (Some(a), Some(b)) => {
+            entry_of(om, a, o).map(|e| e.atlas_to_canvas)
+                != entry_of(nm, b, n).map(|e| e.atlas_to_canvas)
+        }
+        _ => false,
+    }
+}
+
+/// Writes `n`'s current texture input: hooked to (another) atlas page, a
+/// region input is added and made current, with the atlas texture and
+/// state; on the same page, the region's transform follows its entry.
+/// spec: 70-advanced/texture-atlas.md §4
+pub(super) fn write_texture_input(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    path: &[u32],
+    o: &ArtMesh,
+    n: &ArtMesh,
+) -> Result<()> {
+    use super::grid::add_shared;
+    use super::textures::affine_el;
+    let Some(t) = n.texture else {
+        return unsupported(format!("art mesh {}: back to its model image", n.info.id));
+    };
+    let Some(entry) = entry_of(ctx.new_model, t, n) else {
+        return unsupported(format!(
+            "art mesh {}: its image is not on its atlas",
+            n.info.id
+        ));
+    };
+    let (om, nm) = (ctx.old_model, ctx.new_model);
+    let same_page =
+        o.texture.and_then(|k| om.textures.get(k)).map(|x| &x.guid) == Some(&nm.textures[t].guid);
+    // The texture-input extension (inline in the list, or shared).
+    let list = field_path(root, path, "_extensions")?;
+    let items = element_at(root, Some(&list))?.children.clone();
+    let Some((k, c)) = items
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.name == "CTextureInputExtension")
+    else {
+        return unsupported(format!("art mesh {}: no texture input", n.info.id));
+    };
+    let shared_ext = c.attr("xs.ref").map(str::to_owned);
+    let ext_path = {
+        let mut p = list.clone();
+        p.push(k as u32);
+        p
+    };
+    let ext_id = match &shared_ext {
+        Some(id) => id.clone(),
+        None => super::grid::share_in_place(root, ctx, &ext_path)?,
+    };
+    if same_page {
+        // Update the current region's transform.
+        let ext = find_shared(root, &ext_id)?;
+        let Some(cur) = ext
+            .children
+            .iter()
+            .find(|c| c.field_name() == Some("currentTextureInputData"))
+            .cloned()
+        else {
+            return unsupported(format!("art mesh {}: no current texture input", n.info.id));
+        };
+        let region = match cur.attr("xs.ref") {
+            Some(id) => find_shared(root, id)?,
+            None => {
+                return unsupported(format!("art mesh {}: an inline texture input", n.info.id));
+            }
+        };
+        if let Some(i) = region
+            .children
+            .iter()
+            .position(|c| c.field_name() == Some("inputImageLocalToCanvasTransform"))
+        {
+            region.children[i] =
+                affine_el("inputImageLocalToCanvasTransform", entry.atlas_to_canvas);
+        }
+        return Ok(());
+    }
+    let gtex = atlas_texture_id(root, ctx, t)?;
+    let tg = super::objects::guid_id(
+        root,
+        ctx,
+        &nm.textures[t].guid,
+        "CTextureAtlasGuid",
+        "(no debug info)",
+    )?;
+    let mut sup = Element::new("ACTextureInput").with_attr("xs.n", "super");
+    sup.children = vec![
+        affine_el("optionalTransformOnCanvas", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        stub("CTextureInputExtension", Some("_owner"), &ext_id),
+    ];
+    let mut region = Element::new("CTextureInput_TextureAtlasRegion");
+    region.children = vec![
+        sup,
+        stub("CTextureAtlasGuid", Some("textureAtlasGuid"), &tg),
+        affine_el("inputImageLocalToCanvasTransform", entry.atlas_to_canvas),
+    ];
+    let region = add_shared(root, ctx, region)?;
+    let ext = find_shared(root, &ext_id)?;
+    if let Some(l) = ext
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("_textureInputs"))
+    {
+        l.children
+            .push(stub("CTextureInput_TextureAtlasRegion", None, &region));
+        set_count(l);
+    }
+    if let Some(c) = ext
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("currentTextureInputData"))
+    {
+        *c = stub(
+            "CTextureInput_TextureAtlasRegion",
+            Some("currentTextureInputData"),
+            &region,
+        );
+    }
+    let e = element_at(root, Some(path))?;
+    super::set_field_attrs(
+        e,
+        "textureState",
+        "TextureState",
+        &[("v", "TEXTURE_ATLAS".into())],
+    );
+    let f = field_path(root, path, "texture")?;
+    *element_at(root, Some(&f))? = stub("GTexture2D", Some("texture"), &gtex);
+    ctx.structural = true;
+    Ok(())
+}

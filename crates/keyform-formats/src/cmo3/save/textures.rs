@@ -8,7 +8,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use keyform_model::{ImageLayer, LayerCommon, LayerEntry, Model};
 
-use super::grid::{add_shared, field_path, find_shared, scalar, set_count, shared, stub, Ctx};
+use super::grid::{
+    add_shared, field_path, find_shared, get_shared, scalar, set_count, shared, shared_mut, stub,
+    uuid_of, Ctx,
+};
 use super::objects::guid_id;
 use super::{element_at, format_f32, unsupported, xml_text};
 use crate::caff::{CaffArchive, CaffEntry, Compression};
@@ -27,6 +30,8 @@ pub(crate) struct TexState {
     pub layers: HashMap<String, (String, String)>,
     /// Texture index → (CTextureAtlas id, GTexture2D id).
     pub atlases: HashMap<usize, (String, String)>,
+    /// Archive paths of image resources this save dropped.
+    pub dropped: Vec<String>,
 }
 
 /// Classes used by the texture-manager elements written here.
@@ -500,7 +505,8 @@ fn push_to(root: &mut Element, path: &[u32], e: Element) -> Result<()> {
 }
 
 /// Writes the texture-manager objects of `new` that `old` doesn't have.
-/// Changing or removing existing ones is not supported yet.
+/// Existing atlas pages that changed are rewritten; changing or removing
+/// other existing objects is not supported yet.
 pub(super) fn sync_textures(
     root: &mut Element,
     ctx: &mut Ctx,
@@ -548,10 +554,16 @@ pub(super) fn sync_textures(
         new.model_images[..old.model_images.len()] == old.model_images[..],
         "model images",
     )?;
-    same(
-        new.textures[..old.textures.len()] == old.textures[..],
-        "texture atlases",
-    )?;
+    // Existing atlas pages that changed are rewritten in place.
+    for t in 0..old.textures.len() {
+        let (o, n) = (&old.textures[t], &new.textures[t]);
+        if o.guid != n.guid {
+            return unsupported("reordering texture atlases");
+        }
+        if o != n {
+            rewrite_atlas(root, ctx, archive, new, t)?;
+        }
+    }
     if new.layered_images.len() == old.layered_images.len()
         && new.model_images.len() == old.model_images.len()
         && new.textures.len() == old.textures.len()
@@ -1163,61 +1175,8 @@ fn write_atlas(
     let res = image_resource(root, ctx, archive, png, (tex.width, tex.height))?;
     let guid = guid_id(root, ctx, &tex.guid, "CTextureAtlasGuid", "(no debug info)")?;
     let atlas = add_shared(root, ctx, Element::new("CTextureAtlas"))?;
-    let mut entries = Vec::new();
-    for e in &tex.entries {
-        let mi = &new.model_images[e.model_image];
-        let mg = guid_id(root, ctx, &mi.guid, "CModelImageGuid", "(no debug info)")?;
-        // The legacy field: model-image local → atlas as position, scale
-        // and angle. spec: texture-atlas.md §1
-        let to_atlas = crate::atlas::inverse(e.atlas_to_canvas)
-            .map_or(crate::atlas::IDENTITY, |inv| {
-                crate::atlas::mul(inv, mi.local_to_canvas)
-            });
-        let (sx, sy) = (
-            to_atlas[0].hypot(to_atlas[3]),
-            to_atlas[1].hypot(to_atlas[4]),
-        );
-        let angle = to_atlas[3].atan2(to_atlas[0]).to_degrees();
-        let v2 = |name: &str, x: f32, y: f32| {
-            with(
-                el("GVector2", name),
-                vec![
-                    scalar("f", "x", format_f32(x)),
-                    scalar("f", "y", format_f32(y)),
-                ],
-            )
-        };
-        entries.push(with(
-            Element::new("ModelImageEntry"),
-            vec![
-                stub("CTextureAtlas", Some("atlas"), &atlas),
-                stub("CModelImageGuid", Some("modelImageGuid"), &mg),
-                affine_el("atlasLocalToCanvasTransform", e.atlas_to_canvas),
-                with(
-                    el("GTransform2", "materialLocalToAtlasTransform"),
-                    vec![
-                        v2("position", to_atlas[2], to_atlas[5]),
-                        v2("scale", sx, sy),
-                        scalar("f", "eulerAngle", format_f32(angle)),
-                    ],
-                ),
-            ],
-        ));
-    }
-    find_shared(root, &atlas)?.children = vec![
-        scalar("s", "name", xml_text(&tex.name)),
-        scalar("i", "width", tex.width.to_string()),
-        scalar("i", "height", tex.height.to_string()),
-        stub("CImageResource", Some("cachedAtlasImage"), &res),
-        scalar("b", "lockCachedAtlasImage", tex.locked.to_string()),
-        stub("CTextureAtlasGuid", Some("guid"), &guid),
-        list("carray_list", "modelImages", entries),
-        cache_manager(
-            &res,
-            (tex.width, tex.height),
-            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        ),
-    ];
+    let children = atlas_children(root, ctx, new, t, &atlas, &res, &guid)?;
+    find_shared(root, &atlas)?.children = children;
     // The GPU texture the art meshes refer to.
     let g = add_shared(root, ctx, Element::new("GTexture2D"))?;
     let s = tex.sampling;
@@ -1261,7 +1220,27 @@ fn write_atlas(
 }
 
 /// Adds this save's new PNG entries to `archive`.
-pub(super) fn add_entries(archive: &mut CaffArchive, tex: &mut TexState) {
+/// Archive entries of dropped image resources that `root` no longer
+/// refers to are removed.
+pub(super) fn add_entries(archive: &mut CaffArchive, tex: &mut TexState, root: &Element) {
+    if !tex.dropped.is_empty() {
+        let mut used = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(e) = stack.pop() {
+            if e.name == "file" {
+                if let Some(p) = e.attr("path") {
+                    used.insert(p.to_owned());
+                }
+            }
+            stack.extend(e.children.iter());
+        }
+        let dropped: BTreeSet<String> = tex
+            .dropped
+            .drain(..)
+            .filter(|p| !used.contains(p))
+            .collect();
+        archive.entries.retain(|e| !dropped.contains(&e.path));
+    }
     for (path, data) in tex.entries.drain(..) {
         archive.entries.push(CaffEntry {
             path,
@@ -1310,4 +1289,148 @@ pub(super) fn model_image_texture(
         scalar("b", "isPremultiplied", "true"),
     ];
     Ok(g)
+}
+
+/// The fields of atlas page `t` (element `atlas`, page image `res`, GUID
+/// object `guid`). spec: 70-advanced/texture-atlas.md §1
+fn atlas_children(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    new: &Model,
+    t: usize,
+    atlas: &str,
+    res: &str,
+    guid: &str,
+) -> Result<Vec<Element>> {
+    let tex = &new.textures[t];
+    let mut entries = Vec::new();
+    for e in &tex.entries {
+        let mi = &new.model_images[e.model_image];
+        let mg = guid_id(root, ctx, &mi.guid, "CModelImageGuid", "(no debug info)")?;
+        // The legacy field: model-image local → atlas as position, scale
+        // and angle. spec: texture-atlas.md §1
+        let to_atlas = crate::atlas::inverse(e.atlas_to_canvas)
+            .map_or(crate::atlas::IDENTITY, |inv| {
+                crate::atlas::mul(inv, mi.local_to_canvas)
+            });
+        let (sx, sy) = (
+            to_atlas[0].hypot(to_atlas[3]),
+            to_atlas[1].hypot(to_atlas[4]),
+        );
+        let angle = to_atlas[3].atan2(to_atlas[0]).to_degrees();
+        let v2 = |name: &str, x: f32, y: f32| {
+            with(
+                el("GVector2", name),
+                vec![
+                    scalar("f", "x", format_f32(x)),
+                    scalar("f", "y", format_f32(y)),
+                ],
+            )
+        };
+        entries.push(with(
+            Element::new("ModelImageEntry"),
+            vec![
+                stub("CTextureAtlas", Some("atlas"), atlas),
+                stub("CModelImageGuid", Some("modelImageGuid"), &mg),
+                affine_el("atlasLocalToCanvasTransform", e.atlas_to_canvas),
+                with(
+                    el("GTransform2", "materialLocalToAtlasTransform"),
+                    vec![
+                        v2("position", to_atlas[2], to_atlas[5]),
+                        v2("scale", sx, sy),
+                        scalar("f", "eulerAngle", format_f32(angle)),
+                    ],
+                ),
+            ],
+        ));
+    }
+    Ok(vec![
+        scalar("s", "name", xml_text(&tex.name)),
+        scalar("i", "width", tex.width.to_string()),
+        scalar("i", "height", tex.height.to_string()),
+        stub("CImageResource", Some("cachedAtlasImage"), res),
+        scalar("b", "lockCachedAtlasImage", tex.locked.to_string()),
+        stub("CTextureAtlasGuid", Some("guid"), guid),
+        list("carray_list", "modelImages", entries),
+        cache_manager(res, (tex.width, tex.height), [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+    ])
+}
+
+/// Rewrites existing atlas page `t` of `new` (name, size, lock, entries,
+/// page image). The page gets a new image resource; its `GTexture2D` is
+/// pointed at it and the old resource is dropped.
+fn rewrite_atlas(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    archive: &CaffArchive,
+    new: &Model,
+    t: usize,
+) -> Result<()> {
+    let tex = &new.textures[t];
+    let Some(png) = tex.png.clone() else {
+        return unsupported(format!("texture {}: no page image", tex.name));
+    };
+    let list = manager_list(root, "_textureAtlases")?;
+    let ids: Vec<String> = element_at(root, Some(&list))?
+        .children
+        .iter()
+        .filter_map(|c| c.attr("xs.ref").map(str::to_owned))
+        .collect();
+    let mut found = None;
+    for id in ids {
+        let Some(e) = get_shared(root, &id) else {
+            continue;
+        };
+        let Some(g) = e.child_field("guid") else {
+            continue;
+        };
+        if uuid_of(root, g).as_deref() == Some(tex.guid.as_str()) {
+            let gid = g.attr("xs.ref").map(str::to_owned);
+            let res = e
+                .child_field("cachedAtlasImage")
+                .and_then(|c| c.attr("xs.ref"))
+                .map(str::to_owned);
+            found = Some((id, gid, res));
+            break;
+        }
+    }
+    let Some((atlas, Some(guid), Some(old_res))) = found else {
+        return invalid(format!("texture {}: atlas element not found", tex.name));
+    };
+    ctx.structural = true;
+    let res = image_resource(root, ctx, archive, png, (tex.width, tex.height))?;
+    let children = atlas_children(root, ctx, new, t, &atlas, &res, &guid)?;
+    find_shared(root, &atlas)?.children = children;
+    // The GPU textures made from the old page image.
+    let sh = shared_mut(root)?;
+    for g in sh.children.iter_mut().filter(|c| c.name == "GTexture2D") {
+        let Some(src) = g.child_field_mut("srcImageResource") else {
+            continue;
+        };
+        if src.attr("xs.ref") != Some(old_res.as_str()) {
+            continue;
+        }
+        src.set_attr("xs.ref", res.clone());
+        if let Some(n) = g
+            .child_field_mut("super")
+            .and_then(|s| s.child_field_mut("name"))
+        {
+            n.text = xml_text(&tex.name);
+        }
+    }
+    // Dropped at the end of the save (removing it now would move the
+    // elements other writers have paths to); its archive entry with it.
+    if let Some(gone) = get_shared(root, &old_res) {
+        let mut stack = vec![gone];
+        while let Some(e) = stack.pop() {
+            if e.name == "file" {
+                if let Some(p) = e.attr("path") {
+                    ctx.tex.dropped.push(p.to_owned());
+                }
+            }
+            stack.extend(e.children.iter());
+        }
+    }
+    ctx.orphans.push(old_res);
+    Ok(())
 }
