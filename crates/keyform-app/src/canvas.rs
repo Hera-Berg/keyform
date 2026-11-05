@@ -19,6 +19,8 @@ pub struct ViewGpu {
     /// Rectangle selection in progress: start (screen) and whether it
     /// selects points (of the selected objects) rather than objects.
     rect: Option<(Pos2, bool)>,
+    /// The lasso path of that drag (screen points), in Lasso mode.
+    lasso: Vec<Pos2>,
     /// The texture page shown in mesh edit mode (texture index).
     mesh_texture: Option<(usize, egui::TextureHandle)>,
     /// The texture images the renderer was built with (data address and
@@ -250,7 +252,12 @@ pub fn canvas_ui(
             crate::glue_tool::draw(ui.ctx(), &painter, doc, rect, &to_screen, tokens);
         }
     }
-    if let (Some((a, _)), Some(b)) = (gpu.rect, ui.input(|i| i.pointer.interact_pos())) {
+    if gpu.rect.is_some() && doc.lasso && gpu.lasso.len() > 1 {
+        painter.add(egui::Shape::closed_line(
+            gpu.lasso.clone(),
+            egui::Stroke::new(1.0, tokens.accent),
+        ));
+    } else if let (Some((a, _)), Some(b)) = (gpu.rect, ui.input(|i| i.pointer.interact_pos())) {
         let r = Rect::from_two_pos(a, b);
         painter.rect_stroke(
             r,
@@ -301,6 +308,7 @@ fn arrow_tool(
         return;
     }
     let view = view_of(doc, rect, ppp);
+    let lasso = doc.lasso;
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
     let primary = egui::PointerButton::Primary;
     let press = ui.input(|i| i.pointer.press_origin());
@@ -356,6 +364,7 @@ fn arrow_tool(
             }
         } else if response.drag_started_by(primary) {
             gpu.rect = Some((press, !set.objects.is_empty()));
+            gpu.lasso = vec![press];
         } else if !shift {
             set = SelectionSet::default();
         }
@@ -370,17 +379,11 @@ fn arrow_tool(
         }
     }
     if let Some((start, points)) = gpu.rect {
+        track_lasso(ui, lasso, gpu);
         if !response.dragged_by(primary) {
             gpu.rect = None;
             if let Some(end) = ui.input(|i| i.pointer.interact_pos()) {
-                let r = Rect::from_two_pos(start, end);
-                let quad = [
-                    r.left_top(),
-                    r.right_top(),
-                    r.right_bottom(),
-                    r.left_bottom(),
-                ]
-                .map(to_canvas);
+                let quad = selection_polygon(lasso, gpu, start, end, &to_canvas);
                 let mut set = if shift {
                     doc.selection.clone()
                 } else if points {
@@ -453,6 +456,7 @@ fn mesh_tool(
     // Mirror partners: within 1 screen pixel (§5.1).
     let tolerance = 1.0 / doc.view.zoom.max(1e-6);
     let flip = doc.view.mirror;
+    let lasso = doc.lasso;
     let Some(s) = doc.mesh_edit.as_mut() else {
         return;
     };
@@ -483,22 +487,17 @@ fn mesh_tool(
                     }
                 } else if response.drag_started_by(primary) {
                     gpu.rect = Some((press, true));
+                    gpu.lasso = vec![press];
                 } else if !shift {
                     s.set_selected(Vec::new());
                 }
             }
             if let Some((start, _)) = gpu.rect {
+                track_lasso(ui, lasso, gpu);
                 if !response.dragged_by(primary) {
                     gpu.rect = None;
                     if let Some(end) = pointer {
-                        let r = Rect::from_two_pos(start, end);
-                        let quad = [
-                            r.left_top(),
-                            r.right_top(),
-                            r.right_bottom(),
-                            r.left_bottom(),
-                        ]
-                        .map(to_canvas);
+                        let quad = selection_polygon(lasso, gpu, start, end, &to_canvas);
                         let mut sel = if shift {
                             s.selected.clone()
                         } else {
@@ -912,4 +911,40 @@ pub fn brush_outline(
             }
         }
     }
+}
+
+/// Adds the pointer to the lasso path (every 2 screen points).
+fn track_lasso(ui: &egui::Ui, lasso: bool, gpu: &mut ViewGpu) {
+    if !lasso {
+        return;
+    }
+    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+        if gpu.lasso.last().is_none_or(|l| l.distance(p) >= 2.0) {
+            gpu.lasso.push(p);
+        }
+    }
+}
+
+/// The canvas polygon of a finished selection drag: the lasso path, or
+/// the rectangle from `start` to `end`.
+fn selection_polygon(
+    lasso: bool,
+    gpu: &mut ViewGpu,
+    start: Pos2,
+    end: Pos2,
+    to_canvas: &dyn Fn(Pos2) -> [f32; 2],
+) -> Vec<[f32; 2]> {
+    let path = std::mem::take(&mut gpu.lasso);
+    if lasso && path.len() >= 3 {
+        return path.into_iter().map(to_canvas).collect();
+    }
+    let r = Rect::from_two_pos(start, end);
+    [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+    ]
+    .map(to_canvas)
+    .to_vec()
 }

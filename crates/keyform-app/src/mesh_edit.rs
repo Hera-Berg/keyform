@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use keyform_edit::mesh::{triangulate, MeshGraph, Remap};
 use keyform_model::{ArtMesh, EDGE_AUTO_TRIANGULATION};
 
-use crate::document::in_quad;
+use crate::document::in_polygon;
 
 /// Mesh editor sub-tools (canvas-and-tools.md §5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,9 +283,9 @@ impl MeshEdit {
     }
 
     /// The graph edge nearest `q` within `radius`.
-    pub fn points_in(&self, quad: &[[f32; 2]; 4]) -> Vec<usize> {
+    pub fn points_in(&self, quad: &[[f32; 2]]) -> Vec<usize> {
         (0..self.graph.len())
-            .filter(|&k| in_quad(quad, self.graph.point(k)))
+            .filter(|&k| in_polygon(quad, self.graph.point(k)))
             .collect()
     }
 

@@ -157,19 +157,26 @@ impl SelectionSet {
 }
 
 /// Is `q` inside the convex quadrilateral `c` (either winding)?
-pub fn in_quad(c: &[[f32; 2]; 4], q: [f32; 2]) -> bool {
-    let mut sign = 0.0f32;
-    for i in 0..4 {
-        let (a, b) = (c[i], c[(i + 1) % 4]);
-        let d = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]);
-        if d != 0.0 {
-            if sign != 0.0 && d.signum() != sign {
-                return false;
-            }
-            sign = d.signum();
-        }
+/// Whether `q` is inside the closed polygon `poly` (even-odd rule; a
+/// rectangle drag's quad or a lasso path).
+pub fn in_polygon(poly: &[[f32; 2]], q: [f32; 2]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
     }
-    true
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[j]);
+        if (a[1] > q[1]) != (b[1] > q[1]) {
+            let x = a[0] + (q[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+            if q[0] < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 /// The undoable state of a document (spec: 50-ui/undo.md §2). The edit
@@ -296,6 +303,9 @@ pub struct Document {
     pub glue_tool: Option<crate::glue_tool::GlueTool>,
     /// Glue brush settings, kept while the tool is off.
     pub glue_prefs: crate::glue_tool::GluePrefs,
+    /// Lasso Tool [L] instead of the Arrow tool's rectangle [A]: dragging
+    /// on empty space draws a lasso. spec: canvas-and-tools.md §3
+    pub lasso: bool,
     /// Never saved yet: the first save asks for a location.
     pub untitled: bool,
 }
@@ -614,6 +624,7 @@ impl Document {
             mesh_prefs: None,
             glue_tool: None,
             glue_prefs: Default::default(),
+            lasso: false,
             untitled: false,
             drag: None,
             edit_level: 2,
@@ -1402,7 +1413,7 @@ impl Document {
     }
 
     /// Visible, unlocked art meshes with a vertex inside the canvas quad.
-    pub fn objects_in(&self, quad: &[[f32; 2]; 4]) -> Vec<Selection> {
+    pub fn objects_in(&self, quad: &[[f32; 2]]) -> Vec<Selection> {
         let Some(f) = self.frame.as_ref() else {
             return Vec::new();
         };
@@ -1417,7 +1428,7 @@ impl Document {
             if st
                 .positions
                 .chunks_exact(2)
-                .any(|p| in_quad(quad, [p[0], p[1]]))
+                .any(|p| in_polygon(quad, [p[0], p[1]]))
             {
                 out.push(Selection::ArtMesh(mi));
             }
@@ -1426,11 +1437,11 @@ impl Document {
     }
 
     /// Points of the selected objects inside the canvas quad.
-    pub fn points_in(&self, quad: &[[f32; 2]; 4]) -> Vec<(Selection, usize)> {
+    pub fn points_in(&self, quad: &[[f32; 2]]) -> Vec<(Selection, usize)> {
         let mut out = Vec::new();
         for &o in &self.selection.objects {
             for (i, p) in self.object_points(o).iter().enumerate() {
-                if in_quad(quad, *p) {
+                if in_polygon(quad, *p) {
                     out.push((o, i));
                 }
             }
@@ -2269,10 +2280,25 @@ mod tests {
     #[test]
     fn quad_test() {
         let q = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-        assert!(in_quad(&q, [5.0, 5.0]));
-        assert!(!in_quad(&q, [11.0, 5.0]));
+        assert!(in_polygon(&q, [5.0, 5.0]));
+        assert!(!in_polygon(&q, [11.0, 5.0]));
         let rev = [q[3], q[2], q[1], q[0]];
-        assert!(in_quad(&rev, [1.0, 9.0]));
+        assert!(in_polygon(&rev, [1.0, 9.0]));
+        // A concave lasso (a "C"): the notch is outside.
+        let c = [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 7.0],
+            [10.0, 7.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ];
+        assert!(in_polygon(&c, [1.0, 5.0]));
+        assert!(!in_polygon(&c, [6.0, 5.0]));
+        assert!(in_polygon(&c, [6.0, 1.0]));
+        assert!(!in_polygon(&c[..2], [1.0, 0.0]), "degenerate");
     }
 
     /// Point selection: only the selected vertex moves; rectangles select.

@@ -1085,6 +1085,30 @@ impl KeyformApp {
                 d.set_edit_level(l);
             }
             ui.separator();
+            if let Some(d) = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc)
+                .filter(|d| d.mode == crate::document::Mode::Modeling)
+            {
+                let arrow = !d.lasso && d.glue_tool.is_none();
+                if ui
+                    .add(egui::Button::selectable(arrow, "Arrow"))
+                    .on_hover_text("Arrow tool (A): click to select, drag for a rectangle")
+                    .clicked()
+                {
+                    d.lasso = false;
+                    let _ = d.set_glue_tool(None);
+                }
+                if ui
+                    .add(egui::Button::selectable(d.lasso, "Lasso"))
+                    .on_hover_text("Lasso Tool (L): drag on empty space to lasso points")
+                    .clicked()
+                {
+                    d.lasso = true;
+                }
+                ui.separator();
+            }
             if let Some(s) = self
                 .active
                 .and_then(|i| self.slots.get_mut(i))
@@ -1413,6 +1437,23 @@ impl KeyformApp {
                     };
                     if let Err(e) = r {
                         self.log.warn(e);
+                    }
+                }
+            }
+        }
+        // Arrow tool [A] / Lasso Tool [L] (menus.md "Keyboard-only commands").
+        if !ctx.egui_wants_keyboard_input() {
+            let (a, l) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&K::new(M::NONE, Key::A)),
+                    i.consume_shortcut(&K::new(M::NONE, Key::L)),
+                )
+            });
+            if a || l {
+                if let Some(d) = self.active_doc() {
+                    d.lasso = l;
+                    if a {
+                        let _ = d.set_glue_tool(None);
                     }
                 }
             }
