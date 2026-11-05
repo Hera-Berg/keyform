@@ -528,8 +528,7 @@ fn import_layers(
     };
     b.build(&tree, top);
     // The meshes draw from their model images (texture state MODEL_IMAGE);
-    // an atlas is made later. TODO(Q-0018): whether §6.1 "re-pack
-    // textures" also places the new images on an atlas.
+    // adding a PSD doesn't make or re-pack an atlas. spec: §6.1
     let _ = images;
     Ok(b.report)
 }
@@ -849,11 +848,12 @@ pub fn new_model_from_psd(
 
 /// The standard parameters (§4.1) at the top of the Parameter palette.
 fn add_standard_parameters(m: &mut Model) {
-    for (id, name, min, max, def, desc) in STANDARD_PARAMETERS {
+    // Names and descriptions are localized UI strings (§4.1).
+    for (id, _, min, max, def, _) in STANDARD_PARAMETERS {
         let mut p = Parameter::new(id, min, max, def);
         p.guid = new_guid();
-        p.name = name.to_owned();
-        p.description = desc.to_owned();
+        p.name = crate::strings::text(&format!("param.{id}")).to_owned();
+        p.description = crate::strings::text(&format!("param.{id}.desc")).to_owned();
         let i = m.parameters.len();
         m.root_parameter_entries.push(ParamEntry::Parameter(i));
         m.parameters.push(Arc::new(p));
@@ -861,39 +861,38 @@ fn add_standard_parameters(m: &mut Model) {
 }
 
 /// The parts of a blank new model under the root part, in order: ID,
-/// name, draw order, sketch. Observed in the reference (5.3.04, Home ▸
-/// New ▸ "Create with specified size").
-/// TODO(Q-0020): not yet in the spec.
-pub const BLANK_MODEL_PARTS: [(&str, &str, i32, bool); 15] = [
-    ("PartRough", "Rough Design", 500, false),
-    ("PartFace", "Face", 500, false),
-    ("PartEye", "Eye", 600, false),
-    ("PartEyeBall", "Eyeball", 600, false),
-    ("PartBrow", "Brows", 600, false),
-    ("PartMouth", "Mouth", 600, false),
-    ("PartNose", "Nose", 600, false),
-    ("PartEar", "Ear", 500, false),
-    ("PartHairFront", "Bangs", 700, false),
-    ("PartHairSide", "Hair Side", 500, false),
-    ("PartHairBack", "Hair Back", 300, false),
-    ("PartNeck", "Neck", 400, false),
-    ("PartBody", "Body", 400, false),
-    ("PartBackground", "Background", 0, false),
-    ("PartSketch", "[ Guide Image]", 1000, true),
+/// draw order (= default order), sketch. Their names are the localized
+/// UI strings `part.<ID>`. spec: 50-ui/dialogs.md §1.1
+pub const BLANK_MODEL_PARTS: [(&str, i32, bool); 15] = [
+    ("PartRough", 500, false),
+    ("PartFace", 500, false),
+    ("PartEye", 600, false),
+    ("PartEyeBall", 600, false),
+    ("PartBrow", 600, false),
+    ("PartMouth", 600, false),
+    ("PartNose", 600, false),
+    ("PartEar", 500, false),
+    ("PartHairFront", 700, false),
+    ("PartHairSide", 500, false),
+    ("PartHairBack", 300, false),
+    ("PartNeck", 400, false),
+    ("PartBody", 400, false),
+    ("PartBackground", 0, false),
+    ("PartSketch", 1000, true),
 ];
 
 /// File ▸ New ▸ Model (Home ▸ New ▸ "Create with specified size"): a
 /// model of `width` × `height` with the standard parameters and the blank
-/// model's parts. spec: 50-ui/dialogs.md §1, psd-import.md §4.1
+/// model's parts. spec: 50-ui/dialogs.md §1.1, psd-import.md §4.1
 pub fn new_blank_model(name: &str, width: u32, height: u32) -> Result<crate::cmo3::Cmo3Document> {
     let mut doc = crate::cmo3::Cmo3Document::new_model(name, width, height)?;
     let m = &mut doc.model;
     add_standard_parameters(m);
     let root = m.root_part;
-    for (id, pname, order, sketch) in BLANK_MODEL_PARTS {
+    for (id, order, sketch) in BLANK_MODEL_PARTS {
         let mut part = Part::new(id);
         part.info.guid = new_guid();
-        part.info.name = pname.to_owned();
+        part.info.name = crate::strings::text(&format!("part.{id}")).to_owned();
         part.info.parent_part = root;
         part.sketch = sketch;
         part.default_order = order;

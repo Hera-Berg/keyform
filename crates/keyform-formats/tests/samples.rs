@@ -1301,6 +1301,38 @@ fn blank_model_matches_reference() {
     let back = Cmo3Document::read(&bytes).unwrap();
     assert!(back.warnings.is_empty(), "{:?}", back.warnings);
     assert!(back.model.same_data(&edited));
+    // Random pose (psd-import.md §4.2): one setting, every parameter
+    // enabled, every group expanded.
+    let summary = |doc: &Cmo3Document| -> (usize, Vec<String>, Vec<String>, Vec<usize>) {
+        let xml = String::from_utf8(doc.xml.write()).unwrap();
+        let settings = xml.matches("<CRandomPoseSetting>").count();
+        let flags = |tag: &str| -> Vec<String> {
+            xml.split(&format!("<{tag}>"))
+                .skip(1)
+                .filter_map(|t| t.split("</b>").next())
+                .map(|t| t.rsplit('>').next().unwrap_or("").to_owned())
+                .collect()
+        };
+        let keys = xml
+            .match_indices("xs.n=\"parameters.keys\"")
+            .map(|(k, _)| {
+                let end = xml[k..].find("</array_list>").unwrap() + k;
+                xml[k..end].matches("<CParameterId").count()
+            })
+            .collect();
+        (
+            settings,
+            flags("CRandomPoseParamData"),
+            flags("CRandomPoseGroupData"),
+            keys,
+        )
+    };
+    let (n, p, g, k) = summary(&back);
+    assert_eq!(n, 1);
+    assert_eq!(p.len(), 27);
+    assert!(p.iter().all(|v| v == "true"), "{p:?}");
+    assert_eq!(g, vec!["true".to_owned()]);
+    assert_eq!(k, vec![27]);
     let reference =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/blackbox/blank_ref.cmo3");
     let Ok(data) = std::fs::read(&reference) else {
@@ -1334,6 +1366,8 @@ fn blank_model_matches_reference() {
         (m.canvas.width, m.canvas.height),
         (r.canvas.width, r.canvas.height)
     );
+    let rd = Cmo3Document::read(&data).unwrap();
+    assert_eq!(summary(&back), summary(&rd));
 }
 
 /// Parts editing (palettes.md §1): Move Here for an art mesh and a part,
@@ -1372,5 +1406,45 @@ fn parts_editing_saves() {
         assert!(back.model.same_data(&edited), "{path:?}");
         let b = back.model.art_meshes[0].info.parent_part.unwrap();
         assert_eq!(back.model.parts[b].info.name, "B");
+    }
+}
+
+/// Random-pose settings follow the parameter set (psd-import.md §4.2):
+/// after adding and deleting parameters every setting has one entry per
+/// parameter, kept entries keep their value, new ones are enabled.
+#[test]
+fn random_pose_follows_parameters() {
+    use keyform_edit::objects::{add_parameter, remove_parameter};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::Parameter;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let before = String::from_utf8(doc.xml.write()).unwrap();
+        if !before.contains("<CRandomPoseSetting") {
+            continue;
+        }
+        let m = &mut doc.model;
+        let victim = m.parameters.len() - 1;
+        assert!(remove_parameter(m, victim));
+        let mut p = Parameter::new("ParamRandomPoseTest", 0.0, 1.0, 0.0);
+        p.guid = keyform_model::new_guid();
+        add_parameter(m, p, None);
+        let n = doc.model.parameters.len();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        let xml = String::from_utf8(back.xml.write()).unwrap();
+        for (k, _) in xml.match_indices("xs.n=\"parameters.keys\"") {
+            let end = xml[k..].find("</array_list>").unwrap() + k;
+            assert_eq!(xml[k..end].matches("<CParameterId").count(), n, "{path:?}");
+        }
+        for (k, _) in xml.match_indices("xs.n=\"parameters.values\"") {
+            let end = xml[k..].find("</array_list>").unwrap() + k;
+            assert_eq!(
+                xml[k..end].matches("<CRandomPoseParamData>").count(),
+                n,
+                "{path:?}"
+            );
+        }
+        eprintln!("{path:?}: random pose synced ({n} parameters)");
     }
 }

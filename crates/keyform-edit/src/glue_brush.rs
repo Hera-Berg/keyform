@@ -91,21 +91,16 @@ pub fn brush_pair(
         let toward = |v: f32, t: f32| v + (t - v).clamp(-m, m);
         return [c(toward(w[0], target[0])), c(toward(w[1], target[1]))];
     }
-    // A pair counts when either vertex is under the brush.
-    // TODO(Q-0019): the amount when both are (taken as the larger).
-    let amt = match (a, b) {
-        (None, None) => return w,
-        (Some(x), None) | (None, Some(x)) => x,
-        (Some(x), Some(y)) => x.max(y),
-    };
-    // UI "weight A" is A's holding strength: raising it lowers wA.
+    // wA changes by A's vertex amount and wB by B's, each only when that
+    // vertex is under the brush. UI "weight A" is A's holding strength:
+    // raising it lowers wA.
     let s = if shift { -1.0 } else { 1.0 };
-    let d = s * amt;
+    let (da, db) = (s * a.unwrap_or(0.0), s * b.unwrap_or(0.0));
     match tool {
-        GlueBrush::A => [c(w[0] - d), w[1]],
-        GlueBrush::B => [w[0], c(w[1] - d)],
-        GlueBrush::AB => [c(w[0] - d), c(w[1] + d)],
-        GlueBrush::BA => [c(w[0] + d), c(w[1] - d)],
+        GlueBrush::A => [c(w[0] - da), w[1]],
+        GlueBrush::B => [w[0], c(w[1] - db)],
+        GlueBrush::AB => [c(w[0] - da), c(w[1] + db)],
+        GlueBrush::BA => [c(w[0] + da), c(w[1] - db)],
         GlueBrush::Remerge => unreachable!(),
     }
 }
@@ -146,22 +141,19 @@ pub fn apply(
     changed
 }
 
-/// The glue objects a brush paints: the selected glue, else the glue
-/// joining the selected art meshes.
-/// TODO(Q-0019): which glue the weight brushes act on is not specified.
-pub fn target_glues(m: &Model, selected_glue: &[usize], selected_meshes: &[usize]) -> Vec<usize> {
-    if !selected_glue.is_empty() {
-        return selected_glue.to_vec();
+/// Message when no glue is selected for the weight brushes.
+pub const NO_SELECTED_GLUE: &str = "No Selected Glue";
+
+/// The glue objects a brush paints: the selected glue only. `None` (the
+/// brush does nothing) when one of them is locked.
+pub fn target_glues(m: &Model, selected_glue: &[usize]) -> Option<Vec<usize>> {
+    if selected_glue
+        .iter()
+        .any(|&g| m.glues.get(g).is_some_and(|x| x.info.locked))
+    {
+        return None;
     }
-    (0..m.glues.len())
-        .filter(|&g| {
-            let x = &m.glues[g];
-            [x.mesh_a, x.mesh_b]
-                .iter()
-                .flatten()
-                .any(|i| selected_meshes.contains(i))
-        })
-        .collect()
+    Some(selected_glue.to_vec())
 }
 
 /// Mean (UI weight A, UI weight B) of the pairs of `glues`, for the
@@ -189,17 +181,24 @@ mod tests {
         let a = Some(0.1);
         assert_eq!(brush_pair(GlueBrush::A, false, w, a, None), [0.4, 0.5]);
         assert_eq!(brush_pair(GlueBrush::A, true, w, a, None), [0.6, 0.5]);
+        // A's brush ignores B's vertex.
+        assert_eq!(brush_pair(GlueBrush::A, false, w, None, a), w);
         assert_eq!(brush_pair(GlueBrush::B, false, w, None, a), [0.5, 0.4]);
-        assert_eq!(brush_pair(GlueBrush::AB, false, w, a, None), [0.4, 0.6]);
-        assert_eq!(brush_pair(GlueBrush::BA, false, w, a, None), [0.6, 0.4]);
-        assert_eq!(brush_pair(GlueBrush::BA, true, w, a, None), [0.4, 0.6]);
+        // A:B and B:A: each weight by its own vertex's amount.
+        assert_eq!(brush_pair(GlueBrush::AB, false, w, a, None), [0.4, 0.5]);
+        assert_eq!(brush_pair(GlueBrush::AB, false, w, None, a), [0.5, 0.6]);
+        let r = brush_pair(GlueBrush::AB, false, w, Some(0.1), Some(0.2));
+        assert!((r[0] - 0.4).abs() < 1e-6 && (r[1] - 0.7).abs() < 1e-6);
+        assert_eq!(brush_pair(GlueBrush::BA, false, w, a, a), [0.6, 0.4]);
+        assert_eq!(brush_pair(GlueBrush::BA, true, w, a, a), [0.4, 0.6]);
         assert_eq!(brush_pair(GlueBrush::A, false, w, None, None), w);
         // Clamped to [0, 1].
         assert_eq!(
             brush_pair(GlueBrush::A, false, [0.05, 0.5], a, None),
             [0.0, 0.5]
         );
-        // Re-merge needs both vertices; moves towards w / (wA + wB).
+        // Re-merge needs both vertices; moves towards w / (wA + wB) by the
+        // larger amount.
         assert_eq!(
             brush_pair(GlueBrush::Remerge, false, [0.2, 0.2], a, None),
             [0.2, 0.2]

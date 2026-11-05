@@ -21,6 +21,7 @@ mod grid;
 mod mesh;
 mod objects;
 mod params;
+mod random_pose;
 mod textures;
 
 use grid::Ctx;
@@ -73,6 +74,7 @@ impl Cmo3Document {
         ctx.next_idx = ctx.next_idx.max(self.retired.next_idx);
         let ctx = &mut ctx;
         params::sync_parameters(&mut root, ctx, s, old, new)?;
+        random_pose::sync_random_pose(&mut root, ctx, old, new)?;
         // New layered images, model images and atlas pages (art meshes
         // created below refer to them).
         textures::sync_textures(&mut root, ctx, &self.archive, old, new)?;

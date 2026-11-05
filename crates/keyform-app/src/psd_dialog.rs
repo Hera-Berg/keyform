@@ -100,13 +100,12 @@ pub fn dialog(
                     cancel = ui.button("Cancel").clicked();
                 });
             });
-        if cancel || !open {
-            return Outcome::Cancel;
-        }
-        if !ok {
+        if !ok && !cancel && open {
             return Outcome::None;
         }
-        let factor = choices[*sel].factor;
+        // Cancel or closing returns no choice: Full Scale, and the model
+        // is still made (no abort). spec: psd-import.md §3.1
+        let factor = if ok { choices[*sel].factor } else { 1 };
         let legacy = *legacy;
         p.resolution = None;
         return make_new_model(p, &name, legacy, factor, log);

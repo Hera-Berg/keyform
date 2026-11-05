@@ -65,6 +65,20 @@ pub struct Frame {
     pub meshes: Vec<MeshState>,
     /// Art meshes back to front.
     pub render_order: Vec<MeshIndex>,
+    /// Deformed positions before glue of the meshes glue moved (the glue
+    /// weight brushes measure these). spec: glue.md "Weight brushes"
+    pub pre_glue: std::collections::HashMap<MeshIndex, Vec<f32>>,
+}
+
+impl Frame {
+    /// Canvas positions of mesh `i` before glue (its final positions when
+    /// glue didn't touch it).
+    pub fn positions_before_glue(&self, i: MeshIndex) -> Option<&[f32]> {
+        match self.pre_glue.get(&i) {
+            Some(p) => Some(p),
+            None => self.meshes.get(i).map(|m| &m.positions[..]),
+        }
+    }
 }
 
 /// Options that are not part of the model.
@@ -398,6 +412,7 @@ impl<'m> Evaluator<'m> {
             .collect();
 
         // Stage 7: glue, in model order, each reading the current forms.
+        let mut pre_glue = std::collections::HashMap::new();
         for g in &m.glues {
             let Some(r) = interpolate(params, &values, &g.grid, &g.blend_shapes) else {
                 continue;
@@ -414,6 +429,8 @@ impl<'m> Evaluator<'m> {
             }
             let pa = meshes[a].positions.clone();
             let pb = meshes[b].positions.clone();
+            pre_glue.entry(a).or_insert_with(|| pa.clone());
+            pre_glue.entry(b).or_insert_with(|| pb.clone());
             for (pair, w) in g.pairs.iter().zip(&g.weights) {
                 let (Some(va), Some(vb)) = *pair else {
                     continue;
@@ -435,6 +452,7 @@ impl<'m> Evaluator<'m> {
             deformers,
             meshes,
             render_order,
+            pre_glue,
         }
     }
 }

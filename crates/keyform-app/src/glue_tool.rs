@@ -15,7 +15,7 @@ use crate::mesh_edit::BrushShape;
 /// 100 %, hardness 30 %).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GluePrefs {
-    /// Diameter in canvas pixels. TODO(Q-0019)
+    /// Diameter in canvas pixels.
     pub size: f32,
     pub level: f32,
     pub hardness: f32,
@@ -84,23 +84,32 @@ impl Document {
         Ok(())
     }
 
-    /// The glue the brushes paint. TODO(Q-0019)
+    /// The glue the brushes paint: the selected glue (empty when one of
+    /// them is locked). spec: glue.md "Weight brushes"
     pub fn glue_targets(&self) -> Vec<usize> {
-        let (mut glue, mut meshes) = (Vec::new(), Vec::new());
-        for o in &self.selection.objects {
-            match *o {
-                Selection::Glue(g) => glue.push(g),
-                Selection::ArtMesh(a) => meshes.push(a),
-                _ => {}
-            }
-        }
-        glue_brush::target_glues(&self.model, &glue, &meshes)
+        glue_brush::target_glues(&self.model, &self.selected_glue()).unwrap_or_default()
+    }
+
+    fn selected_glue(&self) -> Vec<usize> {
+        self.selection
+            .objects
+            .iter()
+            .filter_map(|o| match *o {
+                Selection::Glue(g) => Some(g),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Starts a stroke. Fails when there is no glue to paint.
     pub fn glue_brush_begin(&mut self) -> Result<(), String> {
-        if self.glue_targets().is_empty() {
-            return Err("Select the glue (or its ArtMeshes) to paint its weights.".into());
+        let selected = self.selected_glue();
+        if selected.is_empty() {
+            return Err(glue_brush::NO_SELECTED_GLUE.into());
+        }
+        if glue_brush::target_glues(&self.model, &selected).is_none() {
+            // A locked glue: the brush does nothing.
+            return Err("The selected glue is locked.".into());
         }
         let base = self.model.clone();
         if let Some(t) = self.glue_tool.as_mut() {
@@ -128,8 +137,9 @@ impl Document {
         let Some(frame) = self.frame.as_ref() else {
             return;
         };
+        // Measured on the deformed positions before glue.
         let amount_at = |mesh: usize, v: usize| {
-            let p = frame.meshes.get(mesh)?.positions.get(2 * v..2 * v + 2)?;
+            let p = frame.positions_before_glue(mesh)?.get(2 * v..2 * v + 2)?;
             prefs.amount([p[0] - at[0], p[1] - at[1]], flip, pressure)
         };
         let mut m = self.model.clone();
@@ -331,8 +341,14 @@ mod tests {
                     .any(|p| p.0.is_some() && p.1.is_some())
             })
             .unwrap();
-        doc.select(Some(Selection::Glue(g)));
         doc.set_glue_tool(Some(GlueBrush::AB)).unwrap();
+        doc.select(None);
+        assert_eq!(
+            doc.glue_brush_begin(),
+            Err(glue_brush::NO_SELECTED_GLUE.into()),
+            "selected art meshes don't count"
+        );
+        doc.select(Some(Selection::Glue(g)));
         let before = doc.model.glues[g].weights.clone();
         let glue = doc.model.glues[g].clone();
         let (k, ia) = glue
@@ -342,7 +358,13 @@ mod tests {
             .find_map(|(k, p)| Some((k, p.0?)))
             .unwrap();
         let ma = glue.mesh_a.unwrap();
-        let pos = &doc.frame.as_ref().unwrap().meshes[ma].positions;
+        let pos = doc
+            .frame
+            .as_ref()
+            .unwrap()
+            .positions_before_glue(ma)
+            .unwrap()
+            .to_vec();
         let at = [pos[2 * ia], pos[2 * ia + 1]];
         doc.glue_brush_begin().unwrap();
         doc.glue_brush_step(at, false, false, 1.0);
@@ -355,7 +377,8 @@ mod tests {
             "{w0:?} → {:?}",
             after[k]
         );
-        assert!((after[k][1] - (w0[1] + 0.4).min(1.0)).abs() < 1e-5);
+        // wB moves only by B's own vertex amount (0 when outside).
+        assert!(after[k][1] >= w0[1] && after[k][1] <= (w0[1] + 0.4).min(1.0) + 1e-5);
         assert_eq!(doc.history.undo_name(), Some("Weight brush A:B"));
         doc.save_project(None).unwrap();
         let back = Document::open(&path, &mut log).unwrap();
