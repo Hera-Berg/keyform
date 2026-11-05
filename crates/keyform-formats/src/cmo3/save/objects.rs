@@ -314,10 +314,84 @@ fn color_attrs(c: &[f32; 4]) -> Vec<(&'static str, String)> {
 }
 
 /// The first shared element with this tag, as a template.
+/// A built-in element for a kind the document has no example of (a new
+/// model), in the layout the reference editor writes for new objects
+/// (observed in a new model it saved). Every reference in it is replaced
+/// when the object is filled in.
+fn prototype(tag: &str) -> Option<Element> {
+    let xml = match tag {
+        "CArtMeshSource" => {
+            r##"<CArtMeshSource xs.id="#PROTO">
+<ACDrawableSource xs.n="super">
+<ACParameterControllableSource xs.n="super">
+<s xs.n="localName">ArtMesh</s>
+<b xs.n="isVisible">true</b>
+<b xs.n="isLocked">false</b>
+<null xs.n="parentGuid" />
+<KeyformGridSource xs.n="keyformGridSource" />
+<KeyFormMorphTargetSet xs.n="keyformMorphTargetSet">
+<carray_list xs.n="_morphTargets" count="0" />
+<MorphTargetBlendWeightConstraintSet xs.n="blendWeightConstraintSet">
+<carray_list xs.n="_constraints" count="0" />
+</MorphTargetBlendWeightConstraintSet>
+</KeyFormMorphTargetSet>
+<carray_list xs.n="_extensions" count="0" />
+<null xs.n="internalColor_direct_argb" />
+<CLabelColor xs.n="labelColor" customizedColorInt="-1">
+<CLabelColorType xs.n="labelType" v="UNDEFINED" />
+</CLabelColor>
+</ACParameterControllableSource>
+<CDrawableId xs.n="id" idstr="ArtMesh" />
+<null xs.n="guid" />
+<null xs.n="targetDeformerGuid" />
+<carray_list xs.n="clipGuidList" count="0" />
+<b xs.n="invertClippingMask">false</b>
+<null xs.n="icon32" />
+<null xs.n="icon16" />
+</ACDrawableSource>
+<int-array xs.n="indices" count="0" />
+<carray_list xs.n="keyforms" count="1">
+<CArtMeshForm>
+<ACDrawableForm xs.n="super">
+<ACForm xs.n="super">
+<null xs.n="guid" />
+<b xs.n="isAnimatedForm">false</b>
+<b xs.n="isLocalAnimatedForm">false</b>
+<CArtMeshSource xs.n="_source" xs.ref="#PROTO" />
+<null xs.n="name" />
+<s xs.n="notes" />
+</ACForm>
+<i xs.n="drawOrder">500</i>
+<f xs.n="opacity">1.0</f>
+<CFloatColor xs.n="multiplyColor" red="1.0" green="1.0" blue="1.0" alpha="1.0" />
+<CFloatColor xs.n="screenColor" red="0.0" green="0.0" blue="0.0" alpha="1.0" />
+<null xs.n="coordType" />
+</ACDrawableForm>
+<float-array xs.n="positions" count="0" />
+</CArtMeshForm>
+</carray_list>
+<float-array xs.n="positions" count="0" />
+<float-array xs.n="uvs" count="0" />
+<null xs.n="texture" />
+<ColorComposition xs.n="colorComposition" v="NORMAL" />
+<b xs.n="culling">false</b>
+<TextureState xs.n="textureState" v="MODEL_IMAGE" />
+<s xs.n="userData" />
+<AlphaComposition xs.n="alphaComposition" v="OVER" />
+</CArtMeshSource>"##
+        }
+        _ => return None,
+    };
+    crate::xml::XmlDocument::parse(xml.as_bytes())
+        .ok()
+        .map(|d| d.root)
+}
+
 fn template(root: &Element, tag: &str) -> Result<(String, Element)> {
     shared(root)
         .and_then(|s| s.children.iter().find(|c| c.name == tag))
         .and_then(|e| Some((e.attr("xs.id")?.to_owned(), e.clone())))
+        .or_else(|| prototype(tag).map(|e| ("#PROTO".to_owned(), e)))
         .ok_or_else(|| {
             crate::error::FormatError::Unsupported(format!(
                 "saving this change is not supported yet: the first {tag} of a project"
@@ -485,7 +559,7 @@ fn new_object(
             .iter_mut()
             .find(|c| c.field_name() == Some("guid"))
         {
-            *c = stub(&c.name.clone(), Some("guid"), &gid);
+            *c = stub(gtag, Some("guid"), &gid);
         }
     }
     super::set_field_attrs(&mut e, "id", id_tag, &[("idstr", xml_text(&info.id))]);

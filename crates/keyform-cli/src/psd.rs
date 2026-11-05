@@ -5,7 +5,9 @@ use std::path::Path;
 
 use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::psd::Psd;
-use keyform_formats::psd_import::{add_psd_layers, register_psd, ImportOptions};
+use keyform_formats::psd_import::{
+    add_psd_layers, new_model_from_psd, register_psd, ImportOptions,
+};
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
@@ -57,6 +59,39 @@ pub fn run(input: &Path, psd_path: &Path, out: &Path, rest: &[&str]) -> R {
         .is_some_and(|e| e.eq_ignore_ascii_case("png"))
     {
         return crate::render::render_model(&doc.model, out, &render_args);
+    }
+    doc.save_to(out)?;
+    println!("wrote {out:?}");
+    Ok(())
+}
+
+/// `kf newpsd <file.psd> <out.cmo3 | out.png> [render options]`: a new
+/// model from a PSD (psd-import.md §4).
+pub fn new_model(psd_path: &Path, out: &Path, rest: &[&str]) -> R {
+    let data = std::fs::read(psd_path)?;
+    let psd = Psd::parse(&data)?;
+    let name = psd_path
+        .file_name()
+        .map_or("PSD".into(), |n| n.to_string_lossy().to_string());
+    let o = ImportOptions {
+        path: psd_path.to_string_lossy().to_string(),
+        ..ImportOptions::default()
+    };
+    let (mut doc, r) = new_model_from_psd(&name, &psd, &o)?;
+    println!(
+        "{name}: new model, {} parameters, {} art meshes, {} parts",
+        doc.model.parameters.len(),
+        r.art_meshes.len(),
+        r.parts.len()
+    );
+    for w in r.warnings {
+        eprintln!("warning: {w}");
+    }
+    if out
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return crate::render::render_model(&doc.model, out, rest);
     }
     doc.save_to(out)?;
     println!("wrote {out:?}");

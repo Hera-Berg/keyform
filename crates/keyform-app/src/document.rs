@@ -292,6 +292,8 @@ pub struct Document {
     pub mesh_edit: Option<crate::mesh_edit::MeshEdit>,
     /// Mesh editor settings kept between mesh-edit sessions.
     mesh_prefs: Option<crate::mesh_edit::MeshPrefs>,
+    /// Never saved yet: the first save asks for a location.
+    pub untitled: bool,
 }
 
 pub fn load_motion(dir: &Path, file: &str, log: &mut Log) -> Option<Arc<Motion>> {
@@ -348,6 +350,24 @@ fn load_runtime_textures(m: &mut Model, dir: &Path, files: &[String], log: &mut 
 impl Document {
     /// Opens a `.cmo3`, `.moc3` or `.model3.json`.
     pub fn open(path: &Path, log: &mut Log) -> Result<Self, String> {
+        Self::open_with(path, None, log)
+    }
+
+    /// A new, unsaved project (e.g. a new model from a PSD); `path` is
+    /// the suggested location, asked for on the first save.
+    pub fn new_project(path: &Path, doc: Cmo3Document, log: &mut Log) -> Result<Self, String> {
+        let mut d = Self::open_with(path, Some(doc), log)?;
+        d.untitled = true;
+        // Unsaved: closing asks to save it.
+        d.saved_revision = u64::MAX;
+        Ok(d)
+    }
+
+    fn open_with(
+        path: &Path,
+        preloaded: Option<Cmo3Document>,
+        log: &mut Log,
+    ) -> Result<Self, String> {
         let name = path
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -364,7 +384,10 @@ impl Document {
         );
         let mut source = source;
         if lower.ends_with(".cmo3") {
-            let doc = Cmo3Document::read(&read(path)?).map_err(|e| e.to_string())?;
+            let doc = match preloaded {
+                Some(d) => d,
+                None => Cmo3Document::read(&read(path)?).map_err(|e| e.to_string())?,
+            };
             for w in &doc.warnings {
                 log.warn(format!("{name}: {w}"));
             }
@@ -585,6 +608,7 @@ impl Document {
             saved_revision: 0,
             mesh_edit: None,
             mesh_prefs: None,
+            untitled: false,
             drag: None,
             edit_level: 2,
             notice: None,
@@ -1443,6 +1467,7 @@ impl Document {
         doc.save_to(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         self.saved_revision = self.history.revision();
+        self.untitled = false;
         if to.is_some() {
             self.title = path
                 .file_name()
@@ -2491,5 +2516,36 @@ mod tests {
         let back = Document::open(&path, &mut log).unwrap();
         assert_eq!(back.model.art_meshes.len(), n_mesh);
         assert_eq!(back.model.glues.len(), n_glue + 1);
+    }
+
+    /// New model from a PSD: an unsaved, modified project that saves to a
+    /// chosen path and reopens equal.
+    #[test]
+    fn new_model_from_psd_document() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let psd_path = root.join("blitty.psd");
+        if !psd_path.exists() {
+            return;
+        }
+        let data = std::fs::read(&psd_path).unwrap();
+        let psd = keyform_formats::psd::Psd::parse(&data).unwrap();
+        let (doc, _) = keyform_formats::psd_import::new_model_from_psd(
+            "blitty.psd",
+            &psd,
+            &Default::default(),
+        )
+        .unwrap();
+        let mut log = Log::default();
+        let scratch = root.join("target/test-scratch/new-model");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("blitty.cmo3");
+        let mut d = Document::new_project(&path, doc, &mut log).unwrap();
+        assert!(d.untitled && d.is_modified());
+        assert_eq!(d.model.parameters.len(), 27);
+        d.save_project(Some(&path)).unwrap();
+        assert!(!d.untitled && !d.is_modified());
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&d.model));
     }
 }

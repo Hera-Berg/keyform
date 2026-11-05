@@ -23,6 +23,8 @@ const USAGE: &str = "usage:
   kf psd <in.cmo3> <file.psd> <out.cmo3|out.png> [--register] [--legacy]
                                    PSD import (psd-import.md §6); a .png output renders
                                    the result instead of saving
+  kf newpsd <file.psd> <out.cmo3|out.png>
+                                   a new model from a PSD (psd-import.md §4)
   kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
                                    render a .cmo3/.moc3 at parameter values
   kf gpudiff <model> <diff.png> [render options]
@@ -58,6 +60,7 @@ fn main() -> ExitCode {
         ["automesh", input, output, rest @ ..] => {
             automesh::run(Path::new(input), Path::new(output), rest)
         }
+        ["newpsd", psd, out, rest @ ..] => psd::new_model(Path::new(psd), Path::new(out), rest),
         ["psd", input, psd, out, rest @ ..] => {
             psd::run(Path::new(input), Path::new(psd), Path::new(out), rest)
         }

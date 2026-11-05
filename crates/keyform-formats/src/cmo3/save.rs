@@ -206,6 +206,26 @@ impl Cmo3Document {
         for name in std::mem::take(&mut ctx.tex.imports) {
             ensure_import(&mut xml, name);
         }
+        // A `null` placeholder must stay empty (a filled-in field keeps its
+        // type's tag).
+        {
+            let mut stack = vec![&xml.root];
+            while let Some(e) = stack.pop() {
+                if e.name == "null"
+                    && (!e.children.is_empty() || e.attrs.iter().any(|(k, _)| k != "xs.n"))
+                {
+                    return invalid(format!(
+                        "a null field {:?} carries a value",
+                        e.field_name().unwrap_or_default()
+                    ));
+                }
+                stack.extend(e.children.iter());
+            }
+        }
+        // Every element type the document now uses has its import.
+        for name in super::schema_imports::imports_used(&xml.root) {
+            ensure_import(&mut xml, name);
+        }
         if new_images {
             for v in textures::TEXTURE_VERSIONS {
                 ensure_pi(&mut xml, "version", v);

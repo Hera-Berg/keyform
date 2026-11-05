@@ -19,7 +19,9 @@ pub const CMODEL_SOURCE_VERSION: u32 = 15;
 /// target GUIDs all mean "attached to the canvas" on read.
 pub use keyform_model::{NOT_INITIALIZED_GUID as NULL_GUID, ROOT_DEFORMER_GUID};
 
+mod new_model;
 mod save;
+mod schema_imports;
 pub use save::write_atomic;
 
 /// Path of an element in the document: child indices from the root.

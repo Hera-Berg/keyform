@@ -5,8 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use keyform_formats::cmo3::Cmo3Document;
 use keyform_formats::psd::Psd;
-use keyform_formats::psd_import::{add_psd_layers, register_psd, ImportOptions};
+use keyform_formats::psd_import::{
+    add_psd_layers, new_model_from_psd, register_psd, ImportOptions,
+};
 
 use crate::document::Document;
 use crate::log::Log;
@@ -58,6 +61,8 @@ pub enum Outcome {
     Cancel,
     /// Imported into the document with this uid.
     Done(u64),
+    /// A new model (suggested path next to the PSD).
+    NewModel(PathBuf, Box<Cmo3Document>),
 }
 
 /// Shows the open dialog. `docs` lists (uid, title, editable model).
@@ -73,6 +78,7 @@ pub fn dialog(
         .map_or("PSD".into(), |n| n.to_string_lossy().to_string());
     let mut outcome = Outcome::None;
     let mut open = true;
+    let mut new_model = None;
     match p.target {
         None => {
             egui::Window::new("Select an action or a model to integrate PSD")
@@ -85,12 +91,16 @@ pub fn dialog(
                         p.size.0, p.size.1, p.layers
                     ));
                     ui.separator();
-                    for label in [
-                        "< Create new model from PSD file >",
-                        "< Create new model from PSD file (Blend mode before 5.3) >",
+                    for (label, legacy) in [
+                        ("< Create new model from PSD file >", false),
+                        (
+                            "< Create new model from PSD file (Blend mode before 5.3) >",
+                            true,
+                        ),
                     ] {
-                        ui.add_enabled(false, egui::Button::selectable(false, label))
-                            .on_disabled_hover_text("Creating a new model is not available yet.");
+                        if ui.add(egui::Button::selectable(false, label)).clicked() {
+                            new_model = Some(legacy);
+                        }
                     }
                     for (uid, d) in docs.iter() {
                         let ok = d.editable();
@@ -182,6 +192,37 @@ pub fn dialog(
                 }
             }
         }
+    }
+    if let Some(legacy) = new_model {
+        // spec: psd-import.md §4
+        let o = ImportOptions {
+            legacy_blend: legacy,
+            path: p.path.to_string_lossy().to_string(),
+            modified_ms: std::fs::metadata(&p.path)
+                .and_then(|m| m.modified())
+                .map_or(0, millis),
+            imported_ms: millis(std::time::SystemTime::now()),
+            ..ImportOptions::default()
+        };
+        let made = Psd::parse(&p.data)
+            .map_err(|e| e.to_string())
+            .and_then(|psd| new_model_from_psd(&name, &psd, &o).map_err(|e| e.to_string()));
+        return match made {
+            Ok((doc, report)) => {
+                for w in report.warnings {
+                    log.warn(w);
+                }
+                log.info(format!(
+                    "New model from {name}: {} art meshes.",
+                    report.art_meshes.len()
+                ));
+                Outcome::NewModel(p.path.with_extension("cmo3"), Box::new(doc))
+            }
+            Err(e) => {
+                log.error(e);
+                Outcome::Cancel
+            }
+        };
     }
     if !open {
         outcome = Outcome::Cancel;

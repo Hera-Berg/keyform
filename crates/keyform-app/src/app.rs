@@ -1096,6 +1096,16 @@ impl KeyformApp {
             crate::viewer_settings::save(&mut s.doc, &mut self.log);
             return true;
         }
+        if s.doc.untitled {
+            let active = self.active;
+            self.active = Some(i);
+            self.save_as_active();
+            self.active = active;
+            return !self.slots.get(i).is_some_and(|s| s.doc.untitled);
+        }
+        let Some(s) = self.slots.get_mut(i) else {
+            return false;
+        };
         match s.doc.save_project(None) {
             Ok(p) => {
                 self.log.info(format!("saved {}", p.display()));
@@ -1752,6 +1762,22 @@ impl eframe::App for KeyformApp {
                 crate::psd_dialog::Outcome::Done(uid) => {
                     if let Some(i) = self.slots.iter().position(|s| s.uid == uid) {
                         self.activate(i);
+                    }
+                }
+                crate::psd_dialog::Outcome::NewModel(path, doc) => {
+                    match Document::new_project(&path, *doc, &mut self.log) {
+                        Ok(doc) => {
+                            let uid = self.next_uid;
+                            self.next_uid += 1;
+                            self.slots.push(Slot {
+                                uid,
+                                doc,
+                                gpu: ViewGpu::default(),
+                            });
+                            self.add_view_tab(Tab::View(uid));
+                            self.activate(self.slots.len() - 1);
+                        }
+                        Err(e) => self.log.error(e),
                     }
                 }
             }

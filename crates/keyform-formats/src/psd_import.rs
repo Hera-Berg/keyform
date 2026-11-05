@@ -394,6 +394,18 @@ pub fn add_psd_layers(
     psd: &Psd,
     o: &ImportOptions,
 ) -> Result<ImportReport> {
+    import_layers(m, name, psd, o, true)
+}
+
+/// Objects into a new part at the top of the root part (`new_part`, §6.1)
+/// or directly under the root part (§4).
+fn import_layers(
+    m: &mut Model,
+    name: &str,
+    psd: &Psd,
+    o: &ImportOptions,
+    new_part: bool,
+) -> Result<ImportReport> {
     let li = register_psd(m, name, psd, o)?;
     let psd_guid = m.layered_images[li].guid.clone();
     let tree = m.layered_images[li].tree.clone().unwrap_or_default();
@@ -431,19 +443,24 @@ pub fn add_psd_layers(
     let mut part_ids: HashSet<String> = m.parts.iter().map(|p| p.info.id.clone()).collect();
     let mesh_ids: HashSet<String> = m.art_meshes.iter().map(|a| a.info.id.clone()).collect();
     let root = m.root_part;
-    let pid = assign_id(name, "Part", &mut part_ids);
-    let mut part = Part::new(&pid);
-    part.info.guid = new_guid();
-    part.info.name = name.to_owned();
-    part.info.parent_part = root;
-    part.grid.guids = vec![new_guid()];
-    let top = m.parts.len();
-    m.parts.push(Arc::new(part));
-    if let Some(r) = root {
-        Arc::make_mut(&mut m.parts[r])
-            .children
-            .insert(0, PartChild::Part(top));
-    }
+    let top = if new_part || root.is_none() {
+        let pid = assign_id(name, "Part", &mut part_ids);
+        let mut part = Part::new(&pid);
+        part.info.guid = new_guid();
+        part.info.name = name.to_owned();
+        part.info.parent_part = root;
+        part.grid.guids = vec![new_guid()];
+        let top = m.parts.len();
+        m.parts.push(Arc::new(part));
+        if let Some(r) = root {
+            Arc::make_mut(&mut m.parts[r])
+                .children
+                .insert(0, PartChild::Part(top));
+        }
+        top
+    } else {
+        root.unwrap_or(0)
+    };
     let legacy = o.legacy_blend || !(m.target_version >= 5_030_000);
     let mut b = Builder {
         m,
@@ -452,7 +469,7 @@ pub fn add_psd_layers(
         images: images.clone().into_iter(),
         report: ImportReport {
             layered_image: li,
-            parts: vec![top],
+            parts: if new_part { vec![top] } else { Vec::new() },
             ..Default::default()
         },
         mesh_ids,
@@ -464,6 +481,230 @@ pub fn add_psd_layers(
     // textures" also places the new images on an atlas.
     let _ = images;
     Ok(b.report)
+}
+
+/// The standard parameters of a new model, in order: ID, name, min, max,
+/// default, description. spec: psd-import.md §4.1
+pub const STANDARD_PARAMETERS: [(&str, &str, f32, f32, f32, &str); 27] = [
+    (
+        "ParamAngleX",
+        "Angle X",
+        -30.0,
+        30.0,
+        0.0,
+        "+ causes it to face right side of screen",
+    ),
+    (
+        "ParamAngleY",
+        "Angle Y",
+        -30.0,
+        30.0,
+        0.0,
+        "+ causes it to face upper side of screen",
+    ),
+    (
+        "ParamAngleZ",
+        "Angle Z",
+        -30.0,
+        30.0,
+        0.0,
+        "+ causes it to face right side of screen",
+    ),
+    (
+        "ParamEyeLOpen",
+        "EyeL Open",
+        0.0,
+        1.0,
+        1.0,
+        "+ causes eye to open",
+    ),
+    (
+        "ParamEyeLSmile",
+        "EyeL Smile",
+        0.0,
+        1.0,
+        0.0,
+        "+ causes smiley eye",
+    ),
+    (
+        "ParamEyeROpen",
+        "EyeR Open",
+        0.0,
+        1.0,
+        1.0,
+        "+ causes eye to open",
+    ),
+    (
+        "ParamEyeRSmile",
+        "EyeR Smile",
+        0.0,
+        1.0,
+        0.0,
+        "+ causes smiley eye",
+    ),
+    (
+        "ParamEyeBallX",
+        "Eyeball X",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes it to look right",
+    ),
+    (
+        "ParamEyeBallY",
+        "Eyeball Y",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes it to look up",
+    ),
+    ("ParamBrowLY", "BrowL Y", -1.0, 1.0, 0.0, "+ raises eyebrow"),
+    ("ParamBrowRY", "BrowR Y", -1.0, 1.0, 0.0, "+ raises eyebrow"),
+    (
+        "ParamBrowLX",
+        "BrowL X",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves eyebrow to create frown",
+    ),
+    (
+        "ParamBrowRX",
+        "BrowR X",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves eyebrow to create frown",
+    ),
+    (
+        "ParamBrowLAngle",
+        "BrowL Angle",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves/deforms eyebrow to create scowl",
+    ),
+    (
+        "ParamBrowRAngle",
+        "BrowR Angle",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves/deforms eyebrow to create scowl",
+    ),
+    (
+        "ParamBrowLForm",
+        "BrowL Form",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves/deforms eyebrow to create scowl",
+    ),
+    (
+        "ParamBrowRForm",
+        "BrowR Form",
+        -1.0,
+        1.0,
+        0.0,
+        "- moves/deforms eyebrow to create scowl",
+    ),
+    (
+        "ParamMouthForm",
+        "Mouth Form",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes smiling mouth, - causes scowling mouth",
+    ),
+    (
+        "ParamMouthOpenY",
+        "Mouth Open",
+        0.0,
+        1.0,
+        0.0,
+        "+ causes mouth to open",
+    ),
+    ("ParamCheek", "Cheek", 0.0, 1.0, 0.0, "+ causes blush"),
+    (
+        "ParamBodyAngleX",
+        "Body X",
+        -10.0,
+        10.0,
+        0.0,
+        "+ causes it to face right side of screen",
+    ),
+    (
+        "ParamBodyAngleY",
+        "Body Y",
+        -10.0,
+        10.0,
+        0.0,
+        "+ causes moving it up on the screen",
+    ),
+    (
+        "ParamBodyAngleZ",
+        "Body Z",
+        -10.0,
+        10.0,
+        0.0,
+        "+ causes tilting it to the right of the screen",
+    ),
+    (
+        "ParamBreath",
+        "Breath",
+        0.0,
+        1.0,
+        0.0,
+        "+ causes taking a breath",
+    ),
+    (
+        "ParamHairFront",
+        "Hair Move Front",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes it to move to the right side of the screen",
+    ),
+    (
+        "ParamHairSide",
+        "Hair Move Side",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes it to move to the right side of the screen",
+    ),
+    (
+        "ParamHairBack",
+        "Hair Move Back",
+        -1.0,
+        1.0,
+        0.0,
+        "+ causes it to move to the right side of the screen",
+    ),
+];
+
+/// §4 New model from PSD: a model named after the file (without its
+/// extension) with the PSD's canvas, the standard parameters, and every
+/// layer imported under the root part.
+pub fn new_model_from_psd(
+    file_name: &str,
+    psd: &Psd,
+    o: &ImportOptions,
+) -> Result<(crate::cmo3::Cmo3Document, ImportReport)> {
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+    let mut doc = crate::cmo3::Cmo3Document::new_model(stem, psd.width, psd.height)?;
+    let m = &mut doc.model;
+    for (id, name, min, max, def, desc) in STANDARD_PARAMETERS {
+        let mut p = Parameter::new(id, min, max, def);
+        p.guid = new_guid();
+        p.name = name.to_owned();
+        p.description = desc.to_owned();
+        let i = m.parameters.len();
+        m.root_parameter_entries.push(ParamEntry::Parameter(i));
+        m.parameters.push(Arc::new(p));
+    }
+    let report = import_layers(m, file_name, psd, o, false)?;
+    Ok((doc, report))
 }
 
 /// Packs `images` onto a new atlas page (named `Texture<N>`, the size of
