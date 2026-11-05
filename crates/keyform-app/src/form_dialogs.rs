@@ -1,14 +1,15 @@
 //! Form tool dialogs: Blend Form (Apply Rate, Preview), Options for Paste
-//! Form Special, Flip (Reflection), Synthesize corners, Batch Reflect.
-//! spec: 35-editing/form-tools.md §2–4, §5.2; 50-ui/menus.md "Edit Form",
-//! "Parameter"
+//! Form Special, Flip (Reflection), Synthesize corners, Motion Mirroring,
+//! Batch Reflect. spec: 35-editing/form-tools.md §2–5; 50-ui/menus.md
+//! "Edit Form", "Parameter"
 
 use eframe::egui;
 use keyform_edit::form_tools::{
-    all_objects, batch_reflect, corner_parameters, flip, synthesize_corners, Corner,
-    CornerSettings, FlipSettings, PasteMirror,
+    all_objects, batch_reflect, corner_parameters, flip, mirror_check, motion_mirror,
+    synthesize_corners, Corner, CornerSettings, FlipSettings, MirrorSettings, PasteMirror,
+    MIRROR_NO_OBJECTS, MIRROR_PARENT_WARNING,
 };
-use keyform_model::Model;
+use keyform_model::{DeformerKind, Model};
 
 use crate::document::{Document, Selection};
 use crate::log::Log;
@@ -44,6 +45,17 @@ pub struct FormDialogs {
     flip: Option<FlipSettings>,
     corners: Option<CornerDialog>,
     batch: Option<Vec<bool>>,
+    mirror: Option<MirrorDialog>,
+}
+
+/// Motion Mirroring dialog state; the flips and axis are remembered.
+#[derive(Clone, Copy)]
+pub struct MirrorDialog {
+    p: usize,
+    horizontal: bool,
+    vertical: bool,
+    /// `None` = centre of canvas; `Some(d)` = centre of rotation deformer d.
+    axis: Option<usize>,
 }
 
 impl FormDialogs {
@@ -79,6 +91,33 @@ impl FormDialogs {
             skip_locked: true,
             skip_invisible: false,
         });
+        Ok(())
+    }
+
+    /// Motion Mirroring: the parameter defaults to one bound to the
+    /// selected objects whose value is off its default.
+    pub fn open_mirror(&mut self, doc: &Document) -> Result<(), String> {
+        if doc.selection.objects.is_empty() {
+            return Err(MIRROR_NO_OBJECTS.into());
+        }
+        let m = &doc.model;
+        let p = (0..m.parameters.len())
+            .find(|&p| {
+                (doc.values[p] - m.parameters[p].default).abs() > 1e-6
+                    && doc
+                        .selection
+                        .objects
+                        .iter()
+                        .all(|&o| !keyform_edit::keys_of(m, o, p).is_empty())
+            })
+            .unwrap_or(0);
+        let prev = self.mirror.unwrap_or(MirrorDialog {
+            p,
+            horizontal: true,
+            vertical: false,
+            axis: None,
+        });
+        self.mirror = Some(MirrorDialog { p, ..prev });
         Ok(())
     }
 
@@ -146,6 +185,130 @@ pub fn dialogs(
     flip_dialog(ctx, st, doc, log);
     corners_dialog(ctx, st, doc, log);
     batch_dialog(ctx, st, doc, log);
+    mirror_dialog(ctx, st, doc, log);
+}
+
+/// Motion Mirroring (§5.1).
+fn mirror_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, log: &mut Log) {
+    let Some(mut d) = st.mirror.take() else {
+        return;
+    };
+    let mut open = true;
+    let (mut ok, mut cancel) = (false, false);
+    let m = &doc.model;
+    let all_deformers = doc
+        .selection
+        .objects
+        .iter()
+        .all(|o| matches!(o, Selection::Deformer(_)));
+    let rotations: Vec<usize> = (0..m.deformers.len())
+        .filter(|&i| matches!(m.deformers[i].kind, DeformerKind::Rotation(_)))
+        .collect();
+    let choices: Vec<usize> = (0..m.parameters.len())
+        .filter(|&p| !m.parameters[p].repeat)
+        .collect();
+    egui::Window::new("Motion Mirroring")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Source parameter");
+                param_combo(ui, "mirror-param", m, &choices, &mut d.p);
+            });
+            ui.strong("Basic Settings");
+            ui.checkbox(&mut d.horizontal, "Flip horizontally");
+            ui.checkbox(&mut d.vertical, "Flip vertically");
+            ui.strong("Mirror Axis Settings");
+            ui.add_enabled_ui(!all_deformers, |ui| {
+                ui.radio_value(&mut d.axis, None, "Use Center of Canvas");
+                ui.horizontal(|ui| {
+                    let mut use_rot = d.axis.is_some();
+                    if ui
+                        .add_enabled(
+                            !rotations.is_empty(),
+                            egui::RadioButton::new(
+                                use_rot,
+                                "Use Center Point of Rotation Deformer",
+                            ),
+                        )
+                        .clicked()
+                    {
+                        use_rot = true;
+                        d.axis = d.axis.or(rotations.first().copied());
+                    }
+                    if use_rot {
+                        let name = |i: usize| m.deformers[i].info.display_name().to_owned();
+                        let cur = d.axis.unwrap_or(0);
+                        egui::ComboBox::from_id_salt("mirror-rot")
+                            .selected_text(name(cur))
+                            .show_ui(ui, |ui| {
+                                for &r in &rotations {
+                                    ui.selectable_value(&mut d.axis, Some(r), name(r));
+                                }
+                            });
+                    }
+                });
+            });
+            ui.weak(format!(
+                "Targets: {} objects",
+                doc.selection
+                    .objects
+                    .iter()
+                    .filter(|o| !matches!(o, Selection::Glue(_)))
+                    .count()
+            ));
+            (ok, cancel) = yes_no(ui);
+        });
+    if cancel || !open {
+        return;
+    }
+    if !ok {
+        st.mirror = Some(d);
+        return;
+    }
+    let objects = doc.selection.objects.clone();
+    let values = doc.values.clone();
+    match mirror_check(&doc.model, &values, &objects, d.p) {
+        Ok(true) => log.warn(MIRROR_PARENT_WARNING),
+        Ok(false) => {}
+        Err(e) => {
+            log.warn(e);
+            return;
+        }
+    }
+    // Axis value at the current state (canvas pixels).
+    let (cw, ch) = (
+        doc.model.canvas.width as f32,
+        doc.model.canvas.height as f32,
+    );
+    let (mut ax, mut ay) = (cw / 2.0, ch / 2.0);
+    if let (Some(r), false) = (d.axis, all_deformers) {
+        if let Some(keyform_eval::DeformerMap::Rotation(rm)) = doc
+            .frame
+            .as_ref()
+            .and_then(|f| f.deformers.get(r)?.map.clone())
+        {
+            (ax, ay) = (rm.origin[0], rm.origin[1]);
+        }
+    }
+    let s = MirrorSettings {
+        horizontal: d.horizontal,
+        vertical: d.vertical,
+        axis_x: ax,
+        axis_y: ay,
+    };
+    let sel = doc.selection.clone();
+    match doc.try_edit("Motion Mirroring", |m| {
+        motion_mirror(m, &values, &objects, d.p, &s)
+    }) {
+        Ok(v) => {
+            doc.set_selection(sel);
+            // The parameter is left at v′.
+            doc.set_manual(d.p, v);
+        }
+        Err(e) => log.warn(e),
+    }
 }
 
 /// Blend Form: Apply Rate (−10000…10000 %), live Preview restored on

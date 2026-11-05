@@ -1429,6 +1429,7 @@ fn parts_editing_saves() {
         let _ = (a, b);
         let edited = doc.model.clone();
         let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        bb_out(&path, "bb_parts.cmo3", &bytes);
         let back = Cmo3Document::read(&bytes).unwrap();
         assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
         assert!(back.model.same_data(&edited), "{path:?}");
@@ -1534,6 +1535,7 @@ fn inspector_edits_save() {
         }
         let edited = doc.model.clone();
         let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        bb_out(&path, "bb_inspector.cmo3", &bytes);
         let back = Cmo3Document::read(&bytes).unwrap();
         assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
         assert!(back.model.same_data(&edited), "{path:?}");
@@ -1675,7 +1677,70 @@ fn form_tools_on_samples() {
         }
         let edited = doc.model.clone();
         let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        bb_out(&path, "bb_forms.cmo3", &bytes);
         let back = Cmo3Document::read(&bytes).unwrap();
         assert!(back.model.same_data(&edited), "{path:?}");
+    }
+}
+
+/// Motion Mirroring (form-tools.md §5.1) on the samples: an art mesh
+/// keyed on Angle X at its max mirrors to the min key; finite positions,
+/// saved and reloaded.
+#[test]
+fn motion_mirroring_on_samples() {
+    use keyform_edit::form_tools::{motion_mirror, MirrorSettings};
+    use keyform_edit::ObjectRef;
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        let Some(p) = m.parameters.iter().position(|p| p.id == "ParamAngleX") else {
+            continue;
+        };
+        let mut values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+        values[p] = m.parameters[p].max;
+        let Some(i) = (0..m.art_meshes.len()).find(|&i| {
+            let o = ObjectRef::ArtMesh(i);
+            m.art_meshes[i].grid.bindings.len() == 1
+                && keyform_edit::keys_of(m, o, p).contains(&values[p])
+        }) else {
+            continue;
+        };
+        let s = MirrorSettings {
+            horizontal: true,
+            vertical: false,
+            axis_x: m.canvas.width as f32 / 2.0,
+            axis_y: 0.0,
+        };
+        let before = m.clone();
+        let o = ObjectRef::ArtMesh(i);
+        let v = motion_mirror(m, &values, &[o], p, &s).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        assert_eq!(v, 2.0 * m.parameters[p].default - values[p]);
+        assert!(keyform_edit::keys_of(m, o, p).contains(&v));
+        assert!(!m.same_data(&before));
+        assert!(m.art_meshes[i]
+            .grid
+            .keyforms
+            .iter()
+            .all(|f| f.positions.iter().all(|x| x.is_finite())));
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        bb_out(&path, "bb_mirror.cmo3", &bytes);
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.model.same_data(&edited), "{path:?}");
+        eprintln!(
+            "{path:?}: mirrored {} to AngleX = {v}",
+            back.model.art_meshes[i].info.id
+        );
+    }
+}
+
+/// Writes `bytes` as `<name>` into `$KEYFORM_BB_OUT` (for checks in the
+/// reference editor), for hiyori only.
+fn bb_out(path: &Path, name: &str, bytes: &[u8]) {
+    if let Some(dir) = std::env::var_os("KEYFORM_BB_OUT") {
+        if path.to_string_lossy().contains("hiyori_pro") {
+            std::fs::write(Path::new(&dir).join(name), bytes).unwrap();
+        }
     }
 }

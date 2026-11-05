@@ -895,6 +895,15 @@ impl KeyformApp {
                 ui.close();
             }
             if ui
+                .add_enabled(ok, egui::Button::new("Motion Mirroring…"))
+                .clicked()
+            {
+                if let Err(e) = self.forms.open_mirror(doc) {
+                    self.log.warn(e);
+                }
+                ui.close();
+            }
+            if ui
                 .add_enabled(ok, egui::Button::new("Batch Reflect…"))
                 .clicked()
             {

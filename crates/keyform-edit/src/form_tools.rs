@@ -753,6 +753,272 @@ fn descendants(m: &Model, d: usize) -> Vec<ObjectRef> {
     out
 }
 
+// ------------------------------------------------------- motion mirroring
+
+/// Motion Mirroring settings (§5.1): flips and the axis value (canvas
+/// pixels) for each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MirrorSettings {
+    pub horizontal: bool,
+    pub vertical: bool,
+    /// x of the vertical mirror line (horizontal flip).
+    pub axis_x: f32,
+    /// y of the horizontal mirror line (vertical flip).
+    pub axis_y: f32,
+}
+
+/// Messages of the §5.1 pre-checks.
+pub const MIRROR_NO_OBJECTS: &str = "No objects selected for motion mirroring.";
+pub const MIRROR_REPEAT: &str = "Parameter is set to repeat";
+pub const MIRROR_SAME_VALUE: &str = "Unable to generate keyforms for mirroring.";
+pub const MIRROR_NOT_LINKED: &str = "The selected parameters are not linked to the object";
+pub const MIRROR_NO_KEYFORM: &str = "There are no keyforms at this parameter value.";
+pub const MIRROR_NO_DEFAULT: &str = "There are no default keyforms.";
+pub const MIRROR_NO_FLIP: &str = "Unable to execute mirroring process.";
+pub const MIRROR_PARENT_WARNING: &str = "The parent deformer with common parameters is not selected. Parent deformer not mirrored; child objects may behave unexpectedly. If the result is different than expected, the process can be reversed with Undo.";
+
+fn bound_to(m: &Model, o: ObjectRef, p: ParamIndex) -> bool {
+    let b = |g: &[keyform_model::Binding]| g.iter().any(|x| x.parameter == p);
+    match o {
+        ObjectRef::ArtMesh(i) => m.art_meshes.get(i).is_some_and(|a| b(&a.grid.bindings)),
+        ObjectRef::Part(i) => m.parts.get(i).is_some_and(|a| b(&a.grid.bindings)),
+        ObjectRef::Glue(i) => m.glues.get(i).is_some_and(|a| b(&a.grid.bindings)),
+        ObjectRef::Deformer(i) => m.deformers.get(i).is_some_and(|d| match &d.kind {
+            DeformerKind::Warp(w) => b(&w.grid.bindings),
+            DeformerKind::Rotation(r) => b(&r.grid.bindings),
+        }),
+    }
+}
+
+/// The pre-checks (§5.1). `Ok(true)` when the parent-deformer warning
+/// applies.
+pub fn mirror_check(
+    m: &Model,
+    values: &[f32],
+    objects: &[ObjectRef],
+    p: ParamIndex,
+) -> Result<bool, String> {
+    let objects: Vec<ObjectRef> = objects
+        .iter()
+        .copied()
+        .filter(|o| !matches!(o, ObjectRef::Glue(_)))
+        .collect();
+    if objects.is_empty() {
+        return Err(MIRROR_NO_OBJECTS.into());
+    }
+    let q = m
+        .parameters
+        .get(p)
+        .ok_or("None of parameters is selected")?;
+    if q.repeat {
+        return Err(MIRROR_REPEAT.into());
+    }
+    let v = values.get(p).copied().unwrap_or(q.default);
+    let target = 2.0 * q.default - v;
+    if (target - v).abs() < q.snap_epsilon.max(1e-6) {
+        return Err(MIRROR_SAME_VALUE.into());
+    }
+    for &o in &objects {
+        if !bound_to(m, o, p) {
+            return Err(MIRROR_NOT_LINKED.into());
+        }
+        if current_cell(m, o, values).is_err() {
+            return Err(MIRROR_NO_KEYFORM.into());
+        }
+    }
+    let warn = objects.iter().any(|&o| {
+        let mut d = parent_deformer(m, o);
+        let mut n = 0;
+        while let Some(x) = d {
+            if bound_to(m, ObjectRef::Deformer(x), p) && !objects.contains(&ObjectRef::Deformer(x))
+            {
+                return true;
+            }
+            d = m.deformers.get(x).and_then(|y| y.target);
+            n += 1;
+            if n > m.deformers.len() {
+                break;
+            }
+        }
+        false
+    });
+    Ok(warn)
+}
+
+fn reflect(q: V2, s: &MirrorSettings) -> V2 {
+    [
+        if s.horizontal {
+            2.0 * s.axis_x - q[0]
+        } else {
+            q[0]
+        },
+        if s.vertical {
+            2.0 * s.axis_y - q[1]
+        } else {
+            q[1]
+        },
+    ]
+}
+
+/// The canvas points of `o` in `frame` (art mesh vertices before glue,
+/// warp grid, rotation origin).
+fn canvas_points(frame: &Frame, o: ObjectRef) -> Option<Vec<V2>> {
+    Some(match o {
+        ObjectRef::ArtMesh(i) => pairs(frame.positions_before_glue(i)?),
+        ObjectRef::Deformer(i) => match frame.deformers.get(i)?.map.as_ref()? {
+            DeformerMap::Warp(w) => pairs(&w.points),
+            DeformerMap::Rotation(r) => vec![r.origin],
+        },
+        _ => return None,
+    })
+}
+
+/// Motion Mirroring (§5.1) of `objects` on parameter `p` from its current
+/// value v to 2d − v. Returns the destination value.
+pub fn motion_mirror(
+    m: &mut Model,
+    values: &[f32],
+    objects: &[ObjectRef],
+    p: ParamIndex,
+    s: &MirrorSettings,
+) -> Result<f32, String> {
+    if !s.horizontal && !s.vertical {
+        return Err(MIRROR_NO_FLIP.into());
+    }
+    mirror_check(m, values, objects, p)?;
+    let q = m.parameters[p].clone();
+    let v = values[p];
+    let target = 2.0 * q.default - v;
+    let at = |x: f32| {
+        let mut w = values.to_vec();
+        w[p] = x;
+        w
+    };
+    let (vals_src, vals_def, vals_dst) = (at(v), at(q.default), at(target));
+    let all_defaults: Vec<f32> = m.parameters.iter().map(|x| x.default).collect();
+    let mut order: Vec<ObjectRef> = objects
+        .iter()
+        .copied()
+        .filter(|o| matches!(o, ObjectRef::ArtMesh(_) | ObjectRef::Deformer(_)))
+        .collect();
+    order.sort_by_key(|&o| (depth(m, o), !matches!(o, ObjectRef::Deformer(_))));
+    for o in order {
+        if current_cell(m, o, &vals_def).is_err() {
+            return Err(MIRROR_NO_DEFAULT.into());
+        }
+        // Destination keyform: add a key at v′ if needed (it starts as the
+        // interpolated form). Cells are taken after that (it renumbers).
+        if current_cell(m, o, &vals_dst).is_err() {
+            crate::keys::add_key(m, o, p, target).map_err(|e| e.to_string())?;
+        }
+        let dst_cell = current_cell(m, o, &vals_dst).map_err(|e| e.to_string())?;
+        let src_cell = current_cell(m, o, &vals_src).map_err(|_| MIRROR_NO_KEYFORM.to_owned())?;
+        let def_cell = current_cell(m, o, &vals_def).ok();
+        let ev = Evaluator::new(m);
+        let f_src = ev.evaluate(&vals_src);
+        let f_dst = ev.evaluate(&vals_dst);
+        let src = canvas_points(&f_src, o).ok_or("no evaluated form")?;
+        let dest: Vec<V2> = match o {
+            ObjectRef::ArtMesh(i) => {
+                let f_all = ev.evaluate(&all_defaults);
+                let d = canvas_points(&f_all, o).ok_or("no evaluated form")?;
+                let flat: Vec<f32> = d.iter().flat_map(|p| [p[0], p[1]]).collect();
+                let src_flat: Vec<f32> = src.iter().flat_map(|p| [p[0], p[1]]).collect();
+                let remap = crate::mesh::Remap::new(&flat, &m.art_meshes[i].indices);
+                d.iter()
+                    .map(|&pt| {
+                        let r = reflect(pt, s);
+                        let mapped = remap.apply(remap.locate(r), &src_flat);
+                        reflect(mapped, s)
+                    })
+                    .collect()
+            }
+            ObjectRef::Deformer(i) => {
+                let f_def = ev.evaluate(&vals_def);
+                let def = canvas_points(&f_def, o).ok_or("no evaluated form")?;
+                let delta: Vec<V2> = def
+                    .iter()
+                    .zip(&src)
+                    .map(|(a, b)| [a[0] - b[0], a[1] - b[1]])
+                    .collect();
+                // Warp: Δ re-indexed to the mirrored grid point.
+                let idx = |k: usize| -> usize {
+                    match &m.deformers[i].kind {
+                        DeformerKind::Warp(w) => {
+                            let (c, r) = (w.cols as usize + 1, w.rows as usize + 1);
+                            let (x, y) = (k % c, k / c);
+                            let x = if s.horizontal { c - 1 - x } else { x };
+                            let y = if s.vertical { r - 1 - y } else { y };
+                            y * c + x
+                        }
+                        DeformerKind::Rotation(_) => k,
+                    }
+                };
+                def.iter()
+                    .enumerate()
+                    .map(|(k, d)| {
+                        let dl = delta.get(idx(k)).copied().unwrap_or([0.0, 0.0]);
+                        let (dx, dy) = match (s.horizontal, s.vertical) {
+                            (true, false) => (dl[0], -dl[1]),
+                            (false, true) => (-dl[0], dl[1]),
+                            _ => (dl[0], dl[1]),
+                        };
+                        [d[0] + dx, d[1] + dy]
+                    })
+                    .collect()
+            }
+            _ => continue,
+        };
+        // Canvas → the parent's local space at v′.
+        let parent = parent_deformer(m, o).and_then(|x| f_dst.deformers.get(x)?.map.clone());
+        let local: Vec<f32> = dest
+            .iter()
+            .map(|&c| match &parent {
+                None => Some(c),
+                Some(map) => map.inverse(c),
+            })
+            .collect::<Option<Vec<V2>>>()
+            .ok_or("the point cannot be mapped into the parent deformer")?
+            .into_iter()
+            .flat_map(|p| [p[0], p[1]])
+            .collect();
+        match o {
+            ObjectRef::ArtMesh(i) => {
+                let a = Arc::make_mut(&mut m.art_meshes[i]);
+                let (order, opacity) = {
+                    let f = &a.grid.keyforms[src_cell];
+                    (f.draw_order, f.opacity)
+                };
+                let f = &mut a.grid.keyforms[dst_cell];
+                f.positions = local;
+                f.draw_order = order;
+                f.opacity = opacity;
+            }
+            ObjectRef::Deformer(i) => match &mut Arc::make_mut(&mut m.deformers[i]).kind {
+                DeformerKind::Warp(w) => {
+                    let opacity = w.grid.keyforms[src_cell].opacity;
+                    let f = &mut w.grid.keyforms[dst_cell];
+                    f.positions = local;
+                    f.opacity = opacity;
+                }
+                DeformerKind::Rotation(r) => {
+                    let (sa, op) = (
+                        r.grid.keyforms[src_cell].angle,
+                        r.grid.keyforms[src_cell].opacity,
+                    );
+                    let da = def_cell.map_or(sa, |c| r.grid.keyforms[c].angle);
+                    let f = &mut r.grid.keyforms[dst_cell];
+                    f.origin = [local[0], local[1]];
+                    f.angle = da + (da - sa);
+                    f.opacity = op;
+                }
+            },
+            _ => {}
+        }
+    }
+    Ok(target)
+}
+
 // --------------------------------------------------------- reverse keys
 
 fn reverse_grid<F>(g: &mut KeyformGrid<F>, p: ParamIndex) -> bool {
@@ -868,6 +1134,86 @@ mod tests {
         assert_eq!(g.keyforms, vec![4, 5, 2, 3, 0, 1]);
         assert!(reverse_grid(&mut g, 0));
         assert_eq!(g.keyforms, vec![5, 4, 3, 2, 1, 0]);
+    }
+
+    fn toy() -> Model {
+        use keyform_model::{ArtMesh, ArtMeshForm, EditableMesh, ObjectInfo};
+        let base = vec![40.0, 0.0, 60.0, 0.0, 50.0, 10.0];
+        let shifted: Vec<f32> = base
+            .iter()
+            .enumerate()
+            .map(|(k, v)| if k % 2 == 0 { v + 5.0 } else { *v })
+            .collect();
+        let form = |p: &Vec<f32>| ArtMeshForm {
+            positions: p.clone(),
+            ..Default::default()
+        };
+        let a = ArtMesh {
+            clip_missing: false,
+            info: ObjectInfo::new("A"),
+            target: None,
+            positions: base.clone(),
+            uvs: vec![0.0; 6],
+            indices: vec![0, 1, 2],
+            texture: None,
+            clip: Vec::new(),
+            invert_clip: false,
+            culling: false,
+            color_composition: Default::default(),
+            alpha_composition: Default::default(),
+            user_data: String::new(),
+            point_uids: vec![0, 1, 2],
+            mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
+            grid: KeyformGrid {
+                bindings: vec![Binding::new(0, vec![0.0, 1.0])],
+                keyforms: vec![form(&base), form(&shifted)],
+                guids: Vec::new(),
+            },
+            blend_shapes: Default::default(),
+        };
+        Model {
+            parameters: vec![Arc::new(Parameter::new("ParamAngleX", -1.0, 1.0, 0.0))],
+            art_meshes: vec![Arc::new(a)],
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn motion_mirror_toy() {
+        let mut m = toy();
+        let o = ObjectRef::ArtMesh(0);
+        let s = MirrorSettings {
+            horizontal: true,
+            vertical: false,
+            axis_x: 50.0,
+            axis_y: 0.0,
+        };
+        assert_eq!(
+            motion_mirror(&mut m, &[0.0], &[o], 0, &s),
+            Err(MIRROR_SAME_VALUE.into())
+        );
+        assert_eq!(
+            motion_mirror(&mut m, &[1.0], &[], 0, &s),
+            Err(MIRROR_NO_OBJECTS.into())
+        );
+        assert_eq!(motion_mirror(&mut m, &[1.0], &[o], 0, &s), Ok(-1.0));
+        let g = &m.art_meshes[0].grid;
+        assert_eq!(g.bindings[0].keys, vec![-1.0, 0.0, 1.0]);
+        let got = &g.keyforms[0].positions;
+        let want = [35.0, 0.0, 55.0, 0.0, 45.0, 10.0];
+        for (a, b) in got.iter().zip(want) {
+            assert!((a - b).abs() < 1e-3, "{got:?}");
+        }
+        let none = MirrorSettings {
+            horizontal: false,
+            ..s
+        };
+        assert_eq!(
+            motion_mirror(&mut m, &[1.0], &[o], 0, &none),
+            Err(MIRROR_NO_FLIP.into())
+        );
     }
 
     #[test]
