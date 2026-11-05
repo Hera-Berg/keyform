@@ -136,6 +136,7 @@ pub struct KeyformApp {
     create_deformer: crate::create_deformer::CreateDeformerState,
     auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
     atlas: crate::texture_atlas::AtlasWindow,
+    new_model: crate::new_model_dialog::NewModelDialog,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
     param_dialog: crate::param_dialog::ParamDialog,
@@ -228,6 +229,7 @@ impl KeyformApp {
             create_deformer: Default::default(),
             auto_mesh: Default::default(),
             atlas: Default::default(),
+            new_model: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
             export_image: cc
@@ -464,9 +466,40 @@ impl KeyformApp {
             .map(|s| &mut s.doc)
     }
 
+    /// Opens a new, unsaved project in a view and makes it active.
+    fn add_new_project(
+        &mut self,
+        path: &std::path::Path,
+        doc: keyform_formats::cmo3::Cmo3Document,
+    ) {
+        match Document::new_project(path, doc, &mut self.log) {
+            Ok(doc) => {
+                let uid = self.next_uid;
+                self.next_uid += 1;
+                self.slots.push(Slot {
+                    uid,
+                    doc,
+                    gpu: ViewGpu::default(),
+                });
+                self.add_view_tab(Tab::View(uid));
+                self.activate(self.slots.len() - 1);
+            }
+            Err(e) => self.log.error(e),
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                ui.menu_button("New", |ui| {
+                    if ui
+                        .add(egui::Button::new("Model").shortcut_text("Ctrl+N"))
+                        .clicked()
+                    {
+                        self.new_model.open = true;
+                        ui.close();
+                    }
+                });
                 if ui
                     .add(egui::Button::new("Open").shortcut_text("Ctrl+O"))
                     .clicked()
@@ -1384,6 +1417,12 @@ impl KeyformApp {
                 }
             }
         }
+        // File ▸ New ▸ Model [Ctrl+N].
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::N)))
+        {
+            self.new_model.open = true;
+        }
         // Edit Texture Atlas [Ctrl+T] (menus.md "Texture Atlas").
         if !ctx.egui_wants_keyboard_input()
             && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::T)))
@@ -1517,6 +1556,7 @@ struct Viewer<'a> {
     palettes: &'a mut PaletteState,
     closed: &'a mut Vec<u64>,
     open_request: &'a mut bool,
+    new_request: &'a mut bool,
     mask_warnings: bool,
     mask_dialog: &'a mut bool,
 }
@@ -1606,6 +1646,9 @@ impl TabViewer for Viewer<'_> {
                         ui.label("Drop a .cmo3, .moc3 or .model3.json here");
                         if ui.button("Open…").clicked() {
                             *self.open_request = true;
+                        }
+                        if ui.button("New Model…").clicked() {
+                            *self.new_request = true;
                         }
                     });
                 });
@@ -1840,6 +1883,7 @@ impl eframe::App for KeyformApp {
 
         let mut closed = Vec::new();
         let mut open_request = false;
+        let mut new_request = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(self.tokens.background))
             .show(ui, |ui| {
@@ -1853,6 +1897,7 @@ impl eframe::App for KeyformApp {
                     palettes: &mut self.palettes,
                     closed: &mut closed,
                     open_request: &mut open_request,
+                    new_request: &mut new_request,
                     mask_warnings: self.settings.mask_warnings,
                     mask_dialog: &mut self.mask_dialog,
                 };
@@ -1900,20 +1945,7 @@ impl eframe::App for KeyformApp {
                     }
                 }
                 crate::psd_dialog::Outcome::NewModel(path, doc) => {
-                    match Document::new_project(&path, *doc, &mut self.log) {
-                        Ok(doc) => {
-                            let uid = self.next_uid;
-                            self.next_uid += 1;
-                            self.slots.push(Slot {
-                                uid,
-                                doc,
-                                gpu: ViewGpu::default(),
-                            });
-                            self.add_view_tab(Tab::View(uid));
-                            self.activate(self.slots.len() - 1);
-                        }
-                        Err(e) => self.log.error(e),
-                    }
+                    self.add_new_project(&path, *doc);
                 }
             }
         }
@@ -1939,6 +1971,15 @@ impl eframe::App for KeyformApp {
         }
         if open_request {
             self.open_dialog();
+        }
+        if new_request {
+            self.new_model.open = true;
+        }
+        if let Some((w, h)) = crate::new_model_dialog::dialog(&ctx, &mut self.new_model) {
+            match keyform_formats::psd_import::new_blank_model("Untitled Model", w, h) {
+                Ok(doc) => self.add_new_project(std::path::Path::new("Untitled Model.cmo3"), doc),
+                Err(e) => self.log.error(e.to_string()),
+            }
         }
         if animating {
             ctx.request_repaint();

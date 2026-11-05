@@ -27,6 +27,7 @@ const USAGE: &str = "usage:
   kf atlas <in.cmo3> <out.cmo3|out.png> layout <page> [--margin M] [--scale S] [--no-rotate] [--images]
                                    texture atlas pages (texture-atlas.md); a .png output
                                    writes the last page image
+  kf new <out.cmo3> [WxH]          a blank model (File > New > Model; default 1000x2000)
   kf newpsd <file.psd> <out.cmo3|out.png>
                                    a new model from a PSD (psd-import.md §4)
   kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
@@ -67,6 +68,7 @@ fn main() -> ExitCode {
         ["atlas", input, output, rest @ ..] => {
             atlas::run(Path::new(input), Path::new(output), rest)
         }
+        ["new", out, rest @ ..] => psd::new_blank(Path::new(out), rest),
         ["newpsd", psd, out, rest @ ..] => psd::new_model(Path::new(psd), Path::new(out), rest),
         ["psd", input, psd, out, rest @ ..] => {
             psd::run(Path::new(input), Path::new(psd), Path::new(out), rest)

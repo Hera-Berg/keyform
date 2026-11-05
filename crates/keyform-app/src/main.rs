@@ -14,6 +14,7 @@ mod glue_tool;
 mod icons;
 mod log;
 mod mesh_edit;
+mod new_model_dialog;
 mod palettes;
 mod param_dialog;
 mod psd_dialog;

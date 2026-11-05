@@ -1287,3 +1287,51 @@ fn preview_resolution_choices() {
     let back = Cmo3Document::read(&bytes).unwrap();
     assert_eq!(back.model.preview_reduction, 2);
 }
+
+/// File ▸ New ▸ Model: a blank model saves and reloads; its parts and
+/// parameters match a blank model saved by the reference
+/// (`test-data/blackbox/blank_ref.cmo3`, when present).
+#[test]
+fn blank_model_matches_reference() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd_import::new_blank_model;
+    let mut doc = new_blank_model("Untitled Model", 1000, 2000).unwrap();
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    let reference =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-data/blackbox/blank_ref.cmo3");
+    let Ok(data) = std::fs::read(&reference) else {
+        return;
+    };
+    let r = Cmo3Document::read(&data).unwrap().model;
+    let m = &back.model;
+    let parts = |m: &keyform_model::Model| -> Vec<(String, String, i32, bool, f32)> {
+        m.parts
+            .iter()
+            .map(|p| {
+                (
+                    p.info.id.clone(),
+                    p.info.name.clone(),
+                    p.default_order,
+                    p.sketch,
+                    p.grid.keyforms[0].draw_order,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(parts(m), parts(&r));
+    let params = |m: &keyform_model::Model| -> Vec<(String, String, f32, f32, f32)> {
+        m.parameters
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone(), p.min, p.max, p.default))
+            .collect()
+    };
+    assert_eq!(params(m), params(&r));
+    assert_eq!(
+        (m.canvas.width, m.canvas.height),
+        (r.canvas.width, r.canvas.height)
+    );
+}

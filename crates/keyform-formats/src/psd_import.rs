@@ -842,6 +842,13 @@ pub fn new_model_from_psd(
     let mut doc = crate::cmo3::Cmo3Document::new_model(stem, psd.width, psd.height)?;
     let m = &mut doc.model;
     m.preview_reduction = o.preview_reduction.max(1);
+    add_standard_parameters(m);
+    let report = import_layers(m, file_name, psd, o, false)?;
+    Ok((doc, report))
+}
+
+/// The standard parameters (§4.1) at the top of the Parameter palette.
+fn add_standard_parameters(m: &mut Model) {
     for (id, name, min, max, def, desc) in STANDARD_PARAMETERS {
         let mut p = Parameter::new(id, min, max, def);
         p.guid = new_guid();
@@ -851,8 +858,59 @@ pub fn new_model_from_psd(
         m.root_parameter_entries.push(ParamEntry::Parameter(i));
         m.parameters.push(Arc::new(p));
     }
-    let report = import_layers(m, file_name, psd, o, false)?;
-    Ok((doc, report))
+}
+
+/// The parts of a blank new model under the root part, in order: ID,
+/// name, draw order, sketch. Observed in the reference (5.3.04, Home ▸
+/// New ▸ "Create with specified size").
+/// TODO(Q-0020): not yet in the spec.
+pub const BLANK_MODEL_PARTS: [(&str, &str, i32, bool); 15] = [
+    ("PartRough", "Rough Design", 500, false),
+    ("PartFace", "Face", 500, false),
+    ("PartEye", "Eye", 600, false),
+    ("PartEyeBall", "Eyeball", 600, false),
+    ("PartBrow", "Brows", 600, false),
+    ("PartMouth", "Mouth", 600, false),
+    ("PartNose", "Nose", 600, false),
+    ("PartEar", "Ear", 500, false),
+    ("PartHairFront", "Bangs", 700, false),
+    ("PartHairSide", "Hair Side", 500, false),
+    ("PartHairBack", "Hair Back", 300, false),
+    ("PartNeck", "Neck", 400, false),
+    ("PartBody", "Body", 400, false),
+    ("PartBackground", "Background", 0, false),
+    ("PartSketch", "[ Guide Image]", 1000, true),
+];
+
+/// File ▸ New ▸ Model (Home ▸ New ▸ "Create with specified size"): a
+/// model of `width` × `height` with the standard parameters and the blank
+/// model's parts. spec: 50-ui/dialogs.md §1, psd-import.md §4.1
+pub fn new_blank_model(name: &str, width: u32, height: u32) -> Result<crate::cmo3::Cmo3Document> {
+    let mut doc = crate::cmo3::Cmo3Document::new_model(name, width, height)?;
+    let m = &mut doc.model;
+    add_standard_parameters(m);
+    let root = m.root_part;
+    for (id, pname, order, sketch) in BLANK_MODEL_PARTS {
+        let mut part = Part::new(id);
+        part.info.guid = new_guid();
+        part.info.name = pname.to_owned();
+        part.info.parent_part = root;
+        part.sketch = sketch;
+        part.default_order = order;
+        part.grid = KeyformGrid::single(keyform_model::PartForm {
+            draw_order: order as f32,
+            ..Default::default()
+        });
+        part.grid.guids = vec![new_guid()];
+        let k = m.parts.len();
+        m.parts.push(Arc::new(part));
+        if let Some(r) = root {
+            Arc::make_mut(&mut m.parts[r])
+                .children
+                .push(PartChild::Part(k));
+        }
+    }
+    Ok(doc)
 }
 
 /// Packs `images` onto a new atlas page (named `Texture<N>`, the size of

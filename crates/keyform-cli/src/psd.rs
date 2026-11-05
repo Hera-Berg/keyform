@@ -97,3 +97,22 @@ pub fn new_model(psd_path: &Path, out: &Path, rest: &[&str]) -> R {
     println!("wrote {out:?}");
     Ok(())
 }
+
+/// `kf new <out.cmo3> [WxH]`: a blank model (dialogs.md §1).
+pub fn new_blank(out: &Path, rest: &[&str]) -> R {
+    let (w, h) = match rest {
+        [] => (1000, 2000),
+        [s] => {
+            let (a, b) = s.split_once('x').ok_or("size must be WxH")?;
+            (a.parse()?, b.parse()?)
+        }
+        _ => return Err("usage: kf new <out.cmo3> [WxH]".into()),
+    };
+    let stem = out
+        .file_stem()
+        .map_or("Untitled Model".into(), |s| s.to_string_lossy().to_string());
+    let mut doc = keyform_formats::psd_import::new_blank_model(&stem, w, h)?;
+    doc.save_to(out)?;
+    println!("wrote {out:?} ({w}x{h})");
+    Ok(())
+}
