@@ -109,6 +109,7 @@ mod tests {
             generator: Default::default(),
             grid: KeyformGrid::single(ArtMeshForm::default()),
             blend_shapes: BlendShapes::default(),
+            paths: Vec::new(),
         };
         let s = MeshState {
             positions: vec![],

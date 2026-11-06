@@ -2098,3 +2098,145 @@ fn remove_unused_source_images() {
         "the old PSD's images went"
     );
 }
+
+/// Deform paths load from the samples (deform-paths.md §1): control points
+/// with anchors, curves, target points with effects.
+#[test]
+fn deform_paths_load() {
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &doc.model;
+        let paths: usize = m.art_meshes.iter().map(|a| a.paths.len()).sum();
+        let points: usize = m
+            .art_meshes
+            .iter()
+            .flat_map(|a| &a.paths)
+            .map(|p| p.points.len())
+            .sum();
+        let targets: usize = m
+            .art_meshes
+            .iter()
+            .flat_map(|a| &a.paths)
+            .map(|p| p.targets.len())
+            .sum();
+        eprintln!("{path:?}: {paths} paths, {points} control points, {targets} target points");
+        for a in &m.art_meshes {
+            for p in &a.paths {
+                for c in &p.curves {
+                    assert!(c.points.iter().all(|&k| k < p.points.len()));
+                }
+                for t in &p.targets {
+                    assert!(t.effects.iter().all(|e| match &e.effector {
+                        keyform_model::Effector::Point(k) => *k < p.points.len(),
+                        keyform_model::Effector::Curve { curve, .. } => *curve < p.curves.len(),
+                    }));
+                }
+            }
+        }
+    }
+}
+
+/// Curves rebuilt from the stored bind positions pass through the stored
+/// curve effector positions (deform-paths.md §1, sns-spline.md §3), and
+/// rebinding reproduces the stored effects.
+#[test]
+fn deform_paths_rebind() {
+    use keyform_edit::deform_path::{bind_vertex, curves};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::Effector;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let (mut n, mut bad, mut worst) = (0, 0, 0.0f32);
+        let (mut nb, mut badb) = (0, 0);
+        for a in &doc.model.art_meshes {
+            for p in &a.paths {
+                let pts: Vec<[f32; 2]> = p.points.iter().map(|c| c.pos_default).collect();
+                let cs = curves(p, &pts);
+                for t in &p.targets {
+                    for e in &t.effects {
+                        if let Effector::Curve {
+                            curve,
+                            t: ct,
+                            distance,
+                            pos,
+                        } = &e.effector
+                        {
+                            let q = cs[*curve].point(*ct);
+                            let d = (q[0] - pos[0]).hypot(q[1] - pos[1]);
+                            n += 1;
+                            worst = worst.max(d);
+                            if d > 0.5 {
+                                bad += 1;
+                                if bad <= 5 {
+                                    let c = &p.curves[*curve];
+                                    let corners: Vec<bool> =
+                                        c.points.iter().map(|&k| p.points[k].corner).collect();
+                                    eprintln!("  t={ct} pos={pos:?} got={q:?} open={} corners={corners:?}", c.open);
+                                }
+                            }
+                            let _ = distance;
+                        }
+                    }
+                    // Effects bound with a single Point effector at weight 1
+                    // sit on that point: rebinding there must agree.
+                    if let [e] = t.effects.as_slice() {
+                        let Effector::Point(k) = e.effector else {
+                            continue;
+                        };
+                        nb += 1;
+                        let got = bind_vertex(p, &pts, &cs, pts[k]);
+                        if !matches!(got.as_slice(), [g] if g.effector == Effector::Point(k)) {
+                            badb += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{path:?}: curve effects {n}, off {bad}, worst {worst}; point checks {nb}, off {badb}"
+        );
+        // Rebind from the vertices' positions at the default parameters.
+        let m = &doc.model;
+        let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+        let frame = keyform_eval::Evaluator::new(m).evaluate(&values);
+        let (mut tot, mut same, mut wdiff) = (0, 0, 0.0f32);
+        for a in &m.art_meshes {
+            for p in &a.paths {
+                let pts: Vec<[f32; 2]> = p.points.iter().map(|c| c.pos_default).collect();
+                let cs = curves(p, &pts);
+                for t in &p.targets {
+                    let Some(mi) = m.art_meshes.iter().position(|x| x.info.guid == t.mesh) else {
+                        continue;
+                    };
+                    let Some(vi) = m.art_meshes[mi].vertex_of_uid(t.uid) else {
+                        continue;
+                    };
+                    let pos = &frame.meshes[mi].positions;
+                    let v = [pos[2 * vi], pos[2 * vi + 1]];
+                    let got = bind_vertex(p, &pts, &cs, v);
+                    tot += 1;
+                    let key = |e: &keyform_model::Effect| match &e.effector {
+                        Effector::Point(k) => (0, *k),
+                        Effector::Curve { curve, .. } => (1, *curve),
+                    };
+                    let a: Vec<_> = t.effects.iter().map(key).collect();
+                    let b: Vec<_> = got.iter().map(key).collect();
+                    if a == b {
+                        same += 1;
+                        for (x, y) in t.effects.iter().zip(&got) {
+                            wdiff = wdiff.max((x.weight - y.weight).abs());
+                        }
+                    } else if tot - same <= 3 {
+                        eprintln!("  stored {:?}\n  got    {:?}", t.effects, got);
+                    }
+                }
+            }
+        }
+        eprintln!("  rebind: {same}/{tot} same effectors, worst weight diff {wdiff}");
+        assert_eq!(bad, 0, "{path:?}: curve points off");
+        assert_eq!(badb, 0);
+        assert_eq!(same, tot, "{path:?}: rebinding changed effectors");
+        assert!(wdiff < 1e-4, "{path:?}: weights differ by {wdiff}");
+    }
+}

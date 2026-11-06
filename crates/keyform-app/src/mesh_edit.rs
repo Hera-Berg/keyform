@@ -800,6 +800,7 @@ mod tests {
             model_image: None,
             generator: Default::default(),
             blend_shapes: Default::default(),
+            paths: Vec::new(),
         }
     }
 

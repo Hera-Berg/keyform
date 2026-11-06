@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
+pub mod deform_path;
 pub mod forms;
 pub mod grid;
 pub mod physics;
 
+pub use deform_path::*;
 pub use forms::*;
 pub use grid::*;
 pub use physics::*;
@@ -682,6 +684,9 @@ pub struct ArtMesh {
     pub model_image: Option<usize>,
     /// Automatic mesh generator settings (mesh-generator extension).
     pub generator: MeshGenerateSetting,
+    /// Deform paths (at most one per edit level), an editing helper.
+    /// spec: 35-editing/deform-paths.md
+    pub paths: Vec<DeformPath>,
     pub grid: KeyformGrid<ArtMeshForm>,
     pub blend_shapes: BlendShapes<ArtMeshForm>,
 }

@@ -1255,6 +1255,7 @@ fn write_art_mesh_fields(
         clip: o.clip.clone(),
         clip_missing: o.clip_missing,
         texture: o.texture,
+        paths: o.paths.clone(),
         ..n.clone()
     } == *o;
     if !rest_same {

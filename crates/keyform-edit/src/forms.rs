@@ -470,6 +470,7 @@ mod tests {
                 guids: Vec::new(),
             },
             blend_shapes: Default::default(),
+            paths: Vec::new(),
         };
         Model {
             parameters: vec![Arc::new(Parameter::new("X", -1.0, 1.0, 0.0))],

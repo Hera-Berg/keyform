@@ -341,6 +341,7 @@ mod tests {
             generator: Default::default(),
             grid,
             blend_shapes: Default::default(),
+            paths: Vec::new(),
         }
     }
 

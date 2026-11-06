@@ -3,6 +3,7 @@
 
 pub mod automesh;
 pub mod checks;
+pub mod deform_path;
 pub mod form_tools;
 pub mod forms;
 pub mod glue_brush;

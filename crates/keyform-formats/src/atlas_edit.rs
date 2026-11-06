@@ -330,6 +330,7 @@ mod tests {
                     ..Default::default()
                 }),
                 blend_shapes: Default::default(),
+                paths: Vec::new(),
             }));
         }
         m

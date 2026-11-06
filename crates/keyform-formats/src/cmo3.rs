@@ -1348,6 +1348,7 @@ impl<'a, 'd> Loader<'a, 'd> {
         let mut texture = None;
         let mut model_image = None;
         let mut generator = MeshGenerateSetting::default();
+        let mut paths = Vec::new();
         for ext in o.list("_extensions")? {
             match ext.tag() {
                 "CEditableMeshExtension" => {
@@ -1381,6 +1382,10 @@ impl<'a, 'd> Loader<'a, 'd> {
                         generator = mesh_generate_setting(&g)?;
                     }
                 }
+                "CControllerExtension" => match deform_path(&ext) {
+                    Ok(p) => paths.push(p),
+                    Err(e) => self.warn(format!("{}: deform path skipped: {e}", info.id)),
+                },
                 _ => {}
             }
         }
@@ -1438,6 +1443,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             generator,
             grid,
             blend_shapes,
+            paths,
         })
     }
 
@@ -1537,4 +1543,105 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
     }
+}
+
+fn vec2(o: Option<O>) -> Result<[f32; 2]> {
+    Ok(match o {
+        Some(v) => [v.f32("x")?.unwrap_or(0.0), v.f32("y")?.unwrap_or(0.0)],
+        None => [0.0, 0.0],
+    })
+}
+
+/// A deform path (`CControllerExtension`). spec: 35-editing/deform-paths.md §1
+fn deform_path(ext: &O) -> Result<DeformPath> {
+    let guid = ext.guid("guid")?.unwrap_or_default().to_owned();
+    let mut p = DeformPath::new(guid, ext.i32("editLevel")?.unwrap_or(2).clamp(1, 3) as u8);
+    p.max_bind = ext.i32("maxBindCount")?.unwrap_or(3);
+    p.bind_method = ext
+        .enum_value("bindMethod")?
+        .and_then(BindMethod::from_name)
+        .unwrap_or_default();
+    p.sub_meshes = ext
+        .list("subArtMeshGuids")?
+        .iter()
+        .filter_map(|g| g.attr("uuid").map(str::to_owned))
+        .collect();
+    let points = ext.list("controlPoints")?;
+    let curves = ext.list("controlCurves")?;
+    let point_index = |o: &O| points.iter().position(|q| q.identity() == o.identity());
+    let curve_index = |o: &O| curves.iter().position(|q| q.identity() == o.identity());
+    let mut curve_guids = Vec::new();
+    for c in &curves {
+        let cg = c.guid("curveId")?.unwrap_or_default().to_owned();
+        curve_guids.push(cg.clone());
+        let pts = c
+            .list("_curvePoints")?
+            .iter()
+            .filter_map(&point_index)
+            .collect();
+        let mut curve = ControlCurve::new(cg, pts);
+        curve.open = c.bool("isOpen")?.unwrap_or(true);
+        curve.width = c.f32("lineWidth")?.unwrap_or(200.0);
+        curve.hardness = c.f32("lineHardnessPercent")?.unwrap_or(50.0);
+        p.curves.push(curve);
+    }
+    for q in &points {
+        let mut anchor = PointInTriangle::default();
+        if let Some(t) = q.field("pointInTriangle")? {
+            for k in 0..3 {
+                anchor.index[k] = t.i32(&format!("ptIndex{}", k + 1))?.unwrap_or(0);
+                anchor.weight[k] = t.f32(&format!("weight{}", k + 1))?.unwrap_or(0.0);
+            }
+        }
+        p.points.push(ControlPoint {
+            guid: q.guid("ctrlPtId")?.unwrap_or_default().to_owned(),
+            curve: q.field("assignedCurve")?.and_then(|c| curve_index(&c)),
+            corner: q.bool("isCorner")?.unwrap_or(false),
+            anchor,
+            pos_default: vec2(q.field("posOnLocalOfDefaultKeyform")?)?,
+            recovery: vec2(q.field("pointOnCanvasForRecovery")?)?,
+            total_effect: q.f32("totalEffectToPointInTriangle")?.unwrap_or(0.0),
+        });
+    }
+    for t in ext.list("targetPoints")? {
+        let Some(r) = t.field("_point")? else {
+            continue;
+        };
+        let mut effects = Vec::new();
+        for e in t.list("effects")? {
+            let w = e.f32("weight")?.unwrap_or(0.0);
+            let Some(ep) = e.field("effectorPt")? else {
+                continue;
+            };
+            let effector = match ep.tag() {
+                "PointOnCurve" => {
+                    let cg = ep.guid("curveId")?.unwrap_or_default();
+                    let Some(curve) = curve_guids.iter().position(|g| g == cg) else {
+                        continue;
+                    };
+                    Effector::Curve {
+                        curve,
+                        t: ep.f32("totalT")?.unwrap_or(0.0),
+                        distance: ep.f32("distance")?.unwrap_or(0.0),
+                        pos: vec2(ep.field("_posOnLocal")?)?,
+                    }
+                }
+                _ => match point_index(&ep) {
+                    Some(k) => Effector::Point(k),
+                    None => continue,
+                },
+            };
+            effects.push(Effect {
+                effector,
+                weight: w,
+            });
+        }
+        p.targets.push(TargetPoint {
+            mesh: r.guid("artMeshGuid")?.unwrap_or_default().to_owned(),
+            uid: r.i64("pointUid")?.unwrap_or(-1),
+            index: r.i32("_index")?.unwrap_or(0).max(0) as usize,
+            effects,
+        });
+    }
+    Ok(p)
 }

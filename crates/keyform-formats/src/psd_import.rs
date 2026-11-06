@@ -418,6 +418,7 @@ impl Builder<'_> {
             generator: MeshGenerateSetting::default(),
             grid,
             blend_shapes: BlendShapes::default(),
+            paths: Vec::new(),
         };
         let k = self.m.art_meshes.len();
         self.m.art_meshes.push(Arc::new(a));

@@ -525,6 +525,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                 guids: Vec::new(),
             },
             blend_shapes: BlendShapes::default(),
+            paths: Vec::new(),
         }));
     }
 

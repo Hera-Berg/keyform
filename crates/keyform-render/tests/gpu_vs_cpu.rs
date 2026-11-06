@@ -62,6 +62,7 @@ fn quad(id: &str, x: f32, y: f32, s: f32, draw_order: f32, mirrored: bool) -> Ar
             screen: [0.1, 0.0, 0.05, 1.0],
         }),
         blend_shapes: BlendShapes::default(),
+        paths: Vec::new(),
     }
 }
 

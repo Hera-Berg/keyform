@@ -1134,6 +1134,7 @@ mod tests {
             generator: Default::default(),
             grid: KeyformGrid::single(form),
             blend_shapes: Default::default(),
+            paths: Vec::new(),
         }
     }
 

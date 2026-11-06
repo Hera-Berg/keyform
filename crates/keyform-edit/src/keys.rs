@@ -283,6 +283,7 @@ mod tests {
             generator: Default::default(),
             grid: KeyformGrid::single(form(0.0)),
             blend_shapes: Default::default(),
+            paths: Vec::new(),
         };
         a.grid = KeyformGrid {
             bindings: vec![Binding::new(0, vec![-10.0, 10.0])],
