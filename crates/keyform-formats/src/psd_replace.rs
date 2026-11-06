@@ -443,6 +443,42 @@ fn refresh_after_relink(m: &mut Model, relinked: &[usize]) -> Result<()> {
     Ok(())
 }
 
+/// Layered images no model image uses as its *current* image (layer-map
+/// entries that aren't current don't count). spec: psd-import.md §7.1
+pub fn unused_layered_images(m: &Model) -> Vec<usize> {
+    (0..m.layered_images.len())
+        .filter(|&i| {
+            let g = &m.layered_images[i].guid;
+            !m.model_images
+                .iter()
+                .any(|mi| mi.source.as_ref().is_some_and(|(p, _)| p == g))
+        })
+        .collect()
+}
+
+/// "Remove unused raw images": each layered image's entries leave every
+/// model image's layer map and every group's links, then the layered image
+/// goes. spec: psd-import.md §7.1
+pub fn remove_layered_images(m: &mut Model, which: &[usize]) {
+    let guids: Vec<String> = which
+        .iter()
+        .filter_map(|&i| m.layered_images.get(i).map(|l| l.guid.clone()))
+        .collect();
+    for mi in &mut m.model_images {
+        if mi.other_sources.iter().any(|(p, _)| guids.contains(p)) {
+            Arc::make_mut(mi)
+                .other_sources
+                .retain(|(p, _)| !guids.contains(p));
+        }
+    }
+    for g in &mut m.model_image_groups {
+        if g.linked.iter().any(|x| guids.contains(x)) {
+            Arc::make_mut(g).linked.retain(|x| !guids.contains(x));
+        }
+    }
+    m.layered_images.retain(|l| !guids.contains(&l.guid));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

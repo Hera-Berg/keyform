@@ -2050,3 +2050,51 @@ fn alpha_composition_upgrades_old_documents() {
         }
     }
 }
+
+/// Unused source images (psd-import.md §7.1): after Replace PSD the old
+/// PSD is unused; removing it drops it from the layer maps and the group,
+/// and the save removes it with its layers and images.
+#[test]
+fn remove_unused_source_images() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{new_model_from_psd, ImportOptions};
+    use keyform_formats::psd_replace::{remove_layered_images, replace_psd, unused_layered_images};
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let o = ImportOptions::default();
+    let (mut doc, _) = new_model_from_psd("a.psd", &psd, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    assert!(unused_layered_images(&doc.model).is_empty());
+    replace_psd(&mut doc.model, &[0], "b.psd", &psd, &o).unwrap();
+    let replaced = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&replaced).unwrap();
+    assert_eq!(unused_layered_images(&doc.model), vec![0]);
+    remove_layered_images(&mut doc.model, &[0]);
+    assert_eq!(doc.model.layered_images.len(), 1);
+    assert!(doc
+        .model
+        .model_images
+        .iter()
+        .all(|m| m.other_sources.is_empty()));
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    let xml = String::from_utf8(back.xml.write()).unwrap();
+    assert_eq!(xml.matches("<LayeredImageWrapper").count(), 1);
+    assert_eq!(xml.matches("<CLayeredImage xs.id").count(), 1);
+    eprintln!("{} -> {} bytes", replaced.len(), bytes.len());
+    assert!(
+        bytes.len() < replaced.len() * 3 / 4,
+        "the old PSD's images went"
+    );
+}

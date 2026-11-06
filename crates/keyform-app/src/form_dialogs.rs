@@ -48,8 +48,12 @@ pub struct FormDialogs {
     mirror: Option<MirrorDialog>,
     /// Extended Interpolation: the parameter shown.
     ext: Option<usize>,
-    /// The "at least 3 keyforms" notice was shown.
-    ext_notice: bool,
+    /// Key-count hint: shown until this time (seconds), for this parameter.
+    ext_hint: Option<(f64, usize)>,
+    /// The notice "About Number of Keys for Extended Interpolation" is open.
+    ext_notice_open: bool,
+    /// "Don't show again" was checked.
+    ext_dont_show: bool,
 }
 
 /// Motion Mirroring dialog state; the flips and axis are remembered.
@@ -225,11 +229,6 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            if !st.ext_notice {
-                ui.weak(EXTENDED_NEEDS_3);
-                ui.weak("When setting extended interpolation and changing to 2 keyforms or less, select Linear Interpolation.");
-                ui.separator();
-            }
             ui.horizontal(|ui| {
                 ui.label("Parameter");
                 param_combo(ui, "ext-param", m, &choices, &mut p);
@@ -262,7 +261,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                         egui::ComboBox::from_id_salt("ext-points")
                             .selected_text(n.to_string())
                             .show_ui(ui, |ui| {
-                                for v in 1..=10 {
+                                for v in (1..=10).chain([15, 20]) {
                                     ui.selectable_value(&mut n2, v, v.to_string());
                                 }
                             });
@@ -270,7 +269,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                     ui.add_enabled_ui(kind == K::Ellipse, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Scale");
-                            ui.add(egui::DragValue::new(&mut s2).speed(0.01).range(0.001..=100.0));
+                            ui.add(egui::DragValue::new(&mut s2).speed(0.01).range(0.1..=1000.0));
                         });
                     });
                 });
@@ -283,7 +282,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                 }
             });
             if keys < 3 {
-                ui.weak(EXTENDED_NEEDS_3);
+                ui.weak("This parameter has fewer than 3 keys on the object.");
             }
             if kind == K::Ellipse {
                 let legal = targets.iter().all(|&o| {
@@ -301,12 +300,55 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                 }
             }
         });
+    // Hint (10 s) when the parameter has an Ellipse/SNS binding with 3 or
+    // fewer keys; clicking it opens the notice. spec: §5
+    let short = targets.iter().any(|&o| {
+        extended_settings(&doc.model, o, p).is_some_and(|(k, _, _, n)| k != K::Linear && n <= 3)
+    });
+    let now = ctx.input(|i| i.time);
+    if short && !st.ext_dont_show && st.ext_hint.is_none_or(|(_, q)| q != p) {
+        st.ext_hint = Some((now + 10.0, p));
+    }
+    if let Some((until, _)) = st.ext_hint {
+        if now < until && !st.ext_dont_show {
+            egui::Area::new(egui::Id::new("ext-hint"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
+                .show(ctx, |ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(EXTENDED_NEEDS_3).color(ui.visuals().warn_fg_color),
+                        ))
+                        .clicked()
+                    {
+                        st.ext_notice_open = true;
+                    }
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+    if st.ext_notice_open {
+        let mut keep = true;
+        egui::Window::new("About Number of Keys for Extended Interpolation")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut keep)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Extended interpolation requires at least 3 keyforms.\nWhen setting extended interpolation and changing to 2 keyforms or less, please select Linear Interpolation.",
+                );
+                ui.checkbox(&mut st.ext_dont_show, "Don't show again.");
+                if ui.button("OK").clicked() {
+                    st.ext_notice_open = false;
+                }
+            });
+        if !keep {
+            st.ext_notice_open = false;
+        }
+    }
     if !open {
-        st.ext_notice = true;
         return;
     }
     if let Some((k, n, s)) = change {
-        st.ext_notice = true;
         let r = doc.try_edit("Extended Interpolation", |m| {
             let mut any = false;
             for &o in &targets {

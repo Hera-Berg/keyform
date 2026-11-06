@@ -108,10 +108,12 @@ impl Document {
     }
 }
 
-/// B / C / V + drag: brush size, angle, hardness (canvas-and-tools.md §1).
-/// Returns whether the drag was taken. The pointer's horizontal movement
-/// drives the value.
-/// TODO(Q-0024): the reference's drag-to-value mapping is not specified.
+/// B / C / V + drag: brush size, angle, hardness. Each drag event sums
+/// both axes of the movement since the previous event, s = dx + dy: B adds
+/// s in canvas units to the size (0.1…10000), C adds 0.25°·s (screen px,
+/// wrapped to [−180°, 180°)), V adds 0.005·s (0…1); nothing is painted.
+/// Returns whether the drag was taken. spec: canvas-and-tools.md §4
+/// ("Brush adjust drags")
 pub fn brush_adjust(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -131,20 +133,20 @@ pub fn brush_adjust(
     if !(b || c || v) {
         return false;
     }
-    if response.dragged_by(egui::PointerButton::Primary) {
-        let dx = response.drag_delta().x;
+    let primary = egui::PointerButton::Primary;
+    if response.dragged_by(primary) {
+        let d = response.drag_delta();
+        let s = d.x + d.y;
         if b {
-            // The radius follows the pointer: 2 canvas px of size per
-            // screen px.
-            *size = (*size + 2.0 * dx / zoom.max(1e-6)).clamp(0.1, 10000.0);
+            // Pen pressure would scale the size first (1 for a mouse).
+            *size = (*size + s / zoom.max(1e-6)).clamp(0.1, 10000.0);
         } else if c {
-            *angle = (*angle + 0.5 * dx + 180.0).rem_euclid(360.0) - 180.0;
+            *angle = (*angle + 0.25 * s + 180.0).rem_euclid(360.0) - 180.0;
         } else {
-            *hardness = (*hardness + dx / 200.0).clamp(0.0, 1.0);
+            *hardness = (*hardness + 0.005 * s).clamp(0.0, 1.0);
         }
     }
-    response.dragged_by(egui::PointerButton::Primary)
-        || response.drag_started_by(egui::PointerButton::Primary)
+    response.dragged_by(primary) || response.drag_started_by(primary)
 }
 
 /// Canvas input of the Soft Selection tool.

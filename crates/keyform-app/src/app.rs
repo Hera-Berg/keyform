@@ -1283,6 +1283,50 @@ impl KeyformApp {
         }
     }
 
+    /// Unused source images (psd-import.md §7.1), asked before every save
+    /// of a model: Yes removes them (one undo step), No keeps them, Cancel
+    /// aborts the save (returns false).
+    fn unused_source_images(&mut self, i: usize) -> bool {
+        use keyform_formats::psd_replace::{remove_layered_images, unused_layered_images};
+        let Some(s) = self.slots.get_mut(i) else {
+            return false;
+        };
+        let unused = unused_layered_images(&s.doc.model);
+        if unused.is_empty() {
+            return true;
+        }
+        let mut names = unused
+            .iter()
+            .map(|&k| s.doc.model.layered_images[k].name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if names.chars().count() > 60 {
+            names = names.chars().take(60).collect::<String>() + "…";
+        }
+        let answer = rfd::MessageDialog::new()
+            .set_title("Confirm")
+            .set_description(format!(
+                "There are {} unused source images\n{names}\n\nWould you like to delete them?",
+                unused.len()
+            ))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+        match answer {
+            rfd::MessageDialogResult::Yes => {
+                if s.doc.mode != crate::document::Mode::Modeling || s.doc.mesh_edit.is_some() {
+                    self.log.warn("Please call in Modeling View");
+                    return false;
+                }
+                s.doc.edit("Remove unused raw images", |m| {
+                    remove_layered_images(m, &unused)
+                });
+                true
+            }
+            rfd::MessageDialogResult::No => true,
+            _ => false,
+        }
+    }
+
     /// Saves document `i`; returns false if that failed.
     fn save_slot(&mut self, i: usize) -> bool {
         let Some(s) = self.slots.get_mut(i) else {
@@ -1292,7 +1336,11 @@ impl KeyformApp {
             crate::viewer_settings::save(&mut s.doc, &mut self.log);
             return true;
         }
-        if s.doc.untitled {
+        let untitled = s.doc.untitled;
+        if !untitled && !self.unused_source_images(i) {
+            return false;
+        }
+        if untitled {
             let active = self.active;
             self.active = Some(i);
             self.save_as_active();
@@ -1321,6 +1369,13 @@ impl KeyformApp {
         if !s.doc.editable() {
             return;
         }
+        let Some(i) = self.active else { return };
+        if !self.unused_source_images(i) {
+            return;
+        }
+        let Some(s) = self.slots.get_mut(i) else {
+            return;
+        };
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Model project (*.cmo3)", &["cmo3"])
             .set_file_name(s.doc.title.clone());

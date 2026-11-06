@@ -487,6 +487,30 @@ pub(super) fn sync_textures(
     old: &Model,
     new: &Model,
 ) -> Result<()> {
+    // Removed layered images ("Remove unused raw images", psd-import.md
+    // §7.1): their wrappers go now; the layered image, its layers and
+    // resources become orphans; the rest continues on the model without them.
+    let removed: Vec<usize> = (0..old.layered_images.len())
+        .filter(|&i| {
+            !new.layered_images
+                .iter()
+                .any(|n| n.guid == old.layered_images[i].guid)
+        })
+        .collect();
+    let trimmed;
+    let old = if removed.is_empty() {
+        old
+    } else {
+        remove_layered(root, ctx, &removed)?;
+        let mut t = old.clone();
+        let gone: Vec<String> = removed
+            .iter()
+            .map(|&i| old.layered_images[i].guid.clone())
+            .collect();
+        t.layered_images.retain(|l| !gone.contains(&l.guid));
+        trimmed = t;
+        &trimmed
+    };
     let prefix = |a: usize, b: usize, what: &str| -> Result<()> {
         if b < a {
             return unsupported(format!("removing {what}"));
@@ -534,7 +558,7 @@ pub(super) fn sync_textures(
         old.model_image_groups
             .iter()
             .zip(&new.model_image_groups)
-            .all(|(o, n)| o.name == n.name && n.linked.starts_with(&o.linked)),
+            .all(|(o, n)| o.name == n.name),
         "model image groups",
     )?;
     same(
@@ -1800,4 +1824,43 @@ fn existing_layer(root: &Element, guid: &str) -> Option<(String, String)> {
         return Some((id, res));
     }
     None
+}
+
+/// Removes the `_rawImages` wrappers of old layered images `which` (old
+/// indices); their layered image and everything only it refers to (layers,
+/// groups, image resources) are left to the orphan sweep, and their archive
+/// images are dropped with them. spec: psd-import.md §7.1
+fn remove_layered(root: &mut Element, ctx: &mut Ctx, which: &[usize]) -> Result<()> {
+    let raw = manager_list(root, "_rawImages")?;
+    let mut idx: Vec<usize> = which.to_vec();
+    idx.sort_unstable_by(|a, b| b.cmp(a));
+    for k in idx {
+        let list = element_at(root, Some(&raw))?;
+        if k >= list.children.len() {
+            return invalid("layered image wrapper not found");
+        }
+        let w = list.children.remove(k);
+        set_count(list);
+        // Everything reachable from the wrapper (through shared objects).
+        let mut stack = vec![w];
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(e) = stack.pop() {
+            if let Some(r) = e.attr("xs.ref") {
+                if seen.insert(r.to_owned()) {
+                    ctx.orphans.push(r.to_owned());
+                    if let Some(x) = get_shared(root, r) {
+                        stack.push(x.clone());
+                    }
+                }
+            }
+            if e.name == "file" {
+                if let Some(p) = e.attr("path") {
+                    ctx.tex.dropped.push(p.to_owned());
+                }
+            }
+            stack.extend(e.children.iter().cloned());
+        }
+        ctx.structural = true;
+    }
+    Ok(())
 }
