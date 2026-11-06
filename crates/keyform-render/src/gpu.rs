@@ -620,7 +620,11 @@ impl GpuRenderer {
                     }
                 }
             });
-            let kind = if !blend::is_simple(am.color_composition, am.alpha_composition) {
+            let illegal = m.illegal_look(am);
+            let mask = if illegal { None } else { mask };
+            let kind = if illegal {
+                PipeKind::Normal
+            } else if !blend::is_simple(am.color_composition, am.alpha_composition) {
                 PipeKind::Advanced
             } else {
                 match am.color_composition {
@@ -635,7 +639,7 @@ impl GpuRenderer {
                 kind,
                 // A mirrored view reverses on-screen winding: cull the other
                 // face so the same triangles stay visible (blending.md §4).
-                cull: match (am.culling, v.mirror) {
+                cull: match (am.culling && !illegal, v.mirror) {
                     (false, _) => Cull::None,
                     (true, false) => Cull::Back,
                     (true, true) => Cull::Front,
@@ -649,7 +653,7 @@ impl GpuRenderer {
                         f32::from(u8::from(mask.is_some())),
                         f32::from(u8::from(am.invert_clip)),
                         a,
-                        0.0,
+                        f32::from(u8::from(illegal)),
                     ],
                     modes: [
                         u32::from(am.color_composition.moc3_code()),

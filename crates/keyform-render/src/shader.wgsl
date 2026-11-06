@@ -60,6 +60,10 @@ fn mask_factor(p: vec4<f32>) -> f32 {
 
 @fragment
 fn fs_simple(in: VsOut) -> @location(0) vec4<f32> {
+    // The "illegal" look (blending.md §5): texture × (1, 0, 0, 0.5).
+    if (d.flags.w != 0.0) {
+        return sample_tex(in.uv) * vec4<f32>(1.0, 0.0, 0.0, 0.5);
+    }
     var o = shaded(in.uv) * d.base;
     o = vec4<f32>(min(o.rgb, vec3<f32>(o.a)), o.a);
     return o * mask_factor(in.pos);

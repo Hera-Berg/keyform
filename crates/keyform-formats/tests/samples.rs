@@ -2017,3 +2017,36 @@ fn unpaired_dupes(r: &keyform_formats::psd_replace::ReplaceReport) -> usize {
         .filter(|(n, _)| !seen.insert(n.clone()))
         .count()
 }
+
+/// An alpha composition on an older document (CArtMeshSource < 5) upgrades
+/// the type to version 5 with the field on every art mesh and its import
+/// (xml-object-graph.md §5); the mesh then uses the "illegal" look on an
+/// old target (blending.md §5).
+#[test]
+fn alpha_composition_upgrades_old_documents() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::AlphaComposition;
+    use std::sync::Arc;
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let xml = String::from_utf8(doc.xml.write()).unwrap();
+        if !xml.contains("version CArtMeshSource:4") {
+            continue;
+        }
+        Arc::make_mut(&mut doc.model.art_meshes[0]).alpha_composition = AlphaComposition::Atop;
+        let bytes = doc.save_bytes().unwrap();
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert_eq!(
+            back.model.art_meshes[0].alpha_composition,
+            AlphaComposition::Atop
+        );
+        let xml = String::from_utf8(back.xml.write()).unwrap();
+        assert!(xml.contains("version CArtMeshSource:5"), "{path:?}");
+        assert!(xml.contains("com.live2d.cubism.doc.model.drawable.AlphaComposition"));
+        let meshes = xml.matches("<CArtMeshSource xs.id").count();
+        assert_eq!(xml.matches("xs.n=\"alphaComposition\"").count(), meshes);
+        if (1..5_030_000).contains(&back.model.target_version) {
+            assert!(back.model.illegal_look(&back.model.art_meshes[0]));
+        }
+    }
+}

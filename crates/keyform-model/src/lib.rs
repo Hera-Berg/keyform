@@ -169,6 +169,24 @@ impl Model {
             && self.preview_reduction == other.preview_reduction
     }
 
+    /// Whether art mesh `a` is drawn with the "illegal" look: a setting the
+    /// target version doesn't support — an inverted mask below SDK 4.0, or
+    /// an advanced colour composition or a non-OVER alpha composition below
+    /// SDK 5.3 (target 0 = unselected: no restriction).
+    /// spec: 40-rendering/blending.md §5
+    pub fn illegal_look(&self, a: &ArtMesh) -> bool {
+        let t = self.target_version;
+        if t == 0 {
+            return false;
+        }
+        let legacy_colour = matches!(
+            a.color_composition,
+            ColorComposition::Normal | ColorComposition::Add | ColorComposition::Multiply
+        );
+        (t < 400_000 && a.invert_clip && !a.clip.is_empty())
+            || (t < 5_030_000 && (!legacy_colour || a.alpha_composition != AlphaComposition::Over))
+    }
+
     /// The renderer's texture slot of art mesh `a`: its atlas page, or, in
     /// model-image texture mode (no atlas input), its model image, placed
     /// after the pages. spec: 70-advanced/texture-atlas.md §4,

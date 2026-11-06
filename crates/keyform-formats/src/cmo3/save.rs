@@ -194,6 +194,7 @@ impl Cmo3Document {
         }
         if !ctx.structural {
             self.xml.root = root;
+            upgrade_alpha_composition(&mut self.xml);
             self.saved = self.model.clone();
             return Ok(());
         }
@@ -251,6 +252,7 @@ impl Cmo3Document {
                 ensure_pi(&mut xml, "version", v);
             }
         }
+        upgrade_alpha_composition(&mut xml);
         let _ = new_images;
         let mut archive = self.archive.clone();
         textures::add_entries(&mut archive, &mut ctx.tex, &xml.root);
@@ -427,6 +429,67 @@ fn first_difference(a: &Model, b: &Model) -> String {
 }
 
 /// Adds `<?import name?>` unless present, keeping the imports sorted.
+/// Documents with `CArtMeshSource` below version 5 have no
+/// `alphaComposition` field, so the reference ignores a written one. When
+/// an art mesh gets one there, the type is upgraded to its current version
+/// 5: the marker is raised and every art mesh source gets the field (OVER
+/// where it had none). spec: 10-formats/xml-object-graph.md §5,
+/// 10-formats/cmo3-schema.md (CArtMeshSource)
+fn upgrade_alpha_composition(xml: &mut crate::xml::XmlDocument) {
+    let Some(k) = xml.pis.iter().position(|p| {
+        p.target == "version"
+            && p.data
+                .split(':')
+                .next()
+                .is_some_and(|t| t.ends_with("CArtMeshSource"))
+    }) else {
+        return;
+    };
+    let (name, v) = match xml.pis[k].data.split_once(':') {
+        Some((n, v)) => (n.to_owned(), v.trim().parse::<u32>().unwrap_or(0)),
+        None => return,
+    };
+    if v >= 5 {
+        return;
+    }
+    fn walk(e: &Element, f: &mut dyn FnMut(&Element) -> bool) -> bool {
+        f(e) || e.children.iter().any(|c| walk(c, f))
+    }
+    let uses = walk(&xml.root, &mut |e| {
+        e.name == "CArtMeshSource"
+            && e.children
+                .iter()
+                .any(|c| c.field_name() == Some("alphaComposition"))
+    });
+    if !uses {
+        return;
+    }
+    fn fill(e: &mut Element) {
+        if e.name == "CArtMeshSource"
+            && e.attr("xs.ref").is_none()
+            && !e.children.is_empty()
+            && !e
+                .children
+                .iter()
+                .any(|c| c.field_name() == Some("alphaComposition"))
+        {
+            e.children.push(
+                Element::new("AlphaComposition")
+                    .with_attr("xs.n", "alphaComposition")
+                    .with_attr("v", "OVER"),
+            );
+        }
+        for c in &mut e.children {
+            fill(c);
+        }
+    }
+    fill(&mut xml.root);
+    xml.pis[k].data = format!("{name}:5");
+    if let Some(imp) = super::schema_imports::import_of("AlphaComposition") {
+        ensure_import(xml, imp);
+    }
+}
+
 /// Adds a `<?target data?>` processing instruction if missing (after the
 /// last one of the same target).
 fn ensure_pi(xml: &mut crate::xml::XmlDocument, target: &str, data: &str) {

@@ -211,7 +211,10 @@ impl<'m> CpuRenderer<'m> {
                 continue;
             };
             let pts: Vec<V2> = ms.positions.chunks_exact(2).map(to_px).collect();
-            let mask = if am.clip.is_empty() {
+            // The "illegal" look (blending.md §5): no mask, culling or
+            // colour effects.
+            let illegal = m.illegal_look(am);
+            let mask = if am.clip.is_empty() || illegal {
                 None
             } else {
                 let key = (am.clip.clone(), am.invert_clip);
@@ -231,7 +234,7 @@ impl<'m> CpuRenderer<'m> {
                 mask_cache.get(&key)
             };
             stamp = stamp.wrapping_add(1);
-            let simple = blend::is_simple(am.color_composition, am.alpha_composition);
+            let simple = illegal || blend::is_simple(am.color_composition, am.alpha_composition);
             let shade = Shade {
                 alpha: ms.opacity,
                 mul: ms.multiply,
@@ -239,6 +242,7 @@ impl<'m> CpuRenderer<'m> {
                 cc: am.color_composition,
                 ac: am.alpha_composition,
                 simple,
+                illegal,
             };
             for tri in am.indices.chunks_exact(3) {
                 let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
@@ -252,7 +256,7 @@ impl<'m> CpuRenderer<'m> {
                 let cp = |i: usize| [ms.positions[2 * i], ms.positions[2 * i + 1]];
                 let (c0, c1, c2) = (cp(i0), cp(i1), cp(i2));
                 let area = (c1[0] - c0[0]) * (c2[1] - c0[1]) - (c1[1] - c0[1]) * (c2[0] - c0[0]);
-                if am.culling && area <= 0.0 {
+                if am.culling && !illegal && area <= 0.0 {
                     continue;
                 }
                 let uv = |i: usize| -> V2 {
@@ -405,11 +409,21 @@ struct Shade {
     cc: ColorComposition,
     ac: AlphaComposition,
     simple: bool,
+    /// The "illegal" look (blending.md §5).
+    illegal: bool,
 }
 
 impl Shade {
     /// spec: appearance.md §4, clipping.md §2, blending.md §2–3
     fn apply(&self, texel: [f32; 4], k: f32, dst: &mut [f32; 4]) {
+        if self.illegal {
+            // texture × (1, 0, 0, 0.5), premultiplied source-over.
+            let src = [texel[0], 0.0, 0.0, texel[3] * 0.5];
+            for i in 0..4 {
+                dst[i] = src[i] + dst[i] * (1.0 - src[3]);
+            }
+            return;
+        }
         let mut c = texel;
         for i in 0..3 {
             c[i] *= self.mul[i];
