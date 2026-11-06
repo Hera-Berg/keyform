@@ -515,16 +515,33 @@ pub(super) fn sync_textures(
         }
         Ok(())
     };
+    // Existing layered images may only change their "replaced" flag,
+    // groups only gain linked images, model images only their layer map,
+    // pixels and placement (Replace PSD, psd-import.md §7).
     same(
-        new.layered_images[..old.layered_images.len()] == old.layered_images[..],
+        old.layered_images
+            .iter()
+            .zip(&new.layered_images)
+            .all(|(o, n)| {
+                keyform_model::LayeredImage {
+                    replaced: o.replaced,
+                    ..(**n).clone()
+                } == **o
+            }),
         "layered images",
     )?;
     same(
-        new.model_image_groups[..old.model_image_groups.len()] == old.model_image_groups[..],
+        old.model_image_groups
+            .iter()
+            .zip(&new.model_image_groups)
+            .all(|(o, n)| o.name == n.name && n.linked.starts_with(&o.linked)),
         "model image groups",
     )?;
     same(
-        new.model_images[..old.model_images.len()] == old.model_images[..],
+        old.model_images
+            .iter()
+            .zip(&new.model_images)
+            .all(|(o, n)| o.guid == n.guid && o.name == n.name && o.group == n.group),
         "model images",
     )?;
     if old.preview_reduction != new.preview_reduction {
@@ -545,7 +562,7 @@ pub(super) fn sync_textures(
         && new.model_images.len() == old.model_images.len()
         && new.textures.len() == old.textures.len()
     {
-        return Ok(());
+        return existing_changes(root, ctx, archive, old, new);
     }
     ctx.structural = true;
     ctx.tex.imports.extend(TEXTURE_IMPORTS);
@@ -680,6 +697,318 @@ pub(super) fn sync_textures(
         push_to(root, &atlases, stub("CTextureAtlas", None, &aid))?;
         ctx.tex.atlases.insert(t, (aid, gid));
     }
+    existing_changes(root, ctx, archive, old, new)
+}
+
+/// Depth-first path of the first element matching `f`.
+fn find_path(e: &Element, f: &dyn Fn(&Element) -> bool, path: &mut Vec<u32>) -> bool {
+    if f(e) {
+        return true;
+    }
+    for (k, c) in e.children.iter().enumerate() {
+        path.push(k as u32);
+        if find_path(c, f, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
+}
+
+/// In-place changes of existing texture-manager objects (Replace PSD):
+/// "replaced" flags, groups' linked images, relinked model images, and
+/// the per-mesh textures of model-image-mode meshes on them.
+/// spec: 70-advanced/psd-import.md §7
+fn existing_changes(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    archive: &CaffArchive,
+    old: &Model,
+    new: &Model,
+) -> Result<()> {
+    // Replaced flags (the wrappers in _rawImages, in order).
+    let raw = manager_list(root, "_rawImages")?;
+    for (k, (o, n)) in old
+        .layered_images
+        .iter()
+        .zip(&new.layered_images)
+        .enumerate()
+    {
+        if o.replaced != n.replaced {
+            let mut p = raw.clone();
+            p.push(k as u32);
+            let w = element_at(root, Some(&p))?;
+            let w = match w.attr("xs.ref").map(str::to_owned) {
+                Some(id) => find_shared(root, &id)?,
+                None => element_at(root, Some(&p))?,
+            };
+            match w
+                .children
+                .iter_mut()
+                .find(|c| c.field_name() == Some("isReplaced"))
+            {
+                Some(c) => c.text = n.replaced.to_string(),
+                None => w
+                    .children
+                    .push(scalar("b", "isReplaced", n.replaced.to_string())),
+            }
+            ctx.structural = true;
+        }
+    }
+    // Groups' linked images.
+    let groups = manager_list(root, "_modelImageGroups")?;
+    for (k, (o, n)) in old
+        .model_image_groups
+        .iter()
+        .zip(&new.model_image_groups)
+        .enumerate()
+    {
+        if o.linked == n.linked {
+            continue;
+        }
+        let mut p = groups.clone();
+        p.push(k as u32);
+        let gid = super::grid::share_in_place(root, ctx, &p)?;
+        let mut stubs = Vec::new();
+        for g in &n.linked {
+            let id = guid_id(root, ctx, g, "CLayeredImageGuid", "(no debug info)")?;
+            stubs.push(stub("CLayeredImageGuid", None, &id));
+        }
+        let e = find_shared(root, &gid)?;
+        if let Some(l) = e
+            .children
+            .iter_mut()
+            .find(|c| c.field_name() == Some("_linkedRawImageGuids"))
+        {
+            l.children = stubs;
+            set_count(l);
+        }
+        ctx.structural = true;
+    }
+    // Relinked model images.
+    let mut changed: Vec<usize> = Vec::new();
+    for (k, (o, n)) in old.model_images.iter().zip(&new.model_images).enumerate() {
+        if std::sync::Arc::ptr_eq(o, n) || o == n {
+            continue;
+        }
+        rewrite_model_image(root, ctx, archive, n)?;
+        changed.push(k);
+    }
+    // Per-mesh textures of model-image-mode meshes on changed images.
+    for a in &new.art_meshes {
+        let (None, Some(k)) = (a.texture, a.model_image) else {
+            continue;
+        };
+        if !changed.contains(&k) {
+            continue;
+        }
+        let mi = &new.model_images[k];
+        let Some((_, layer)) = &mi.source else {
+            continue;
+        };
+        let Some((_, res)) = ctx
+            .tex
+            .layers
+            .get(layer)
+            .cloned()
+            .or_else(|| existing_layer(root, layer))
+        else {
+            continue;
+        };
+        let size = mi
+            .png
+            .as_deref()
+            .and_then(crate::image::png_size)
+            .unwrap_or((1, 1));
+        let Some(path) = ctx.object_paths.get(&a.info.guid).cloned() else {
+            continue;
+        };
+        let f = field_path(root, &path, "texture")?;
+        let Some(gid) = element_at(root, Some(&f))?
+            .attr("xs.ref")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let g = find_shared(root, &gid)?;
+        if g.name != "GTexture2D" {
+            continue;
+        }
+        if let Some(c) = g
+            .children
+            .iter_mut()
+            .find(|c| c.field_name() == Some("srcImageResource"))
+        {
+            c.set_attr("xs.ref", res.clone());
+        }
+        if let Some(c) = g
+            .children
+            .iter_mut()
+            .find(|c| c.field_name() == Some("transformImageResource01toLogical01"))
+        {
+            *c = affine_el(
+                "transformImageResource01toLogical01",
+                cache_transform(size.0, size.1),
+            );
+        }
+        ctx.structural = true;
+    }
+    Ok(())
+}
+
+/// Rewrites an existing model image after Replace PSD: version + 1, the
+/// current image, the layer map (one entry per layered image, map order:
+/// earlier ones, then the current), filtered image (the layer's
+/// resource), icon, placement, linked images and image cache.
+fn rewrite_model_image(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    archive: &CaffArchive,
+    mi: &keyform_model::ModelImage,
+) -> Result<()> {
+    let snapshot = root.clone();
+    let guid = mi.guid.clone();
+    let mut path = Vec::new();
+    let found = find_path(
+        &snapshot,
+        &|e| {
+            e.name == "CModelImage"
+                && e.child_field("guid")
+                    .and_then(|g| uuid_of(&snapshot, g))
+                    .as_deref()
+                    == Some(guid.as_str())
+        },
+        &mut path,
+    );
+    if !found {
+        return invalid(format!("model image {}: element not found", mi.name));
+    }
+    let Some((cur_psd, cur_layer)) = mi.source.clone() else {
+        return unsupported(format!("model image {}: no current layer", mi.name));
+    };
+    let entries: Vec<(String, String)> = mi
+        .other_sources
+        .iter()
+        .cloned()
+        .chain([(cur_psd.clone(), cur_layer.clone())])
+        .collect();
+    // Layer elements and the current resource.
+    let mut layer_ids = Vec::new();
+    for (_, l) in &entries {
+        let Some((lid, res)) = ctx
+            .tex
+            .layers
+            .get(l)
+            .cloned()
+            .or_else(|| existing_layer(root, l))
+        else {
+            return unsupported(format!("model image {}: its layer was not found", mi.name));
+        };
+        layer_ids.push((lid, res));
+    }
+    let res = layer_ids.last().map(|x| x.1.clone()).unwrap_or_default();
+    let mut psd_ids = Vec::new();
+    for (p, _) in &entries {
+        psd_ids.push(guid_id(
+            root,
+            ctx,
+            p,
+            "CLayeredImageGuid",
+            "(no debug info)",
+        )?);
+    }
+    let png = mi.png.clone().unwrap_or_default();
+    let img = RgbaImage::decode_png(&png)?;
+    let size = (img.width, img.height);
+    let icon16 = icon(archive, &mut ctx.tex, "icon16", &img, 16)?;
+    let cur_psd_id = psd_ids.last().cloned().unwrap_or_default();
+    ctx.structural = true;
+    let e = element_at(root, Some(&path))?;
+    let v: u32 = e
+        .attr("modelImageVersion")
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(0);
+    e.set_attr("modelImageVersion", (v + 1).to_string());
+    // The environment: current image and the layer map.
+    fn walk(e: &mut Element, f: &mut dyn FnMut(&mut Element)) {
+        f(e);
+        for c in &mut e.children {
+            walk(c, f);
+        }
+    }
+    let map_entries: Vec<Element> = entries
+        .iter()
+        .enumerate()
+        .map(|(k, _)| {
+            with(
+                Element::new("entry"),
+                vec![
+                    stub("CLayeredImageGuid", Some("key"), &psd_ids[k]),
+                    list(
+                        "array_list",
+                        "value",
+                        vec![with(
+                            Element::new("CLayerInputData"),
+                            vec![
+                                stub("CLayer", Some("layer"), &layer_ids[k].0),
+                                affine_el("affine", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+                                null("clippingOnTexturePx"),
+                            ],
+                        )],
+                    ),
+                ],
+            )
+        })
+        .collect();
+    walk(e, &mut |x| {
+        if x.name == "EnvValueSet" {
+            if let Some(v) = x
+                .children
+                .iter_mut()
+                .find(|c| c.field_name() == Some("value") && c.name == "CLayeredImageGuid")
+            {
+                *v = stub("CLayeredImageGuid", Some("value"), &cur_psd_id);
+            }
+        }
+        if x.name == "linked_map" && x.field_name() == Some("_imageToLayerInput") {
+            x.children = map_entries.clone();
+            set_count(x);
+        }
+    });
+    let set = |e: &mut Element, name: &str, new: Element| {
+        if let Some(c) = e.children.iter_mut().find(|c| c.field_name() == Some(name)) {
+            *c = new;
+        }
+    };
+    let e = element_at(root, Some(&path))?;
+    set(
+        e,
+        "_filteredImage",
+        stub("CImageResource", Some("_filteredImage"), &res),
+    );
+    set(e, "icon16", icon16);
+    set(
+        e,
+        "_materialLocalToCanvasTransform",
+        affine_el("_materialLocalToCanvasTransform", mi.local_to_canvas),
+    );
+    set(
+        e,
+        "linkedRawImageGuids",
+        list(
+            "carray_list",
+            "linkedRawImageGuids",
+            psd_ids
+                .iter()
+                .map(|id| stub("CLayeredImageGuid", None, id))
+                .collect(),
+        ),
+    );
+    set(
+        e,
+        "cachedImageManager",
+        cache_manager(&res, size, cache_transform(size.0, size.1)),
+    );
     Ok(())
 }
 

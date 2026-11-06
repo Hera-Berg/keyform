@@ -1894,3 +1894,126 @@ fn extended_interpolation_saves() {
     let bytes = doc.save_bytes().unwrap();
     assert_eq!(stored(&Cmo3Document::read(&bytes).unwrap()).0, 0);
 }
+
+/// Replace PSD (psd-import.md §7) on a new model from the smaller sample
+/// PSD: replaced by the same PSD, every layer pairs (score 1), every model
+/// image is relinked (its layer map keeps the old PSD), the old PSD is
+/// marked replaced and the group links both; placement and UVs follow the
+/// new layers; the result saves and reloads.
+#[test]
+fn replace_psd_saves() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{new_model_from_psd, ImportOptions};
+    use keyform_formats::psd_replace::replace_psd;
+    use std::sync::Arc;
+    let Some(psd_path) = sample_files("psd")
+        .into_iter()
+        .min_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()))
+    else {
+        return;
+    };
+    let data = std::fs::read(&psd_path).unwrap();
+    let psd = Psd::parse(&data).unwrap();
+    let o = ImportOptions::default();
+    let (mut doc, _) = new_model_from_psd("blitty.psd", &psd, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    // Displace every model image so the relink has to restore placement.
+    let before = doc.model.clone();
+    for mi in &mut doc.model.model_images {
+        Arc::make_mut(mi).local_to_canvas[2] += 10.0;
+    }
+    let n_images = doc.model.model_images.len();
+    let n_layers = psd.layers().len();
+    let r = replace_psd(&mut doc.model, &[0], "blitty_v2.psd", &psd, &o).unwrap();
+    assert_eq!(r.pairs.len(), n_layers);
+    assert_eq!(r.relinked.len(), n_images);
+    assert!(r.import.art_meshes.is_empty(), "nothing unpaired");
+    let m = &doc.model;
+    assert!(m.layered_images[0].replaced && !m.layered_images[1].replaced);
+    assert_eq!(m.model_image_groups[0].linked.len(), 2);
+    for (a, b) in m.model_images.iter().zip(&before.model_images) {
+        assert_eq!(
+            a.local_to_canvas, b.local_to_canvas,
+            "placement from the new layer"
+        );
+        assert_eq!(a.other_sources.len(), 1);
+        assert_eq!(a.source.as_ref().unwrap().0, m.layered_images[1].guid);
+    }
+    for (a, b) in m.art_meshes.iter().zip(&before.art_meshes) {
+        for (x, y) in a.uvs.iter().zip(&b.uvs) {
+            assert!((x - y).abs() < 1e-5);
+        }
+    }
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+    if let Some(d) = std::env::var_os("KEYFORM_BB_OUT") {
+        std::fs::write(Path::new(&d).join("kf_replaced.cmo3"), &bytes).unwrap();
+    }
+    // Re-save unchanged: byte-stable.
+    let mut again = back;
+    assert_eq!(again.save_bytes().unwrap(), bytes);
+}
+
+/// Replace PSD with an unrelated PSD (both samples): the unpaired layers
+/// become new objects in "<name> (Corresponding layer not found)" at the
+/// top of the root part; saves and reloads.
+#[test]
+fn replace_psd_unpaired_layers() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::psd::Psd;
+    use keyform_formats::psd_import::{new_model_from_psd, ImportOptions};
+    use keyform_formats::psd_replace::replace_psd;
+    use keyform_model::PartChild;
+    let mut files = sample_files("psd");
+    if files.len() < 2 {
+        return;
+    }
+    files.sort_by_key(|p| std::fs::metadata(p).map_or(0, |m| m.len()));
+    let small = std::fs::read(&files[0]).unwrap();
+    let large = std::fs::read(&files[1]).unwrap();
+    let (a, b) = (Psd::parse(&small).unwrap(), Psd::parse(&large).unwrap());
+    let o = ImportOptions::default();
+    let (mut doc, _) = new_model_from_psd("a.psd", &a, &o).unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    let r = replace_psd(&mut doc.model, &[0], "other.psd", &b, &o).unwrap();
+    eprintln!(
+        "paired {}, relinked {}, imported {} meshes (by id first: {})",
+        r.pairs.len(),
+        r.relinked.len(),
+        r.import.art_meshes.len(),
+        r.by_id
+    );
+    assert_eq!(
+        r.pairs.len() + r.import.art_meshes.len(),
+        b.layers().len() - unpaired_dupes(&r)
+    );
+    let m = &doc.model;
+    let root = m.root_part.unwrap();
+    let PartChild::Part(top) = m.parts[root].children[0] else {
+        panic!("no part at the top")
+    };
+    assert_eq!(
+        m.parts[top].info.name,
+        "other.psd (Corresponding layer not found)"
+    );
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert!(back.model.same_data(&edited));
+}
+
+/// New layers paired with more than one old layer count once.
+fn unpaired_dupes(r: &keyform_formats::psd_replace::ReplaceReport) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    r.pairs
+        .iter()
+        .filter(|(n, _)| !seen.insert(n.clone()))
+        .count()
+}

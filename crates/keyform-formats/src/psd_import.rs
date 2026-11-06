@@ -488,6 +488,7 @@ fn import_layers(
             local_to_canvas: translate(l.bounds[0] as f32, l.bounds[1] as f32),
             group: Some(group),
             source: Some((psd_guid.clone(), l.common.guid.clone())),
+            other_sources: Vec::new(),
         }));
     }
     // A new part at index 0 of the root part holds everything.
@@ -603,6 +604,7 @@ pub fn create_art_mesh_from_layer(
                 local_to_canvas: translate(l.bounds[0] as f32, l.bounds[1] as f32),
                 group,
                 source,
+                other_sources: Vec::new(),
             }));
             m.model_images.len() - 1
         }

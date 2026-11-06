@@ -297,9 +297,12 @@ fn affine_inverse(a: [f32; 6]) -> Option<[f32; 6]> {
 /// The layered image and layer a model image is cut from: its current
 /// image GUID and the first layer input mapped to it.
 /// spec: psd-import.md §5.1
-fn model_image_source(mi: &O) -> Result<Option<(Guid, Guid)>> {
+/// (layered image, layer) entries of a model image's layer map.
+type LayerMapEntry = (Guid, Guid);
+
+fn model_image_source(mi: &O) -> Result<(Option<LayerMapEntry>, Vec<LayerMapEntry>)> {
     let Some(env) = mi.field("inputFilterEnv")? else {
-        return Ok(None);
+        return Ok((None, Vec::new()));
     };
     let (mut current, mut layers) = (None, Vec::new());
     for entry in env.list("envValues")? {
@@ -336,9 +339,16 @@ fn model_image_source(mi: &O) -> Result<Option<(Guid, Guid)>> {
             _ => {}
         }
     }
-    Ok(match current {
-        Some(c) => layers.into_iter().find(|(i, _)| *i == c),
-        None => layers.into_iter().next(),
+    let cur = match &current {
+        Some(c) => layers.iter().position(|(i, _)| i == c),
+        None => (!layers.is_empty()).then_some(0),
+    };
+    Ok(match cur {
+        Some(k) => {
+            let main = layers.remove(k);
+            (Some(main), layers)
+        }
+        None => (None, layers),
     })
 }
 
@@ -692,13 +702,15 @@ impl<'a, 'd> Loader<'a, 'd> {
                 self.idx
                     .model_images_by_guid
                     .insert(guid.clone(), m.model_images.len());
+                let sources = model_image_source(&mi)?;
                 m.model_images.push(std::sync::Arc::new(ModelImage {
                     guid,
                     name: mi.string("name")?.unwrap_or_default(),
                     png,
                     local_to_canvas,
                     group: Some(gi),
-                    source: model_image_source(&mi)?,
+                    source: sources.0,
+                    other_sources: sources.1,
                 }));
             }
         }

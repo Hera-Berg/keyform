@@ -11,7 +11,7 @@ use keyform_formats::psd_import::{
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
-/// `kf psd <in.cmo3> <file.psd> <out.cmo3 | out.png> [--register] [--legacy] [render options]`
+/// `kf psd <in.cmo3> <file.psd> <out.cmo3 | out.png> [--register | --replace NAME] [--legacy] [render options]`
 pub fn run(input: &Path, psd_path: &Path, out: &Path, rest: &[&str]) -> R {
     let mut doc = Cmo3Document::read(&std::fs::read(input)?)?;
     let data = std::fs::read(psd_path)?;
@@ -34,7 +34,27 @@ pub fn run(input: &Path, psd_path: &Path, out: &Path, rest: &[&str]) -> R {
         imported_ms: now,
         ..ImportOptions::default()
     };
-    if rest.contains(&"--register") {
+    let replace = rest
+        .iter()
+        .position(|a| *a == "--replace")
+        .and_then(|i| rest.get(i + 1))
+        .copied();
+    if let Some(old) = replace {
+        let k = doc
+            .model
+            .layered_images
+            .iter()
+            .position(|l| l.name == old)
+            .ok_or_else(|| format!("no source image named {old:?}"))?;
+        let r = keyform_formats::psd_replace::replace_psd(&mut doc.model, &[k], &name, &psd, &o)?;
+        println!(
+            "{name} replaces {old}: {} pairs (by {} first), {} model images relinked, {} new art meshes",
+            r.pairs.len(),
+            if r.by_id { "ID" } else { "name" },
+            r.relinked.len(),
+            r.import.art_meshes.len()
+        );
+    } else if rest.contains(&"--register") {
         register_psd(&mut doc.model, &name, &psd, &o)?;
         println!("{name}: registered without art meshes");
     } else {
@@ -52,7 +72,9 @@ pub fn run(input: &Path, psd_path: &Path, out: &Path, rest: &[&str]) -> R {
     let render_args: Vec<&str> = rest
         .iter()
         .copied()
-        .filter(|a| *a != "--register" && *a != "--legacy")
+        .filter(|a| {
+            *a != "--register" && *a != "--legacy" && *a != "--replace" && Some(*a) != replace
+        })
         .collect();
     if out
         .extension()

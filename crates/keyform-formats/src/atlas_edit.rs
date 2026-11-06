@@ -300,6 +300,7 @@ mod tests {
                 local_to_canvas: [1.0, 0.0, 100.0 * k as f32, 0.0, 1.0, 50.0],
                 group: None,
                 source: None,
+                other_sources: Vec::new(),
             }));
             let mut info = ObjectInfo::new(&format!("ArtMesh{k}"));
             info.parent_part = Some(0);

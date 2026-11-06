@@ -24,6 +24,8 @@ pub struct PendingPsd {
     target: Option<u64>,
     add_layers: bool,
     register_only: bool,
+    /// Layered images (by index) chosen to be replaced (§7).
+    replace: Vec<usize>,
     /// New model: the preview resolution prompt (legacy blend flag,
     /// choices, selected index). spec: psd-import.md §3.1
     resolution: Option<(bool, Vec<keyform_formats::psd_import::PreviewChoice>, usize)>,
@@ -50,6 +52,7 @@ pub fn read(path: &Path) -> Result<PendingPsd, String> {
         target: None,
         add_layers: true,
         register_only: false,
+        replace: Vec::new(),
         resolution: None,
     })
 }
@@ -166,20 +169,31 @@ pub fn dialog(
                         &mut p.register_only,
                         "< Register PSD file without adding ArtMeshes >",
                     );
-                    // Existing PSDs, newest first (replacing comes later).
-                    for li in doc.model.layered_images.iter().rev() {
+                    // Existing PSDs, newest first: Replace (§7).
+                    for (k, li) in doc.model.layered_images.iter().enumerate().rev() {
                         let label = format!(
-                            "{}{}",
+                            "Replace [ {} ]{}",
                             li.name,
                             if li.replaced { " (replaced)" } else { "" }
                         );
-                        ui.add_enabled(false, egui::Checkbox::new(&mut false, label))
-                            .on_disabled_hover_text("Replacing a PSD is not available yet.");
+                        let mut on = p.replace.contains(&k);
+                        if ui.checkbox(&mut on, label).changed() {
+                            if on {
+                                p.replace.push(k);
+                                p.add_layers = false;
+                                p.register_only = false;
+                            } else {
+                                p.replace.retain(|x| *x != k);
+                            }
+                        }
                     }
                     ui.separator();
                     ui.horizontal(|ui| {
                         ok = ui
-                            .add_enabled(p.add_layers || p.register_only, egui::Button::new("OK"))
+                            .add_enabled(
+                                p.add_layers || p.register_only || !p.replace.is_empty(),
+                                egui::Button::new("OK"),
+                            )
                             .clicked();
                         if ui.button("Cancel").clicked() {
                             outcome = Outcome::Cancel;
@@ -196,11 +210,29 @@ pub fn dialog(
                     ..ImportOptions::default()
                 };
                 let data = &p.data;
-                // "Register" wins over "add all layers" (§2).
+                // "Register" wins over "add all layers" (§2); a chosen
+                // PSD to replace wins over both (§7).
                 let register = p.register_only;
+                let replace = p.replace.clone();
                 let r = doc.try_edit("Import PSD", |m| {
                     let psd = Psd::parse(data).map_err(|e| e.to_string())?;
-                    if register {
+                    if !replace.is_empty() {
+                        let r = keyform_formats::psd_replace::replace_psd(m, &replace, &name, &psd, &o)
+                            .map_err(|e| e.to_string())?;
+                        let mut notes = vec![format!(
+                            "{} layers paired, {} model images relinked.",
+                            r.pairs.len(),
+                            r.relinked.len()
+                        )];
+                        if !r.import.art_meshes.is_empty() {
+                            notes.push(format!(
+                                "{} layers without a corresponding layer were added as new ArtMeshes.",
+                                r.import.art_meshes.len()
+                            ));
+                        }
+                        notes.extend(r.import.warnings);
+                        Ok(notes)
+                    } else if register {
                         register_psd(m, &name, &psd, &o).map_err(|e| e.to_string())?;
                         Ok(Vec::new())
                     } else {

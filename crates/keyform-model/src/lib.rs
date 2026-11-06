@@ -759,8 +759,12 @@ pub struct ModelImage {
     pub local_to_canvas: [f32; 6],
     /// Index into [`Model::model_image_groups`].
     pub group: Option<usize>,
-    /// The layered image (GUID) and layer (GUID) it is cut from.
+    /// The layered image (GUID) and layer (GUID) it is cut from (the
+    /// current entry of its layer map).
     pub source: Option<(Guid, Guid)>,
+    /// The layer map's other entries (layered image, its first layer), in
+    /// map order: earlier PSDs kept after Replace PSD. spec: psd-import.md §7
+    pub other_sources: Vec<(Guid, Guid)>,
 }
 
 /// A group of model images linked to layered images.
