@@ -23,14 +23,14 @@ use crate::error::{invalid, Result};
 use crate::xml::Element;
 
 /// Index of `<shared>` among the root's children.
-fn shared_index(root: &Element) -> Result<u32> {
+pub(super) fn shared_index(root: &Element) -> Result<u32> {
     match root.children.iter().position(|c| c.name == "shared") {
         Some(i) => Ok(i as u32),
         None => invalid("document has no <shared>"),
     }
 }
 
-fn shared_path_of(root: &Element, id: &str) -> Result<ElementPath> {
+pub(super) fn shared_path_of(root: &Element, id: &str) -> Result<ElementPath> {
     let si = shared_index(root)?;
     let k = shared(root)
         .and_then(|s| s.children.iter().position(|c| c.attr("xs.id") == Some(id)))
@@ -77,7 +77,7 @@ pub(super) fn guid_id(
 }
 
 /// Shared id of a `CoordType` named `name` ("Canvas" / "DeformerLocal").
-fn coord_id(root: &mut Element, ctx: &mut Ctx, name: &str) -> Result<String> {
+pub(super) fn coord_id(root: &mut Element, ctx: &mut Ctx, name: &str) -> Result<String> {
     if let Some(id) = shared(root).and_then(|s| {
         s.children
             .iter()
@@ -110,7 +110,7 @@ fn set_ref(root: &mut Element, obj: &[u32], name: &str, tag: &str, id: &str) -> 
 }
 
 /// The keyform elements of the object at `obj` (resolving shared ones).
-fn form_paths(root: &mut Element, obj: &[u32]) -> Result<Vec<ElementPath>> {
+pub(super) fn form_paths(root: &mut Element, obj: &[u32]) -> Result<Vec<ElementPath>> {
     let list = field_path(root, obj, "keyforms")?;
     let n = element_at(root, Some(&list))?.children.len();
     let mut out = Vec::with_capacity(n);

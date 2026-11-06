@@ -1363,7 +1363,13 @@ impl<'a, 'd> Loader<'a, 'd> {
                     }
                 }
                 "CTopologyObserverExtension" => {
-                    observed |= !ext.list("observers")?.is_empty();
+                    // Deform paths (own or as a sub mesh) are handled by
+                    // the mesh editor (deform-paths.md §1); other observers
+                    // block topology edits.
+                    observed |= ext
+                        .list("observers")?
+                        .iter()
+                        .any(|o| o.tag() != "CControllerExtension");
                 }
                 "CTextureInputExtension" => {
                     if let Some(cur) = ext.field("currentTextureInputData")? {
@@ -1640,6 +1646,10 @@ fn deform_path(ext: &O) -> Result<DeformPath> {
             mesh: r.guid("artMeshGuid")?.unwrap_or_default().to_owned(),
             uid: r.i64("pointUid")?.unwrap_or(-1),
             index: r.i32("_index")?.unwrap_or(0).max(0) as usize,
+            form: match r.field("keyForm")? {
+                Some(f) => f.guid("guid")?.unwrap_or_default().to_owned(),
+                None => String::new(),
+            },
             effects,
         });
     }

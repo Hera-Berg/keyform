@@ -465,17 +465,21 @@ pub fn bind_vertex(path: &DeformPath, pts: &[V2], cs: &[Curve], v: V2) -> Vec<Ef
     out
 }
 
-/// Binds every target vertex: `verts` are (mesh GUID, uid, index,
-/// position). Control points use `pts`. Stores positions at bind
+/// A vertex to bind: (mesh GUID, vertex UID, index, keyform GUID, canvas
+/// position).
+pub type BindVertex = (String, i64, usize, String, V2);
+
+/// Binds every target vertex. Control points use `pts`. Stores positions at bind
 /// (pos_default). spec: §2–3
-pub fn bind(path: &mut DeformPath, pts: &[V2], verts: &[(String, i64, usize, V2)]) {
+pub fn bind(path: &mut DeformPath, pts: &[V2], verts: &[BindVertex]) {
     let cs = curves(path, pts);
     path.targets = verts
         .iter()
-        .map(|(mesh, uid, index, v)| TargetPoint {
+        .map(|(mesh, uid, index, form, v)| TargetPoint {
             mesh: mesh.clone(),
             uid: *uid,
             index: *index,
+            form: form.clone(),
             effects: bind_vertex(path, pts, &cs, *v),
         })
         .collect();
@@ -650,7 +654,11 @@ mod tests {
         path.bind_method = BindMethod::DistanceSimple;
         path.points = vec![cp(None), cp(None)];
         let pts = [[0.0, 0.0], [10.0, 0.0]];
-        bind(&mut path, &pts, &[("m".into(), 0, 0, [2.5, 0.0])]);
+        bind(
+            &mut path,
+            &pts,
+            &[("m".into(), 0, 0, String::new(), [2.5, 0.0])],
+        );
         let e = &path.targets[0].effects;
         assert_eq!(e.len(), 2);
         assert!((e[0].weight - 0.75).abs() < 1e-5 && (e[1].weight - 0.25).abs() < 1e-5);
@@ -663,7 +671,11 @@ mod tests {
         path.points = vec![cp(Some(0)), cp(Some(0)), cp(Some(0))];
         path.curves = vec![ControlCurve::new(String::new(), vec![0, 1, 2])];
         let pts = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]];
-        bind(&mut path, &pts, &[("m".into(), 0, 0, [10.0, 3.0])]);
+        bind(
+            &mut path,
+            &pts,
+            &[("m".into(), 0, 0, String::new(), [10.0, 3.0])],
+        );
         let e = &path.targets[0].effects;
         assert_eq!(e.len(), 1);
         assert!(matches!(e[0].effector, Effector::Curve { .. }));

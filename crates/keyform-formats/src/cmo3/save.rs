@@ -22,6 +22,7 @@ mod grid;
 mod mesh;
 mod objects;
 mod params;
+mod paths;
 mod random_pose;
 mod textures;
 
@@ -143,7 +144,10 @@ impl Cmo3Document {
         let new_meshes = objects::index_by_guid(&new.art_meshes, |a| &a.info.guid);
         for n in &new.art_meshes {
             let Some(&i) = old_meshes.get(&n.info.guid) else {
-                objects::create_art_mesh(&mut root, ctx, &self.archive, new, n)?;
+                let path = objects::create_art_mesh(&mut root, ctx, &self.archive, new, n)?;
+                if !n.paths.is_empty() {
+                    paths::write_paths(&mut root, ctx, &path, &[], n)?;
+                }
                 ctx.structural = true;
                 continue;
             };
@@ -192,6 +196,7 @@ impl Cmo3Document {
                 )?;
             }
         }
+        paths::relink_targets(&mut root, ctx)?;
         if !ctx.structural {
             self.xml.root = root;
             upgrade_alpha_composition(&mut self.xml);
@@ -1285,6 +1290,12 @@ fn write_art_mesh_fields(
             return invalid("art mesh has no element");
         };
         mesh::write_generator(root, &path, n)?;
+    }
+    if o.paths != n.paths {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        paths::write_paths(root, ctx, &path, &o.paths, n)?;
     }
     write_parents(
         root,

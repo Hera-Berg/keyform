@@ -122,6 +122,9 @@ pub struct TargetPoint {
     pub uid: i64,
     /// Vertex index at the last bind (`_index`).
     pub index: usize,
+    /// GUID of the keyform the reference is bound to (`keyForm`), empty
+    /// when unknown (the writer then uses the mesh's first keyform).
+    pub form: Guid,
     pub effects: Vec<Effect>,
 }
 

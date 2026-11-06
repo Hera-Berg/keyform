@@ -2240,3 +2240,182 @@ fn deform_paths_rebind() {
         assert!(wdiff < 1e-4, "{path:?}: weights differ by {wdiff}");
     }
 }
+
+fn xml_debug(e: &keyform_formats::xml::Element) -> String {
+    let doc = keyform_formats::xml::XmlDocument::new(e.clone());
+    String::from_utf8_lossy(&doc.write())
+        .chars()
+        .take(1500)
+        .collect()
+}
+
+/// Every target point's `positions` is its keyform's current position
+/// array, and its keyform is one its mesh lists (deform-paths.md §1).
+fn check_point_refs(xml: &keyform_formats::xml::XmlDocument) -> usize {
+    use keyform_formats::xml::Element;
+    let sh = xml
+        .root
+        .children
+        .iter()
+        .find(|c| c.name == "shared")
+        .unwrap();
+    let by_id = |id: &str| sh.children.iter().find(|c| c.attr("xs.id") == Some(id));
+    let mut listed = std::collections::HashSet::new();
+    let mut stack: Vec<&Element> = vec![&xml.root];
+    while let Some(e) = stack.pop() {
+        if e.field_name() == Some("keyforms") {
+            listed.extend(e.children.iter().filter_map(|c| c.attr("xs.ref")));
+        }
+        stack.extend(e.children.iter());
+    }
+    let mut n = 0;
+    for ext in sh
+        .children
+        .iter()
+        .filter(|c| c.name == "CControllerExtension")
+    {
+        for t in &ext.child_field("targetPoints").unwrap().children {
+            let mut pr = t.child_field("_point").unwrap();
+            if let Some(r) = pr.attr("xs.ref") {
+                pr = by_id(r).unwrap();
+            }
+            let Some(form) = pr.child_field("keyForm").and_then(|f| f.attr("xs.ref")) else {
+                panic!("{:?}", xml_debug(pr));
+            };
+            assert!(listed.contains(form), "keyform {form} is not listed");
+            let fe = by_id(form).unwrap();
+            let fp = fe.child_field("positions").unwrap().attr("xs.ref");
+            assert_eq!(pr.child_field("positions").unwrap().attr("xs.ref"), fp);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Deform paths save (deform-paths.md §1): edits, a keyform edit (the
+/// target points follow the keyform's new array), deletion and a new path
+/// reload equal.
+#[test]
+fn deform_paths_save() {
+    use keyform_edit::deform_path::{anchor, anchored, bind};
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::{ControlCurve, ControlPoint, DeformPath};
+    use std::sync::Arc;
+    let roundtrip = |doc: &mut Cmo3Document| {
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap();
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert!(back.model.same_data(&edited), "{}", {
+            let a: Vec<_> = edited
+                .art_meshes
+                .iter()
+                .flat_map(|a| a.paths.clone())
+                .collect();
+            let b: Vec<_> = back
+                .model
+                .art_meshes
+                .iter()
+                .flat_map(|a| a.paths.clone())
+                .collect();
+            format!("paths equal: {}", a == b)
+        });
+        back
+    };
+    for path in sample_files("cmo3") {
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let Some(i) = doc
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| !a.paths.is_empty())
+        else {
+            continue;
+        };
+        eprintln!("{path:?}: mesh {}", doc.model.art_meshes[i].info.id);
+        check_point_refs(&doc.xml);
+        // Edit fields.
+        {
+            let a = Arc::make_mut(&mut doc.model.art_meshes[i]);
+            let p = &mut a.paths[0];
+            if let Some(c) = p.curves.first_mut() {
+                c.width = 123.0;
+            }
+            p.points[0].anchor.weight = [0.5, 0.25, 0.25];
+            p.points[0].corner = !p.points[0].corner;
+            p.max_bind = 2;
+        }
+        let mut doc = roundtrip(&mut doc);
+        let n0 = check_point_refs(&doc.xml);
+        // A keyform edit gives the keyform a new array.
+        {
+            let a = Arc::make_mut(&mut doc.model.art_meshes[i]);
+            for f in &mut a.grid.keyforms {
+                f.positions[0] += 1.0;
+            }
+        }
+        let mut doc = roundtrip(&mut doc);
+        assert_eq!(check_point_refs(&doc.xml), n0);
+        // Delete the mesh's paths.
+        let had = doc.xml.write().len();
+        let removed: usize = doc.model.art_meshes[i]
+            .paths
+            .iter()
+            .map(|p| p.targets.len())
+            .sum();
+        Arc::make_mut(&mut doc.model.art_meshes[i]).paths.clear();
+        let mut doc = roundtrip(&mut doc);
+        assert_eq!(check_point_refs(&doc.xml), n0 - removed);
+        assert!(doc.xml.write().len() < had);
+        // A new path on a mesh without one: two points on a curve.
+        let values: Vec<f32> = doc.model.parameters.iter().map(|p| p.default).collect();
+        let frame = keyform_eval::Evaluator::new(&doc.model).evaluate(&values);
+        let j = doc
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| a.paths.is_empty() && a.vertex_count() >= 3)
+            .unwrap();
+        let a = &doc.model.art_meshes[j];
+        let pos = frame.meshes[j].positions.clone();
+        let form = a.grid.guids.first().cloned().unwrap_or_default();
+        let mut p = DeformPath::new(keyform_model::new_guid(), 2);
+        let mut pts = Vec::new();
+        for v in [0usize, 1] {
+            let q = [pos[2 * v] + 1.0, pos[2 * v + 1] + 1.0];
+            let an = anchor(&pos, &a.indices, q);
+            let at = anchored(&an, &pos).unwrap();
+            pts.push(at);
+            p.points.push(ControlPoint {
+                guid: keyform_model::new_guid(),
+                curve: Some(0),
+                corner: false,
+                anchor: an,
+                pos_default: at,
+                recovery: at,
+                total_effect: 0.0,
+            });
+        }
+        p.curves
+            .push(ControlCurve::new(keyform_model::new_guid(), vec![0, 1]));
+        let verts: Vec<_> = (0..a.vertex_count())
+            .map(|v| {
+                let uid = a.point_uids.get(v).copied().unwrap_or(v as i64);
+                (
+                    a.info.guid.clone(),
+                    uid,
+                    v,
+                    form.clone(),
+                    [pos[2 * v], pos[2 * v + 1]],
+                )
+            })
+            .collect();
+        bind(&mut p, &pts, &verts);
+        Arc::make_mut(&mut doc.model.art_meshes[j]).paths.push(p);
+        let doc = roundtrip(&mut doc);
+        assert_eq!(
+            check_point_refs(&doc.xml),
+            n0 - removed + doc.model.art_meshes[j].vertex_count()
+        );
+    }
+}

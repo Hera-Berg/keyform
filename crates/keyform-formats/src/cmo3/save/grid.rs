@@ -564,13 +564,24 @@ pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<Vec<E
     left.sort();
     left.dedup();
     while !left.is_empty() {
-        // References from inside a candidate don't keep anything alive
-        // (a deleted object's forms refer back to it).
+        // A candidate lives when something outside the candidates, or a
+        // living candidate, refers to it: references among dead candidates
+        // don't keep them alive (a deleted object's forms refer back to it).
         let cand: HashSet<&str> = left.iter().map(String::as_str).collect();
         let mut refs: HashSet<String> = HashSet::new();
+        let mut inner: HashMap<String, Vec<String>> = HashMap::new();
         let mut stack = vec![&*root];
         while let Some(e) = stack.pop() {
-            if e.attr("xs.id").is_some_and(|id| cand.contains(id)) {
+            if let Some(id) = e.attr("xs.id").filter(|id| cand.contains(id)) {
+                let mut out = Vec::new();
+                let mut st = vec![e];
+                while let Some(x) = st.pop() {
+                    if let Some(r) = x.attr("xs.ref") {
+                        out.push(r.to_owned());
+                    }
+                    st.extend(x.children.iter());
+                }
+                inner.insert(id.to_owned(), out);
                 continue;
             }
             if let Some(r) = e.attr("xs.ref") {
@@ -578,9 +589,22 @@ pub(super) fn remove_orphans(root: &mut Element, ids: &[String]) -> Result<Vec<E
             }
             stack.extend(e.children.iter());
         }
+        let mut live: HashSet<String> = left
+            .iter()
+            .filter(|id| refs.contains(*id))
+            .cloned()
+            .collect();
+        let mut queue: Vec<String> = live.iter().cloned().collect();
+        while let Some(id) = queue.pop() {
+            for r in inner.get(&id).into_iter().flatten() {
+                if cand.contains(r.as_str()) && live.insert(r.clone()) {
+                    queue.push(r.clone());
+                }
+            }
+        }
         let dead: HashSet<String> = left
             .iter()
-            .filter(|id| !refs.contains(*id))
+            .filter(|id| !live.contains(*id))
             .cloned()
             .collect();
         if dead.is_empty() {
