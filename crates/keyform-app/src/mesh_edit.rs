@@ -138,6 +138,12 @@ pub struct MeshEdit {
     preview_base: Option<Snapshot>,
     /// Generator settings to store on the mesh when editing finishes.
     pub generator: Option<keyform_model::MeshGenerateSetting>,
+    /// The second art mesh in mesh edit (gluing between the two).
+    pub partner: Option<Box<MeshEdit>>,
+    /// Glue pairs to add / remove at Finish, as (this mesh's vertex UID,
+    /// the partner's vertex UID). spec: glue.md "Bind / unbind"
+    pub glue_add: Vec<(i64, i64)>,
+    pub glue_remove: Vec<(i64, i64)>,
 }
 
 impl MeshEdit {
@@ -167,6 +173,9 @@ impl MeshEdit {
             glued: false,
             preview_base: None,
             generator: None,
+            partner: None,
+            glue_add: Vec::new(),
+            glue_remove: Vec::new(),
         };
         s.refresh();
         Ok(s)
@@ -174,7 +183,116 @@ impl MeshEdit {
 
     /// Whether the graph differs from the mesh at entry.
     pub fn changed(&self) -> bool {
-        self.graph != self.start || self.generator.is_some()
+        self.graph != self.start
+            || self.generator.is_some()
+            || !self.glue_add.is_empty()
+            || !self.glue_remove.is_empty()
+            || self.partner.as_ref().is_some_and(|p| p.changed())
+    }
+
+    /// Whether this mesh's graph differs from the mesh at entry.
+    pub fn graph_changed(&self) -> bool {
+        self.graph != self.start
+    }
+
+    /// Bind / Unbind Glue Vertices in mesh edit (glue.md "Bind / unbind"):
+    /// pairs the selected vertices of the two meshes (`max_dist` = 40
+    /// screen pixels in canvas units); binding adds the pairs (0.5 / 0.5
+    /// at Finish) and merges each pair at its midpoint; unbinding removes
+    /// them. Returns how many pairs.
+    pub fn bind(
+        &mut self,
+        unbind: bool,
+        max_dist: f32,
+        m: &keyform_model::Model,
+    ) -> Result<usize, String> {
+        use keyform_edit::objects::{
+            glue_between, pair_vertices, GLUE_NOT_ASSOCIATED, GLUE_SAME_POINTS,
+            GLUE_SELECT_VERTICES, GLUE_TWO_MESHES,
+        };
+        let me = self.mesh;
+        let Some(p) = self.partner.as_mut() else {
+            return Err(GLUE_TWO_MESHES.into());
+        };
+        let a: Vec<(usize, [f32; 2])> = self
+            .selected
+            .iter()
+            .map(|&k| (k, self.graph.point(k)))
+            .collect();
+        let b: Vec<(usize, [f32; 2])> = p.selected.iter().map(|&k| (k, p.graph.point(k))).collect();
+        if a.is_empty() || b.is_empty() {
+            return Err(GLUE_SELECT_VERTICES.into());
+        }
+        let pairs = pair_vertices(&a, &b, max_dist);
+        if pairs.is_empty() {
+            return Err(GLUE_SELECT_VERTICES.into());
+        }
+        // Pairs already in the model, by vertex UID (this mesh, partner).
+        let existing: Vec<(i64, i64)> = match glue_between(m, me, p.mesh) {
+            Some((g, me_first)) => {
+                let (ua, ub) = (
+                    &m.art_meshes[me].point_uids,
+                    &m.art_meshes[p.mesh].point_uids,
+                );
+                m.glues[g]
+                    .pairs
+                    .iter()
+                    .filter_map(|&(x, y)| {
+                        let (i, j) = if me_first { (x?, y?) } else { (y?, x?) };
+                        Some((*ua.get(i)?, *ub.get(j)?))
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let uid = |g: &MeshGraph, k: usize| g.uids.get(k).copied().unwrap_or(-1);
+        if unbind {
+            if existing.is_empty() && self.glue_add.is_empty() {
+                return Err(GLUE_NOT_ASSOCIATED.into());
+            }
+            for &(i, j) in &pairs {
+                let pair = (uid(&self.graph, i), uid(&p.graph, j));
+                if let Some(k) = self.glue_add.iter().position(|x| *x == pair) {
+                    self.glue_add.remove(k);
+                } else if existing.contains(&pair) && !self.glue_remove.contains(&pair) {
+                    self.glue_remove.push(pair);
+                }
+            }
+            return Ok(pairs.len());
+        }
+        for &(i, j) in &pairs {
+            let pair = (uid(&self.graph, i), uid(&p.graph, j));
+            let present = (existing.contains(&pair) && !self.glue_remove.contains(&pair))
+                || self.glue_add.contains(&pair);
+            if present {
+                return Err(GLUE_SAME_POINTS.into());
+            }
+        }
+        // Merge each pair at its midpoint (both meshes' editing positions
+        // are canvas positions).
+        let mids: Vec<(usize, usize, [f32; 2])> = pairs
+            .iter()
+            .map(|&(i, j)| {
+                let (a, b) = (self.graph.point(i), p.graph.point(j));
+                (i, j, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
+            })
+            .collect();
+        for &(i, j, c) in &mids {
+            let pair = (uid(&self.graph, i), uid(&p.graph, j));
+            self.glue_remove.retain(|x| *x != pair);
+            self.glue_add.push(pair);
+            p.change(|g, _| {
+                g.points[2 * j] = c[0];
+                g.points[2 * j + 1] = c[1];
+            });
+        }
+        self.change(|g, _| {
+            for &(i, _, c) in &mids {
+                g.points[2 * i] = c[0];
+                g.points[2 * i + 1] = c[1];
+            }
+        });
+        Ok(pairs.len())
     }
 
     /// Re-triangulates the preview after edge changes and recomputes the

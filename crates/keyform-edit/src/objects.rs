@@ -1118,6 +1118,66 @@ pub fn clip_users(m: &Model, i: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Message when mesh edit has no second art mesh for binding.
+pub const GLUE_TWO_MESHES: &str = "Please select two ArtMeshes while in the Mesh Edit mode.";
+/// Message when either mesh has no selected vertex.
+pub const GLUE_SELECT_VERTICES: &str = "Please select the vertices you want to bind.";
+
+/// Glue pairing in mesh edit (glue.md "Bind / unbind"): `a` and `b` are
+/// the selected vertices (index, position) of the two meshes, in
+/// selection order. If either has exactly one, the first of each pair;
+/// otherwise every cross pair closer than `max_dist`, nearest first,
+/// never reusing a vertex.
+pub fn pair_vertices(
+    a: &[(usize, [f32; 2])],
+    b: &[(usize, [f32; 2])],
+    max_dist: f32,
+) -> Vec<(usize, usize)> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    if a.len() == 1 || b.len() == 1 {
+        return vec![(a[0].0, b[0].0)];
+    }
+    let mut cand: Vec<(f32, usize, usize)> = Vec::new();
+    for &(i, p) in a {
+        for &(j, q) in b {
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            if d < max_dist {
+                cand.push((d, i, j));
+            }
+        }
+    }
+    cand.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let (mut ua, mut ub) = (Vec::new(), Vec::new());
+    let mut out = Vec::new();
+    for (_, i, j) in cand {
+        if !ua.contains(&i) && !ub.contains(&j) {
+            ua.push(i);
+            ub.push(j);
+            out.push((i, j));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::pair_vertices;
+
+    #[test]
+    fn pairs() {
+        let a = [(0, [0.0, 0.0]), (1, [10.0, 0.0])];
+        let b = [(5, [1.0, 0.0]), (6, [9.0, 0.0]), (7, [100.0, 0.0])];
+        assert_eq!(pair_vertices(&a, &b, 40.0), vec![(0, 5), (1, 6)]);
+        // One selected on a side: the first of each.
+        assert_eq!(pair_vertices(&a[..1], &b, 40.0), vec![(0, 5)]);
+        assert_eq!(pair_vertices(&a, &b[2..], 40.0), vec![(0, 7)]);
+        // Too far apart: nothing.
+        assert!(pair_vertices(&a, &[(8, [500.0, 0.0]), (9, [600.0, 0.0])], 40.0).is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

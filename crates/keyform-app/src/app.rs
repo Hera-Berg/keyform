@@ -1494,7 +1494,23 @@ impl KeyformApp {
             let bind =
                 !unbind && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::G)));
             if bind || unbind {
-                if let Some(d) = self.active_doc().filter(|d| d.mesh_edit.is_none()) {
+                // In mesh edit: between the two meshes (glue.md "Bind / unbind").
+                let mut done = false;
+                if let Some(d) = self.active_doc() {
+                    let max_dist = 40.0 / d.view.zoom.max(1e-6);
+                    let model = d.model.clone();
+                    if let Some(s) = d.mesh_edit.as_mut() {
+                        done = true;
+                        match s.bind(unbind, max_dist, &model) {
+                            Ok(n) => self.log.info(format!(
+                                "{n} vertex pairs {} (applied when mesh editing finishes).",
+                                if unbind { "unbound" } else { "bound" }
+                            )),
+                            Err(e) => self.log.warn(e),
+                        }
+                    }
+                }
+                if let Some(d) = self.active_doc().filter(|d| !done && d.mesh_edit.is_none()) {
                     let r = if bind {
                         d.glue_selected_vertices()
                     } else {
@@ -2243,6 +2259,8 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
         ui.weak("No model");
         return;
     };
+    let zoom = doc.view.zoom;
+    let model = doc.model.clone();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -2292,6 +2310,38 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
                     if let Err(e) = s.auto_connect() {
                         log.warn(e);
                     }
+                }
+                if s.partner.is_some() {
+                    ui.horizontal(|ui| {
+                        let max_dist = 40.0 / zoom.max(1e-6);
+                        if ui
+                            .button("Bind")
+                            .on_hover_text(
+                                "Glue the selected vertices of the two ArtMeshes (Ctrl+G)",
+                            )
+                            .clicked()
+                        {
+                            if let Err(e) = s.bind(false, max_dist, &model) {
+                                log.warn(e);
+                            }
+                        }
+                        if ui
+                            .button("Unbind")
+                            .on_hover_text(
+                                "Remove the glue between the selected vertices (Ctrl+Shift+G)",
+                            )
+                            .clicked()
+                        {
+                            if let Err(e) = s.bind(true, max_dist, &model) {
+                                log.warn(e);
+                            }
+                        }
+                    });
+                    ui.weak(format!(
+                        "Gluing with the second ArtMesh: {} pairs to add, {} to remove at Finish.",
+                        s.glue_add.len(),
+                        s.glue_remove.len()
+                    ));
                 }
                 ui.checkbox(&mut s.prefs.protect_exterior, "Protect Edge exterior");
                 ui.checkbox(&mut s.prefs.reconstruct, "Mesh reconstruction");

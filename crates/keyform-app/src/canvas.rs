@@ -499,14 +499,40 @@ fn mesh_tool(
                         sel = vec![k];
                     }
                     s.set_selected(sel);
+                    if !shift {
+                        if let Some(p) = s.partner.as_mut() {
+                            p.set_selected(Vec::new());
+                        }
+                    }
                     if response.drag_started_by(primary) && !shift {
                         s.drag_begin(tolerance);
+                    }
+                } else if let Some(k) = s.partner.as_ref().and_then(|p| p.point_at(q, radius)) {
+                    // A vertex of the second mesh (gluing, glue.md).
+                    let p = s.partner.as_mut().expect("partner");
+                    let mut psel = p.selected.clone();
+                    if shift {
+                        match psel.iter().position(|&x| x == k) {
+                            Some(i) => {
+                                psel.remove(i);
+                            }
+                            None => psel.push(k),
+                        }
+                    } else {
+                        psel = vec![k];
+                    }
+                    p.set_selected(psel);
+                    if !shift {
+                        s.set_selected(Vec::new());
                     }
                 } else if response.drag_started_by(primary) {
                     gpu.rect = Some((press, true));
                     gpu.lasso = vec![press];
                 } else if !shift {
                     s.set_selected(Vec::new());
+                    if let Some(p) = s.partner.as_mut() {
+                        p.set_selected(Vec::new());
+                    }
                 }
             }
             if let Some((start, _)) = gpu.rect {
@@ -526,6 +552,19 @@ fn mesh_tool(
                             }
                         }
                         s.select_with_partners(sel, tolerance);
+                        if let Some(p) = s.partner.as_mut() {
+                            let mut psel = if shift {
+                                p.selected.clone()
+                            } else {
+                                Vec::new()
+                            };
+                            for k in p.points_in(&quad) {
+                                if !psel.contains(&k) {
+                                    psel.push(k);
+                                }
+                            }
+                            p.set_selected(psel);
+                        }
                     }
                 }
                 return;
@@ -672,6 +711,42 @@ fn draw_mesh_edit(
             ([-far, m.axis], [far, m.axis])
         };
         painter.line_segment([to_screen(a), to_screen(b)], stroke);
+    }
+    // The second mesh (gluing): its edges and vertices in the warning
+    // colour, selected ones filled.
+    if let Some(p) = s.partner.as_ref() {
+        let pg = &p.graph;
+        let st = egui::Stroke::new(1.0, tokens.warning.gamma_multiply(0.8));
+        for t in p.preview.chunks_exact(3) {
+            let q = [t[0], t[1], t[2]].map(|v| to_screen(pg.point(v as usize)));
+            painter.line_segment([q[0], q[1]], st);
+            painter.line_segment([q[1], q[2]], st);
+            painter.line_segment([q[2], q[0]], st);
+        }
+        for k in 0..pg.len() {
+            let c = to_screen(pg.point(k));
+            if p.selected.contains(&k) {
+                painter.circle_filled(c, 3.5, tokens.warning);
+                painter.circle_stroke(c, 3.5, egui::Stroke::new(1.0, Color32::WHITE));
+            } else {
+                painter.circle_stroke(c, 2.5, st);
+            }
+        }
+        // Pending glue pairs.
+        for &(ua, ub) in &s.glue_add {
+            let (Some(i), Some(j)) = (
+                g.uids.iter().position(|&u| u == ua),
+                pg.uids.iter().position(|&u| u == ub),
+            ) else {
+                continue;
+            };
+            painter.circle_stroke(
+                to_screen(g.point(i)),
+                6.0,
+                egui::Stroke::new(1.5, tokens.warning),
+            );
+            let _ = j;
+        }
     }
     let edge = egui::Stroke::new(1.0, tokens.accent);
     for (e, &pr) in g.mesh.edges.iter().zip(&g.mesh.edge_priority) {

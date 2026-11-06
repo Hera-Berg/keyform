@@ -414,3 +414,90 @@ mod tests {
         assert_eq!(doc.model.glues[g].pairs.len(), n);
     }
 }
+
+#[cfg(test)]
+mod mesh_edit_glue_tests {
+    use crate::document::{Document, Selection, SelectionSet};
+    use crate::log::Log;
+    use std::path::Path;
+
+    /// Bind in mesh edit with two meshes (glue.md "Bind / unbind"): one
+    /// vertex selected on each, Bind merges them at their midpoint; Finish
+    /// writes both meshes and a new glue with the pair (0.5 / 0.5) in one
+    /// undo step; saves and reloads; Unbind afterwards removes the pair.
+    #[test]
+    fn bind_in_mesh_edit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let Ok(data) = std::fs::read(root.join("blitty.psd")) else {
+            return;
+        };
+        let psd = keyform_formats::psd::Psd::parse(&data).unwrap();
+        let (mut doc, _) = keyform_formats::psd_import::new_model_from_psd(
+            "blitty.psd",
+            &psd,
+            &Default::default(),
+        )
+        .unwrap();
+        let scratch = root.join("target/test-scratch/mesh-glue");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("model.cmo3");
+        doc.save_to(&path).unwrap();
+        let mut log = Log::default();
+        let mut d = Document::open(&path, &mut log).unwrap();
+        d.tick(0.0, &Default::default(), &mut log);
+        let (a, b) = (0usize, 1usize);
+        d.set_selection(SelectionSet {
+            objects: vec![Selection::ArtMesh(b), Selection::ArtMesh(a)],
+            points: Vec::new(),
+            point_weights: Vec::new(),
+        });
+        d.start_mesh_edit().unwrap();
+        let model = d.model.clone();
+        let s = d.mesh_edit.as_mut().unwrap();
+        assert_eq!(s.mesh, a, "the primary selection is edited");
+        assert_eq!(s.partner.as_ref().unwrap().mesh, b);
+        let pa = s.graph.point(0);
+        let pb = s.partner.as_ref().unwrap().graph.point(0);
+        s.set_selected(vec![0]);
+        s.partner.as_mut().unwrap().set_selected(vec![0]);
+        assert_eq!(s.bind(false, 1e9, &model), Ok(1));
+        let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+        assert_eq!(s.graph.point(0), mid);
+        assert_eq!(s.partner.as_ref().unwrap().graph.point(0), mid);
+        assert_eq!(
+            s.bind(false, 1e9, &model),
+            Err(keyform_edit::objects::GLUE_SAME_POINTS.into())
+        );
+        d.finish_mesh_edit().unwrap();
+        assert_eq!(d.model.glues.len(), 1);
+        let g = &d.model.glues[0];
+        assert_eq!(g.pairs.len(), 1);
+        assert_eq!(g.weights, vec![[0.5, 0.5]]);
+        let base = |m: &keyform_model::Model, i: usize| {
+            [m.art_meshes[i].positions[0], m.art_meshes[i].positions[1]]
+        };
+        assert_eq!(base(&d.model, a), mid);
+        assert_eq!(base(&d.model, b), mid);
+        d.save_project(None).unwrap();
+        let back = Document::open(&path, &mut log).unwrap();
+        assert!(back.model.same_data(&d.model));
+        // Unbind in a new session.
+        d.set_selection(SelectionSet {
+            objects: vec![Selection::ArtMesh(b), Selection::ArtMesh(a)],
+            points: Vec::new(),
+            point_weights: Vec::new(),
+        });
+        d.start_mesh_edit().unwrap();
+        let model = d.model.clone();
+        let s = d.mesh_edit.as_mut().unwrap();
+        s.set_selected(vec![0]);
+        s.partner.as_mut().unwrap().set_selected(vec![0]);
+        assert_eq!(s.bind(true, 1e9, &model), Ok(1));
+        d.finish_mesh_edit().unwrap();
+        assert!(d.model.glues[0].pairs.is_empty());
+        // Undo (past the selection step Finish adds) restores the pair.
+        while d.undo().is_some_and(|n| n != "Mesh Edit") {}
+        assert_eq!(d.model.glues[0].pairs.len(), 1);
+    }
+}

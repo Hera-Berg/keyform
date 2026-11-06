@@ -1354,10 +1354,21 @@ impl Document {
                 _ => None,
             })
             .collect();
-        let [a] = meshes[..] else {
-            return Err("Select one ArtMesh to edit its mesh.".into());
+        // One art mesh, or two (gluing between them; glue.md "Bind /
+        // unbind"). The primary selection is edited; the other is the
+        // partner.
+        let (a, b) = match meshes[..] {
+            [a] => (a, None),
+            [x, y] => match self.primary() {
+                Some(Selection::ArtMesh(p)) if p == y => (y, Some(x)),
+                _ => (x, Some(y)),
+            },
+            _ => return Err("Select one ArtMesh (or two, to glue them) to edit its mesh.".into()),
         };
-        let s = self.new_mesh_edit(a)?;
+        let mut s = self.new_mesh_edit(a)?;
+        if let Some(b) = b {
+            s.partner = Some(Box::new(self.new_mesh_edit(b)?));
+        }
         self.mesh_edit = Some(s);
         Ok(())
     }
@@ -1401,10 +1412,45 @@ impl Document {
         // Finishing merges exactly coincident vertices (§5.1).
         let (graph, merged) = s.finished_graph();
         let generator = s.generator;
+        let changed_self = s.graph_changed();
+        let partner = s
+            .partner
+            .as_ref()
+            .map(|p| (p.mesh, p.finished_graph().0, p.graph_changed()));
+        let (glue_add, glue_remove) = (s.glue_add.clone(), s.glue_remove.clone());
         let t = self.try_edit("Mesh Edit", |m| {
-            let t = keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())?;
+            let t = if changed_self || generator.is_some() || partner.is_none() {
+                keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())?
+            } else {
+                Default::default()
+            };
             if let Some(g) = generator {
                 std::sync::Arc::make_mut(&mut m.art_meshes[a]).generator = g;
+            }
+            if let Some((b, pg, pchanged)) = &partner {
+                if *pchanged {
+                    keyform_edit::mesh::set_mesh(m, *b, pg).map_err(|e| e.to_string())?;
+                }
+                // Glue pairs by vertex UID (glue.md "Bind / unbind").
+                let idx = |m: &keyform_model::Model, x: usize, uid: i64| {
+                    m.art_meshes[x].point_uids.iter().position(|&u| u == uid)
+                };
+                for &(ua, ub) in &glue_add {
+                    let (Some(i), Some(j)) = (idx(m, a, ua), idx(m, *b, ub)) else {
+                        continue;
+                    };
+                    match keyform_edit::objects::bind_vertices(m, (a, i), (*b, j)) {
+                        Ok(_) => {}
+                        Err(e) if e == keyform_edit::objects::GLUE_SAME_POINTS => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                for &(ua, ub) in &glue_remove {
+                    let (Some(i), Some(j)) = (idx(m, a, ua), idx(m, *b, ub)) else {
+                        continue;
+                    };
+                    keyform_edit::objects::unbind_vertices(m, (a, i), (*b, j))?;
+                }
             }
             Ok(t)
         });
