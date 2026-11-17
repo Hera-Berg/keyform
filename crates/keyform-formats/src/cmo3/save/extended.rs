@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use keyform_eval::extended::{extended_grid, inserted_keys, is_extended, Points};
 use keyform_eval::Blend;
-use keyform_model::KeyformGrid;
+use keyform_model::{BlendShapes, KeyformGrid};
 
 use super::grid::{
     add_shared, field_path, get_shared, scalar, set_count, share_in_place, stub, uuid_of, Ctx,
@@ -68,14 +68,25 @@ pub(super) fn sync_extension<F: FormFields + Blend + Points>(
     ctx: &mut Ctx,
     src: &ObjectSource,
     what: &str,
-    og: &KeyformGrid<F>,
-    ng: &KeyformGrid<F>,
+    (og, ob): (&KeyformGrid<F>, &BlendShapes<F>),
+    (ng, nb): (&KeyformGrid<F>, &BlendShapes<F>),
 ) -> Result<()> {
     let (oe, ne) = (extended_grid(og), extended_grid(ng));
-    if oe.is_none() && ne.is_none() {
+    // Blend-shape settings (§4): the extension also exists for them.
+    let same_settings = {
+        let og_ = |i: usize| ctx.old_params.get(i).map(|p| p.guid.as_str());
+        let ng_ = |i: usize| ctx.params.get(i).map(|p| p.guid.as_str());
+        ob.extended.len() == nb.extended.len()
+            && ob.extended.iter().zip(&nb.extended).all(|(x, y)| {
+                og_(x.parameter) == ng_(y.parameter)
+                    && (x.kind, x.points, x.scale) == (y.kind, y.points, y.scale)
+            })
+    };
+    let blend_same = same_settings && super::grid::same_blend(ctx, ob, nb, true);
+    if oe.is_none() && ne.is_none() && ob.extended.is_empty() && nb.extended.is_empty() {
         return Ok(());
     }
-    if oe == ne && og.guids == ng.guids {
+    if oe == ne && og.guids == ng.guids && blend_same {
         return Ok(());
     }
     let Some(obj) = src.element.clone() else {
@@ -106,7 +117,17 @@ pub(super) fn sync_extension<F: FormFields + Blend + Points>(
         l.children = keep;
         set_count(l);
     }
-    let Some(g) = ne else { return Ok(()) };
+    // Enabled for an extended grid or blend-shape settings; with no
+    // extended grid binding the grid source is a plain copy (§4).
+    let g = match ne {
+        Some(g) => g,
+        None if !nb.extended.is_empty() => {
+            let mut g = ng.clone();
+            g.guids = Vec::new();
+            g
+        }
+        None => return Ok(()),
+    };
     if ng.guids.len() != ng.keyforms.len() {
         return unsupported(format!("{what}: keyforms without identities"));
     }
@@ -285,15 +306,69 @@ pub(super) fn sync_extension<F: FormFields + Blend + Points>(
                 .collect(),
         ),
     ];
+    // Extended blend-shape sets (§4): only the inserted points, their
+    // forms in `morphTargetExtendedKeyforms` in the same order, and the
+    // settings map (entry form, LINEAR included).
+    let mut targets = Vec::new();
+    let mut morph_forms = Vec::new();
+    let mut entries = Vec::new();
+    for x in &nb.extended {
+        let Some(param) = ctx.params.get(x.parameter).cloned() else {
+            continue;
+        };
+        // Entries for parameters without blend shapes any more go.
+        if !nb.shapes.iter().any(|s| s.parameter == x.parameter) {
+            continue;
+        }
+        let pg = guid_id(root, ctx, &param.guid, "CParameterGuid", &param.id)?;
+        for (k, f) in keyform_eval::extended::blend_inserted(ctx.params, ng, nb, x) {
+            let fid = add_shared(
+                root,
+                ctx,
+                Element::new("CFormGuid")
+                    .with_attr("uuid", keyform_model::new_guid())
+                    .with_attr("note", "(no debug info)"),
+            )?;
+            let mut e = template.clone();
+            F::write(&mut Fields { e: &mut e }, base, &f)?;
+            if let Some(gf) = super::grid::form_guid_field_pub(&mut e) {
+                *gf = stub("CFormGuid", Some("guid"), &fid);
+            }
+            morph_forms.push(e);
+            let mut t = Element::new("ExtendedKeyFormMorphTarget");
+            t.children = vec![
+                stub("CFormGuid", Some("keyformGuid"), &fid),
+                stub("CParameterGuid", Some("parameterGuid"), &pg),
+                scalar("f", "keyValue", super::format_f32(k)),
+            ];
+            targets.push(t);
+        }
+        let mut setting = Element::new("ExtendedInterpolationSetting").with_attr("xs.n", "value");
+        setting.children = vec![
+            Element::new("ExtendedInterpolationType")
+                .with_attr("xs.n", "type")
+                .with_attr("v", super::grid::extended_name(x.kind)),
+            scalar("i", "insertPointCount", x.points.to_string()),
+            scalar(
+                "f",
+                "extendedInterpolationScale",
+                super::format_f32(x.scale),
+            ),
+        ];
+        let mut entry = Element::new("entry");
+        entry.children = vec![stub("CParameterGuid", Some("key"), &pg), setting];
+        entries.push(entry);
+    }
+    let mut settings = Element::new("hash_map")
+        .with_attr("xs.n", "extendedInterpolationSettings")
+        .with_attr("count", entries.len().to_string());
+    if entries.is_empty() {
+        settings.set_attr("keyType", "string");
+    }
+    settings.children = entries;
     let mut morph = Element::new("ExtendedKeyFormMorphTargetSet")
         .with_attr("xs.n", "_extendedKeyformMorphTargetSet");
-    morph.children = vec![
-        clist("_morphTargets", Vec::new()),
-        Element::new("hash_map")
-            .with_attr("xs.n", "extendedInterpolationSettings")
-            .with_attr("count", "0")
-            .with_attr("keyType", "string"),
-    ];
+    morph.children = vec![clist("_morphTargets", targets), settings];
     let mut sup = Element::new("ACExtension").with_attr("xs.n", "super");
     sup.children = vec![
         Element::new("CExtensionGuid")
@@ -308,7 +383,7 @@ pub(super) fn sync_extension<F: FormFields + Blend + Points>(
         grid_src,
         clist("normalExtendedKeyforms", forms),
         morph,
-        clist("morphTargetExtendedKeyforms", Vec::new()),
+        clist("morphTargetExtendedKeyforms", morph_forms),
     ];
     let l = element_at(root, Some(&ext_list))?;
     l.children.push(ext);

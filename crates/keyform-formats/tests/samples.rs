@@ -2963,3 +2963,178 @@ fn can3_save_edits() {
         }
     }
 }
+
+/// Extended blend-shape sets save (extended-interpolation.md §4): two
+/// blend-shape entries injected into a sample mesh, an SNS setting with 2
+/// points saves only the inserted points (2 gaps incl. the base × 2) and
+/// the settings map, and the document reloads and evaluates equal. A
+/// LINEAR setting is stored too.
+#[test]
+fn extended_blend_shapes_save() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::xml::Element;
+    use keyform_model::{BlendExtended, ExtendedInterpolationKind};
+    use std::sync::Arc;
+    let Some(path) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_pro_t11.cmo3"))
+    else {
+        return;
+    };
+    let doc0 = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let m = doc0.model.clone();
+    // A mesh with ≥ 3 distinct stored keyforms and a parameter it isn't bound to.
+    let Some(i) = m.art_meshes.iter().position(|a| {
+        let mut g = a.grid.guids.clone();
+        g.dedup();
+        g.len() >= 3 && a.blend_shapes.shapes.is_empty()
+    }) else {
+        return;
+    };
+    let a = &m.art_meshes[i];
+    let bound: Vec<usize> = a.grid.bindings.iter().map(|b| b.parameter).collect();
+    let p = (0..m.parameters.len())
+        .find(|p| !bound.contains(p))
+        .unwrap();
+    let (pguid, f1, f2) = (
+        m.parameters[p].guid.clone(),
+        a.grid.guids[1].clone(),
+        a.grid.guids[2].clone(),
+    );
+    // Inject <KeyFormMorphTarget> entries (key 0.5 → keyform 1, 1.0 → 2).
+    let mut doc = doc0;
+    let mut xml = doc.xml.clone();
+    let sh_idx = xml
+        .root
+        .children
+        .iter()
+        .position(|c| c.name == "shared")
+        .unwrap();
+    let find_uuid = |root: &Element, tag: &str, uuid: &str| -> Option<String> {
+        root.children[sh_idx]
+            .children
+            .iter()
+            .find(|c| c.name == tag && c.attr("uuid") == Some(uuid))
+            .and_then(|c| c.attr("xs.id"))
+            .map(str::to_owned)
+    };
+    let pid = find_uuid(&xml.root, "CParameterGuid", &pguid).expect("parameter guid shared");
+    let g1 = find_uuid(&xml.root, "CFormGuid", &f1).expect("form guid shared");
+    let g2 = find_uuid(&xml.root, "CFormGuid", &f2).expect("form guid shared");
+    let mesh_guid = a.info.guid.clone();
+    let dg = find_uuid(&xml.root, "CDrawableGuid", &mesh_guid).unwrap();
+    // The mesh element: the shared CArtMeshSource whose guid refs `dg`.
+    let mesh = xml.root.children[sh_idx]
+        .children
+        .iter_mut()
+        .find(|c| {
+            c.name == "CArtMeshSource" && {
+                let mut st = vec![&**c];
+                let mut hit = false;
+                while let Some(e) = st.pop() {
+                    if e.field_name() == Some("guid")
+                        && e.attr("xs.ref") == Some(dg.as_str())
+                        && e.name == "CDrawableGuid"
+                    {
+                        hit = true;
+                        break;
+                    }
+                    st.extend(e.children.iter());
+                }
+                hit
+            }
+        })
+        .unwrap();
+    let mut stack: Vec<&mut Element> = vec![mesh];
+    let mut set = None;
+    while let Some(e) = stack.pop() {
+        if e.field_name() == Some("keyformMorphTargetSet") {
+            set = Some(e);
+            break;
+        }
+        stack.extend(e.children.iter_mut());
+    }
+    let set = set.unwrap();
+    let list = set
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("_morphTargets"))
+        .unwrap();
+    for (k, g) in [("0.5", &g1), ("1.0", &g2)] {
+        let mut t = Element::new("KeyFormMorphTarget");
+        let mut kv = Element::new("f").with_attr("xs.n", "keyValue");
+        kv.text = k.into();
+        t.children = vec![
+            Element::new("CParameterGuid")
+                .with_attr("xs.n", "parameterGuid")
+                .with_attr("xs.ref", &pid),
+            kv,
+            Element::new("CFormGuid")
+                .with_attr("xs.n", "keyformGuid")
+                .with_attr("xs.ref", g),
+        ];
+        list.children.push(t);
+    }
+    list.set_attr("count", list.children.len().to_string());
+    doc.xml = xml;
+    let bytes = doc.write().unwrap();
+    let mut doc = Cmo3Document::read(&bytes).unwrap();
+    assert_eq!(
+        doc.model.art_meshes[i].blend_shapes.shapes.len(),
+        2,
+        "{:?}",
+        doc.warnings
+    );
+    // An SNS setting with 2 points, and a LINEAR one on another parameter
+    // with no shapes (dropped on rebuild, so not added here).
+    // Through the Extended Interpolation panel's operation.
+    use keyform_edit::form_tools::{extended_settings, set_extended};
+    use keyform_edit::ObjectRef;
+    assert_eq!(
+        extended_settings(&doc.model, ObjectRef::ArtMesh(i), p),
+        Some((ExtendedInterpolationKind::Linear, 1, 1.0, 3))
+    );
+    assert!(set_extended(
+        &mut doc.model,
+        ObjectRef::ArtMesh(i),
+        p,
+        ExtendedInterpolationKind::SnsCurve,
+        2,
+        1.0
+    )
+    .unwrap());
+    assert_eq!(
+        doc.model.art_meshes[i].blend_shapes.extended,
+        vec![BlendExtended {
+            parameter: p,
+            kind: ExtendedInterpolationKind::SnsCurve,
+            points: 2,
+            scale: 1.0
+        }]
+    );
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.model.same_data(&edited));
+    let text = String::from_utf8(back.xml.write()).unwrap();
+    assert_eq!(text.matches("<ExtendedKeyFormMorphTarget>").count(), 4);
+    assert_eq!(text.matches("<ExtendedInterpolationSetting").count(), 1);
+    // Evaluation with the parameter at 0.25 (an inserted key) agrees.
+    let mut values: Vec<f32> = edited.parameters.iter().map(|q| q.default).collect();
+    values[p] = 0.25;
+    let fa = keyform_eval::Evaluator::new(&edited).evaluate(&values);
+    let fb = keyform_eval::Evaluator::new(&back.model).evaluate(&values);
+    assert_eq!(fa.meshes[i].positions, fb.meshes[i].positions);
+    // Switching the setting to LINEAR stores a LINEAR entry, no points.
+    let mut doc = back;
+    Arc::make_mut(&mut doc.model.art_meshes[i])
+        .blend_shapes
+        .extended[0]
+        .kind = ExtendedInterpolationKind::Linear;
+    let edited = doc.model.clone();
+    let back = Cmo3Document::read(&doc.save_bytes().unwrap()).unwrap();
+    assert!(back.model.same_data(&edited));
+    let text = String::from_utf8(back.xml.write()).unwrap();
+    assert_eq!(text.matches("<ExtendedKeyFormMorphTarget>").count(), 0);
+    assert!(text.contains(r#"<ExtendedInterpolationType xs.n="type" v="LINEAR" />"#));
+}

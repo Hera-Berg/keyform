@@ -1175,10 +1175,11 @@ impl<'a, 'd> Loader<'a, 'd> {
                 let Some(v) = entry.field("value")? else {
                     continue;
                 };
+                // LINEAR entries are stored too (Q-0027).
                 let kind = match v.enum_value("type")? {
                     Some("ELLIPSE") => ExtendedInterpolationKind::Ellipse,
                     Some("SNS_CURVE") => ExtendedInterpolationKind::SnsCurve,
-                    _ => continue,
+                    _ => ExtendedInterpolationKind::Linear,
                 };
                 blend.extended.push(keyform_model::BlendExtended {
                     parameter: param,

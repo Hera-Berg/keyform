@@ -330,57 +330,77 @@ pub fn extended_grid<F: Blend + Points>(grid: &KeyformGrid<F>) -> Option<Keyform
     Some(g)
 }
 
-/// The blend shapes with each extended blend-shape parameter's entries
-/// replaced by its generated curve, or `None` when none is extended. The
-/// curve is the parameter's shape curve (entries plus the base keyform at
-/// 0, blend-shapes.md §2) expanded like a grid axis; the generated entries
-/// other than the base are kept. spec: extended-interpolation.md §4
-// TODO(Q-0027): whether the base at 0 is part of the generated curve.
+/// The inserted points of blend-shape parameter `x.parameter`'s extended
+/// set: (key value, form), in key order. The curve is the parameter's
+/// entries plus the base keyform at 0, sorted; with ≤ 2 keys (base
+/// included), a LINEAR setting, adjacent keys within 0.001 (illegal) or
+/// an illegal ellipse, nothing is inserted. spec: extended-interpolation.md §4
+pub fn blend_inserted<F: Blend + Points>(
+    params: &[impl std::borrow::Borrow<Parameter>],
+    grid: &KeyformGrid<F>,
+    blend: &BlendShapes<F>,
+    x: &keyform_model::BlendExtended,
+) -> Vec<(f32, F)> {
+    if x.kind == ExtendedInterpolationKind::Linear {
+        return Vec::new();
+    }
+    let Some(base) = crate::interp::base_keyform(params, grid) else {
+        return Vec::new();
+    };
+    let Some(param) = params.get(x.parameter).map(std::borrow::Borrow::borrow) else {
+        return Vec::new();
+    };
+    let mut curve: Vec<(f32, F)> = blend
+        .shapes
+        .iter()
+        .filter(|s| s.parameter == x.parameter)
+        .map(|s| (s.key.unwrap_or(param.max), s.form.clone()))
+        .collect();
+    curve.push((0.0, base.clone()));
+    curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if curve.windows(2).any(|w| (w[1].0 - w[0].0).abs() < 0.001) {
+        return Vec::new();
+    }
+    let mut b = Binding::new(x.parameter, curve.iter().map(|c| c.0).collect());
+    b.extended = x.kind;
+    b.insert_point_count = x.points;
+    b.extended_scale = x.scale;
+    let keys = b.keys.clone();
+    let n = b.insert_point_count.max(1) as usize;
+    let g1 = KeyformGrid {
+        bindings: vec![b],
+        keyforms: curve.into_iter().map(|c| c.1).collect(),
+        guids: Vec::new(),
+    };
+    let Some(g) = extended_grid(&g1) else {
+        return Vec::new();
+    };
+    inserted_keys(&keys, n)
+        .into_iter()
+        .zip(g.keyforms)
+        .filter(|((_, _, t), _)| *t != 0.0)
+        .map(|((k, _, _), f)| (k, f))
+        .collect()
+}
+
+/// The blend shapes with each extended blend-shape parameter's inserted
+/// points added as entries, or `None` when nothing is inserted. spec:
+/// extended-interpolation.md §4 "Evaluation and export"
 pub fn extended_blend<F: Blend + Points>(
     params: &[impl std::borrow::Borrow<Parameter>],
     grid: &KeyformGrid<F>,
     blend: &BlendShapes<F>,
 ) -> Option<BlendShapes<F>> {
-    let base = crate::interp::base_keyform(params, grid)?;
     let mut out = blend.clone();
     let mut any = false;
     for x in &blend.extended {
-        if x.kind == ExtendedInterpolationKind::Linear {
-            continue;
-        }
-        let Some(param) = params.get(x.parameter).map(std::borrow::Borrow::borrow) else {
-            continue;
-        };
-        let mut curve: Vec<(f32, F)> = blend
-            .shapes
-            .iter()
-            .filter(|s| s.parameter == x.parameter)
-            .map(|s| (s.key.unwrap_or(param.max), s.form.clone()))
-            .collect();
-        curve.push((0.0, base.clone()));
-        curve.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut b = Binding::new(x.parameter, curve.iter().map(|c| c.0).collect());
-        b.extended = x.kind;
-        b.insert_point_count = x.points;
-        b.extended_scale = x.scale;
-        let g1 = KeyformGrid {
-            bindings: vec![b],
-            keyforms: curve.into_iter().map(|c| c.1).collect(),
-            guids: Vec::new(),
-        };
-        let Some(g) = extended_grid(&g1) else {
-            continue;
-        };
-        any = true;
-        out.shapes.retain(|s| s.parameter != x.parameter);
-        for (k, f) in g.bindings[0].keys.iter().zip(g.keyforms) {
-            if *k != 0.0 {
-                out.shapes.push(BlendShape {
-                    parameter: x.parameter,
-                    key: Some(*k),
-                    form: f,
-                });
-            }
+        for (k, form) in blend_inserted(params, grid, blend, x) {
+            any = true;
+            out.shapes.push(BlendShape {
+                parameter: x.parameter,
+                key: Some(k),
+                form,
+            });
         }
     }
     out.extended.clear();
@@ -547,13 +567,17 @@ mod tests {
             }],
         };
         let b = extended_blend(&params, &grid, &blend).unwrap();
-        let keys: Vec<f32> = b.shapes.iter().filter_map(|s| s.key).collect();
+        let mut keys: Vec<f32> = b.shapes.iter().filter_map(|s| s.key).collect();
+        keys.sort_by(f32::total_cmp);
         assert_eq!(keys, vec![0.25, 0.5, 0.75, 1.0]);
         // The inserted point at 0.25 is off the straight chord (y > 5).
-        assert!(
-            b.shapes[0].form.positions[1] > 5.0,
-            "{:?}",
-            b.shapes[0].form.positions
+        let q = b.shapes.iter().find(|s| s.key == Some(0.25)).unwrap();
+        assert!(q.form.positions[1] > 5.0, "{:?}", q.form.positions);
+        // Only inserted points are generated.
+        let ins = blend_inserted(&params, &grid, &blend, &blend.extended[0]);
+        assert_eq!(
+            ins.iter().map(|x| x.0).collect::<Vec<_>>(),
+            vec![0.25, 0.75]
         );
         assert!(b.extended.is_empty());
     }

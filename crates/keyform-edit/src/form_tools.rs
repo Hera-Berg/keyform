@@ -1211,31 +1211,83 @@ pub fn set_extended(
         b.extended_scale = s;
         Ok(true)
     }
+    /// A blend-shape parameter: its entry in the object's extended
+    /// blend-shape settings (extended-interpolation.md §4). The base at 0
+    /// counts toward the 3 keys.
+    fn on_blend<F>(
+        b: &mut BlendShapes<F>,
+        p: ParamIndex,
+        kind: K,
+        n: i32,
+        s: f32,
+    ) -> Result<bool, String> {
+        let keys = b.shapes.iter().filter(|x| x.parameter == p).count() + 1;
+        if kind != K::Linear && keys < 3 {
+            return Err(EXTENDED_NEEDS_3.into());
+        }
+        let i = match b.extended.iter().position(|x| x.parameter == p) {
+            Some(i) => i,
+            None => {
+                b.extended.push(keyform_model::BlendExtended {
+                    parameter: p,
+                    kind: K::Linear,
+                    points: 1,
+                    scale: 1.0,
+                });
+                b.extended.sort_by_key(|x| x.parameter);
+                b.extended
+                    .iter()
+                    .position(|x| x.parameter == p)
+                    .unwrap_or(0)
+            }
+        };
+        let x = &mut b.extended[i];
+        let (n, s) = if kind == K::Linear {
+            (x.points, x.scale)
+        } else {
+            (n.clamp(1, 100), s)
+        };
+        let before = *x;
+        x.kind = kind;
+        x.points = n;
+        x.scale = s;
+        Ok(*x != before)
+    }
+    fn either<F>(
+        g: &mut KeyformGrid<F>,
+        b: &mut BlendShapes<F>,
+        p: ParamIndex,
+        kind: K,
+        n: i32,
+        s: f32,
+    ) -> Result<bool, String> {
+        if g.bindings.iter().any(|x| x.parameter == p) || !b.shapes.iter().any(|x| x.parameter == p)
+        {
+            on(g, p, kind, n, s)
+        } else {
+            on_blend(b, p, kind, n, s)
+        }
+    }
     match o {
-        ObjectRef::ArtMesh(i) => on(
-            &mut Arc::make_mut(&mut m.art_meshes[i]).grid,
-            p,
-            kind,
-            points,
-            scale_deg,
-        ),
-        ObjectRef::Part(i) => on(
-            &mut Arc::make_mut(&mut m.parts[i]).grid,
-            p,
-            kind,
-            points,
-            scale_deg,
-        ),
-        ObjectRef::Glue(i) => on(
-            &mut Arc::make_mut(&mut m.glues[i]).grid,
-            p,
-            kind,
-            points,
-            scale_deg,
-        ),
+        ObjectRef::ArtMesh(i) => {
+            let a = Arc::make_mut(&mut m.art_meshes[i]);
+            either(&mut a.grid, &mut a.blend_shapes, p, kind, points, scale_deg)
+        }
+        ObjectRef::Part(i) => {
+            let a = Arc::make_mut(&mut m.parts[i]);
+            either(&mut a.grid, &mut a.blend_shapes, p, kind, points, scale_deg)
+        }
+        ObjectRef::Glue(i) => {
+            let a = Arc::make_mut(&mut m.glues[i]);
+            either(&mut a.grid, &mut a.blend_shapes, p, kind, points, scale_deg)
+        }
         ObjectRef::Deformer(i) => match &mut Arc::make_mut(&mut m.deformers[i]).kind {
-            DeformerKind::Warp(w) => on(&mut w.grid, p, kind, points, scale_deg),
-            DeformerKind::Rotation(r) => on(&mut r.grid, p, kind, points, scale_deg),
+            DeformerKind::Warp(w) => {
+                either(&mut w.grid, &mut w.blend_shapes, p, kind, points, scale_deg)
+            }
+            DeformerKind::Rotation(r) => {
+                either(&mut r.grid, &mut r.blend_shapes, p, kind, points, scale_deg)
+            }
         },
     }
 }
@@ -1257,13 +1309,40 @@ pub fn extended_settings(
             )
         })
     };
+    // Blend-shape parameters: the extended blend-shape setting, keys =
+    // entries + the base (extended-interpolation.md §4).
+    fn blend<F>(
+        b: &BlendShapes<F>,
+        p: ParamIndex,
+    ) -> Option<(keyform_model::ExtendedInterpolationKind, i32, f32, usize)> {
+        let n = b.shapes.iter().filter(|x| x.parameter == p).count();
+        if n == 0 {
+            return None;
+        }
+        let x = b.extended.iter().find(|x| x.parameter == p);
+        Some((
+            x.map_or(keyform_model::ExtendedInterpolationKind::Linear, |x| x.kind),
+            x.map_or(1, |x| x.points),
+            x.map_or(1.0, |x| x.scale),
+            n + 1,
+        ))
+    }
     match o {
-        ObjectRef::ArtMesh(i) => f(&m.art_meshes.get(i)?.grid.bindings),
-        ObjectRef::Part(i) => f(&m.parts.get(i)?.grid.bindings),
-        ObjectRef::Glue(i) => f(&m.glues.get(i)?.grid.bindings),
+        ObjectRef::ArtMesh(i) => {
+            let a = m.art_meshes.get(i)?;
+            f(&a.grid.bindings).or_else(|| blend(&a.blend_shapes, p))
+        }
+        ObjectRef::Part(i) => {
+            let a = m.parts.get(i)?;
+            f(&a.grid.bindings).or_else(|| blend(&a.blend_shapes, p))
+        }
+        ObjectRef::Glue(i) => {
+            let a = m.glues.get(i)?;
+            f(&a.grid.bindings).or_else(|| blend(&a.blend_shapes, p))
+        }
         ObjectRef::Deformer(i) => match &m.deformers.get(i)?.kind {
-            DeformerKind::Warp(w) => f(&w.grid.bindings),
-            DeformerKind::Rotation(r) => f(&r.grid.bindings),
+            DeformerKind::Warp(w) => f(&w.grid.bindings).or_else(|| blend(&w.blend_shapes, p)),
+            DeformerKind::Rotation(r) => f(&r.grid.bindings).or_else(|| blend(&r.blend_shapes, p)),
         },
     }
 }
