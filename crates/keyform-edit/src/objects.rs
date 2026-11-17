@@ -59,6 +59,9 @@ fn remap_parameters(m: &mut Model, f: &dyn Fn(ParamIndex) -> ParamIndex) {
                 c.blend_parameter = f(c.blend_parameter);
                 c.constraint_parameter = f(c.constraint_parameter);
             }
+            for x in &mut $b.extended {
+                x.parameter = f(x.parameter);
+            }
         }};
     }
     for p in &mut m.parts {
@@ -120,6 +123,7 @@ pub fn remove_parameter(m: &mut Model, p: ParamIndex) -> bool {
             $b.shapes.retain(|s| s.parameter != p);
             $b.constraints
                 .retain(|c| c.blend_parameter != p && c.constraint_parameter != p);
+            $b.extended.retain(|x| x.parameter != p);
         }};
     }
     for x in &mut m.parts {

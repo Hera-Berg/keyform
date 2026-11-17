@@ -134,20 +134,35 @@ struct ExtendedGrids {
     rotations:
         std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::RotationForm>>,
     glues: std::collections::HashMap<usize, keyform_model::KeyformGrid<keyform_model::GlueForm>>,
+    /// Extended blend-shape sets (extended-interpolation.md §4).
+    parts_b: std::collections::HashMap<usize, keyform_model::BlendShapes<PartForm>>,
+    meshes_b:
+        std::collections::HashMap<usize, keyform_model::BlendShapes<keyform_model::ArtMeshForm>>,
+    warps_b: std::collections::HashMap<usize, keyform_model::BlendShapes<keyform_model::WarpForm>>,
+    rotations_b:
+        std::collections::HashMap<usize, keyform_model::BlendShapes<keyform_model::RotationForm>>,
+    glues_b: std::collections::HashMap<usize, keyform_model::BlendShapes<keyform_model::GlueForm>>,
 }
 
 impl ExtendedGrids {
     fn of(m: &Model) -> Self {
-        use extended::extended_grid;
+        use extended::{extended_blend, extended_grid};
         let mut e = Self::default();
+        let ps = &m.parameters;
         for (i, p) in m.parts.iter().enumerate() {
             if let Some(g) = extended_grid(&p.grid) {
                 e.parts.insert(i, g);
+            }
+            if let Some(b) = extended_blend(ps, &p.grid, &p.blend_shapes) {
+                e.parts_b.insert(i, b);
             }
         }
         for (i, a) in m.art_meshes.iter().enumerate() {
             if let Some(g) = extended_grid(&a.grid) {
                 e.meshes.insert(i, g);
+            }
+            if let Some(b) = extended_blend(ps, &a.grid, &a.blend_shapes) {
+                e.meshes_b.insert(i, b);
             }
         }
         for (i, d) in m.deformers.iter().enumerate() {
@@ -156,10 +171,16 @@ impl ExtendedGrids {
                     if let Some(g) = extended_grid(&w.grid) {
                         e.warps.insert(i, g);
                     }
+                    if let Some(b) = extended_blend(ps, &w.grid, &w.blend_shapes) {
+                        e.warps_b.insert(i, b);
+                    }
                 }
                 DeformerKind::Rotation(r) => {
                     if let Some(g) = extended_grid(&r.grid) {
                         e.rotations.insert(i, g);
+                    }
+                    if let Some(b) = extended_blend(ps, &r.grid, &r.blend_shapes) {
+                        e.rotations_b.insert(i, b);
                     }
                 }
             }
@@ -167,6 +188,9 @@ impl ExtendedGrids {
         for (i, g) in m.glues.iter().enumerate() {
             if let Some(x) = extended_grid(&g.grid) {
                 e.glues.insert(i, x);
+            }
+            if let Some(b) = extended_blend(ps, &g.grid, &g.blend_shapes) {
+                e.glues_b.insert(i, b);
             }
         }
         e
@@ -260,7 +284,8 @@ impl<'m> Evaluator<'m> {
             .enumerate()
             .map(|(pi, p)| {
                 let grid = self.ext.parts.get(&pi).unwrap_or(&p.grid);
-                let r = interpolate(params, &values, grid, &p.blend_shapes);
+                let blend = self.ext.parts_b.get(&pi).unwrap_or(&p.blend_shapes);
+                let r = interpolate(params, &values, grid, blend);
                 PartState {
                     outside: r.as_ref().is_none_or(|r| r.outside),
                     form: r.map(|r| r.form).unwrap_or_default(),
@@ -318,7 +343,7 @@ impl<'m> Evaluator<'m> {
                     params,
                     &values,
                     self.ext.warps.get(&di).unwrap_or(&w.grid),
-                    &w.blend_shapes,
+                    self.ext.warps_b.get(&di).unwrap_or(&w.blend_shapes),
                 )
                 .map(|r| {
                     let mut points = r.form.positions;
@@ -348,7 +373,8 @@ impl<'m> Evaluator<'m> {
                 }),
                 DeformerKind::Rotation(rd) => {
                     let grid = self.ext.rotations.get(&di).unwrap_or(&rd.grid);
-                    interpolate(params, &values, grid, &rd.blend_shapes).map(|r| {
+                    let blend = self.ext.rotations_b.get(&di).unwrap_or(&rd.blend_shapes);
+                    interpolate(params, &values, grid, blend).map(|r| {
                         let f = &r.form;
                         // §3.2: origin through the parent, inherited turn.
                         let (origin, delta) = match parent_map {
@@ -404,7 +430,8 @@ impl<'m> Evaluator<'m> {
             .enumerate()
             .map(|(ai, a)| {
                 let grid = self.ext.meshes.get(&ai).unwrap_or(&a.grid);
-                let r = interpolate(params, &values, grid, &a.blend_shapes);
+                let blend = self.ext.meshes_b.get(&ai).unwrap_or(&a.blend_shapes);
+                let r = interpolate(params, &values, grid, blend);
                 let (hidden_parent, outside_parent) = part_hidden_or_outside(a.info.parent_part);
                 let target = a.target.and_then(|t| deformers.get(t));
                 let Some(mut r) = r else {
@@ -478,7 +505,8 @@ impl<'m> Evaluator<'m> {
         let mut pre_glue = std::collections::HashMap::new();
         for (gi, g) in m.glues.iter().enumerate() {
             let grid = self.ext.glues.get(&gi).unwrap_or(&g.grid);
-            let Some(r) = interpolate(params, &values, grid, &g.blend_shapes) else {
+            let blend = self.ext.glues_b.get(&gi).unwrap_or(&g.blend_shapes);
+            let Some(r) = interpolate(params, &values, grid, blend) else {
                 continue;
             };
             let i = r.form.intensity.clamp(0.0, 1.0) * opts.glue;

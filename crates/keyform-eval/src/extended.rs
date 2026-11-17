@@ -4,8 +4,8 @@
 //! 30-algorithms/sns-spline.md §1
 
 use keyform_model::{
-    ArtMeshForm, Binding, ExtendedInterpolationKind, GlueForm, KeyformGrid, PartForm, RotationForm,
-    WarpForm,
+    ArtMeshForm, Binding, BlendShape, BlendShapes, ExtendedInterpolationKind, GlueForm,
+    KeyformGrid, Parameter, PartForm, RotationForm, WarpForm,
 };
 
 use crate::interp::Blend;
@@ -330,6 +330,63 @@ pub fn extended_grid<F: Blend + Points>(grid: &KeyformGrid<F>) -> Option<Keyform
     Some(g)
 }
 
+/// The blend shapes with each extended blend-shape parameter's entries
+/// replaced by its generated curve, or `None` when none is extended. The
+/// curve is the parameter's shape curve (entries plus the base keyform at
+/// 0, blend-shapes.md §2) expanded like a grid axis; the generated entries
+/// other than the base are kept. spec: extended-interpolation.md §4
+// TODO(Q-0027): whether the base at 0 is part of the generated curve.
+pub fn extended_blend<F: Blend + Points>(
+    params: &[impl std::borrow::Borrow<Parameter>],
+    grid: &KeyformGrid<F>,
+    blend: &BlendShapes<F>,
+) -> Option<BlendShapes<F>> {
+    let base = crate::interp::base_keyform(params, grid)?;
+    let mut out = blend.clone();
+    let mut any = false;
+    for x in &blend.extended {
+        if x.kind == ExtendedInterpolationKind::Linear {
+            continue;
+        }
+        let Some(param) = params.get(x.parameter).map(std::borrow::Borrow::borrow) else {
+            continue;
+        };
+        let mut curve: Vec<(f32, F)> = blend
+            .shapes
+            .iter()
+            .filter(|s| s.parameter == x.parameter)
+            .map(|s| (s.key.unwrap_or(param.max), s.form.clone()))
+            .collect();
+        curve.push((0.0, base.clone()));
+        curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut b = Binding::new(x.parameter, curve.iter().map(|c| c.0).collect());
+        b.extended = x.kind;
+        b.insert_point_count = x.points;
+        b.extended_scale = x.scale;
+        let g1 = KeyformGrid {
+            bindings: vec![b],
+            keyforms: curve.into_iter().map(|c| c.1).collect(),
+            guids: Vec::new(),
+        };
+        let Some(g) = extended_grid(&g1) else {
+            continue;
+        };
+        any = true;
+        out.shapes.retain(|s| s.parameter != x.parameter);
+        for (k, f) in g.bindings[0].keys.iter().zip(g.keyforms) {
+            if *k != 0.0 {
+                out.shapes.push(BlendShape {
+                    parameter: x.parameter,
+                    key: Some(*k),
+                    form: f,
+                });
+            }
+        }
+    }
+    out.extended.clear();
+    any.then_some(out)
+}
+
 fn baked<F: Blend + Points>(g: &KeyformGrid<F>) -> Option<KeyformGrid<F>> {
     let mut x = extended_grid(g)?;
     for b in &mut x.bindings {
@@ -345,6 +402,46 @@ pub fn bake_extended(m: &keyform_model::Model) -> Option<keyform_model::Model> {
     use std::sync::Arc;
     let mut out = m.clone();
     let mut any = false;
+    // Extended blend-shape sets first (they read the unbaked grid's base).
+    let ps = &m.parameters;
+    for p in &mut out.parts {
+        if let Some(b) = extended_blend(ps, &p.grid, &p.blend_shapes) {
+            Arc::make_mut(p).blend_shapes = b;
+            any = true;
+        }
+    }
+    for a in &mut out.art_meshes {
+        if let Some(b) = extended_blend(ps, &a.grid, &a.blend_shapes) {
+            Arc::make_mut(a).blend_shapes = b;
+            any = true;
+        }
+    }
+    for d in &mut out.deformers {
+        match &d.kind {
+            DeformerKind::Warp(w) => {
+                if let Some(b) = extended_blend(ps, &w.grid, &w.blend_shapes) {
+                    if let DeformerKind::Warp(x) = &mut Arc::make_mut(d).kind {
+                        x.blend_shapes = b;
+                    }
+                    any = true;
+                }
+            }
+            DeformerKind::Rotation(r) => {
+                if let Some(b) = extended_blend(ps, &r.grid, &r.blend_shapes) {
+                    if let DeformerKind::Rotation(x) = &mut Arc::make_mut(d).kind {
+                        x.blend_shapes = b;
+                    }
+                    any = true;
+                }
+            }
+        }
+    }
+    for g in &mut out.glues {
+        if let Some(b) = extended_blend(ps, &g.grid, &g.blend_shapes) {
+            Arc::make_mut(g).blend_shapes = b;
+            any = true;
+        }
+    }
     for p in &mut out.parts {
         if let Some(g) = baked(&p.grid) {
             Arc::make_mut(p).grid = g;
@@ -413,5 +510,51 @@ mod tests {
             let b = sns_point(&p, i, 1.0);
             assert!((a[0] - p[i][0]).abs() < 1e-6 && (b[1] - p[i + 1][1]).abs() < 1e-6);
         }
+    }
+
+    /// An SNS blend set inserts points between the shape curve's keys
+    /// (base at 0 included) and keeps the base out of the entries.
+    #[test]
+    fn extended_blend_set() {
+        use keyform_model::{BlendExtended, BlendShape, BlendShapes, Parameter};
+        let form = |x: f32, y: f32| ArtMeshForm {
+            positions: vec![x, y],
+            ..Default::default()
+        };
+        let grid = KeyformGrid::single(form(0.0, 0.0));
+        let mut p = Parameter::new("P", 0.0, 1.0, 0.0);
+        p.kind = keyform_model::ParameterKind::BlendShape;
+        let params = vec![p];
+        let blend = BlendShapes {
+            shapes: vec![
+                BlendShape {
+                    parameter: 0,
+                    key: Some(0.5),
+                    form: form(10.0, 10.0),
+                },
+                BlendShape {
+                    parameter: 0,
+                    key: Some(1.0),
+                    form: form(20.0, 0.0),
+                },
+            ],
+            constraints: Vec::new(),
+            extended: vec![BlendExtended {
+                parameter: 0,
+                kind: ExtendedInterpolationKind::SnsCurve,
+                points: 1,
+                scale: 1.0,
+            }],
+        };
+        let b = extended_blend(&params, &grid, &blend).unwrap();
+        let keys: Vec<f32> = b.shapes.iter().filter_map(|s| s.key).collect();
+        assert_eq!(keys, vec![0.25, 0.5, 0.75, 1.0]);
+        // The inserted point at 0.25 is off the straight chord (y > 5).
+        assert!(
+            b.shapes[0].form.positions[1] > 5.0,
+            "{:?}",
+            b.shapes[0].form.positions
+        );
+        assert!(b.extended.is_empty());
     }
 }

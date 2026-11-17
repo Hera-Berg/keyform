@@ -572,6 +572,7 @@ mod tests {
                     weight: 0.0,
                 },
             ],
+            extended: Vec::new(),
         };
         let r = interpolate(&params, &[1.0, 0.5, 0.0], &grid, &blend).unwrap();
         // F = 10 + 1·0.5·(−6 − (−10)) = 12; draw order 500 + 10 = 510.

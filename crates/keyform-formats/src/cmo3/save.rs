@@ -1027,7 +1027,15 @@ fn write_forms<F: FormFields + keyform_eval::Blend + keyform_eval::extended::Poi
     (ng, nb): (&KeyformGrid<F>, &BlendShapes<F>),
 ) -> Result<()> {
     write_grid_forms(root, ctx, src, what, (og, ob), (ng, nb))?;
-    // Extended interpolation follows the grid.
+    // Extended interpolation follows the grid. Its blend-shape settings
+    // (extended-interpolation.md §4) are kept only while the extension
+    // stays as it is. TODO(Q-0027): write extended blend-shape sets.
+    if !nb.extended.is_empty()
+        && (keyform_eval::extended::extended_grid(og) != keyform_eval::extended::extended_grid(ng)
+            || og.guids != ng.guids)
+    {
+        return unsupported(format!("{what}: extended blend-shape interpolation"));
+    }
     extended::sync_extension(root, ctx, src, what, og, ng)
 }
 

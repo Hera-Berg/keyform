@@ -107,10 +107,24 @@ pub struct BlendConstraint {
     pub weight: f32,
 }
 
+/// Extended interpolation along a blend-shape parameter (an "extended
+/// blend-shape set"). spec: 30-algorithms/extended-interpolation.md §4
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendExtended {
+    pub parameter: ParamIndex,
+    pub kind: ExtendedInterpolationKind,
+    /// Inserted points per segment.
+    pub points: i32,
+    /// ELLIPSE scale.
+    pub scale: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlendShapes<F> {
     pub shapes: Vec<BlendShape<F>>,
     pub constraints: Vec<BlendConstraint>,
+    /// Extended settings per blend-shape parameter (non-linear ones).
+    pub extended: Vec<BlendExtended>,
 }
 
 impl<F> Default for BlendShapes<F> {
@@ -118,6 +132,7 @@ impl<F> Default for BlendShapes<F> {
         Self {
             shapes: Vec::new(),
             constraints: Vec::new(),
+            extended: Vec::new(),
         }
     }
 }

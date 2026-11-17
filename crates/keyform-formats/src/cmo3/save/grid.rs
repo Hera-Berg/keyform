@@ -658,6 +658,11 @@ pub(super) fn same_blend<F: PartialEq>(
     let ng = |i: usize| ctx.params.get(i).map(|p| p.guid.as_str());
     a.shapes.len() == b.shapes.len()
         && a.constraints.len() == b.constraints.len()
+        && a.extended.len() == b.extended.len()
+        && a.extended.iter().zip(&b.extended).all(|(x, y)| {
+            og(x.parameter) == ng(y.parameter)
+                && (x.kind, x.points, x.scale) == (y.kind, y.points, y.scale)
+        })
         && a.shapes.iter().zip(&b.shapes).all(|(x, y)| {
             og(x.parameter) == ng(y.parameter) && x.key == y.key && (!forms || x.form == y.form)
         })

@@ -1152,6 +1152,43 @@ impl<'a, 'd> Loader<'a, 'd> {
                 }
             }
         }
+        // Extended blend-shape settings (extended-interpolation.md §4):
+        // `extendedInterpolationSettings`, a map CParameterGuid →
+        // ExtendedInterpolationSetting (entry form, xml-object-graph.md §2.6).
+        for ext in o.list("_extensions")? {
+            if ext.tag() != "CExtendedInterpolationExtension" {
+                continue;
+            }
+            let Some(set) = ext.field("_extendedKeyformMorphTargetSet")? else {
+                continue;
+            };
+            let Some(map) = set.field("extendedInterpolationSettings")? else {
+                continue;
+            };
+            for entry in map.items()? {
+                let Some(key) = entry.field("key")? else {
+                    continue;
+                };
+                let Some(&param) = key.attr("uuid").and_then(|g| self.idx.params.get(g)) else {
+                    continue;
+                };
+                let Some(v) = entry.field("value")? else {
+                    continue;
+                };
+                let kind = match v.enum_value("type")? {
+                    Some("ELLIPSE") => ExtendedInterpolationKind::Ellipse,
+                    Some("SNS_CURVE") => ExtendedInterpolationKind::SnsCurve,
+                    _ => continue,
+                };
+                blend.extended.push(keyform_model::BlendExtended {
+                    parameter: param,
+                    kind,
+                    points: v.i32("insertPointCount")?.unwrap_or(1),
+                    scale: v.f32("extendedInterpolationScale")?.unwrap_or(1.0),
+                });
+            }
+        }
+        blend.extended.sort_by_key(|x| x.parameter);
         let _ = m;
         self.pending.cells = cell_paths;
         self.pending.blend = blend_paths;
