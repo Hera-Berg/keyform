@@ -1606,3 +1606,88 @@ pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> R
     fix_markers(xml);
     Ok(())
 }
+
+fn set_text(e: &mut Element, name: &str, v: String) {
+    if let Some(c) = e.children.iter_mut().find(|c| c.field_name() == Some(name)) {
+        c.text = v;
+    }
+}
+
+fn set_enum(e: &mut Element, name: &str, v: &str) {
+    if let Some(c) = e.children.iter_mut().find(|c| c.field_name() == Some(name)) {
+        c.set_attr("v", v);
+    }
+}
+
+/// Writes scene `index`'s settings (name, canvas, movie info, defaults,
+/// target, export flag) from `s`. spec: animation-model.md §1, dialogs.md §5
+pub fn write_scene_settings(
+    xml: &mut XmlDocument,
+    index: usize,
+    s: &keyform_model::animation::Scene,
+) -> Result<()> {
+    let (sh, j) = scene_obj(xml, index)?;
+    let e = &mut xml.root.children[sh].children[j];
+    set_text(e, "sceneName", s.name.clone());
+    e.set_attr("exportMotionFile", s.export_motion.to_string());
+    if let Some(c) = e.child_field_mut("canvas") {
+        set_text(c, "pixelWidth", s.canvas.0.to_string());
+        set_text(c, "pixelHeight", s.canvas.1.to_string());
+    }
+    if let Some(m) = e.child_field_mut("movieInfo") {
+        set_text(m, "width", s.width.to_string());
+        set_text(m, "height", s.height.to_string());
+        set_text(m, "duration", s.duration.to_string());
+        set_text(m, "fps", format_f64(s.fps));
+        set_text(m, "workspaceStart", s.work_start.to_string());
+        set_text(m, "workspaceEnd", s.work_end.to_string());
+        set_text(m, "fadeInMSec", s.fade_in_ms.to_string());
+        set_text(m, "fadeOutMSec", s.fade_out_ms.to_string());
+        set_text(m, "isBezierRestricted", s.bezier_restricted.to_string());
+        set_text(m, "isLoopMotion", s.loop_motion.to_string());
+        set_text(m, "startFrame", s.start_frame.to_string());
+    }
+    set_enum(e, "defaultParameterCurveType", s.default_param_curve.name());
+    set_enum(e, "defaultPartCurveType", s.default_part_curve.name());
+    if !s.target.is_empty() {
+        set_enum(e, "targetVersion", &s.target);
+    }
+    Ok(())
+}
+
+/// Writes track `t`'s user data events (frame → text) of scene `index`.
+pub fn write_user_data(
+    xml: &mut XmlDocument,
+    index: usize,
+    t: usize,
+    events: &[(i32, String)],
+) -> Result<()> {
+    let (sh, j) = scene_obj(xml, index)?;
+    let id = xml.root.children[sh].children[j]
+        .child_field("trackSourceSet")
+        .and_then(|x| x.child_field("_sources"))
+        .and_then(|l| l.children.get(t))
+        .and_then(|c| c.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid(format!("no track {t}")))?;
+    let track = xml.root.children[sh]
+        .children
+        .iter_mut()
+        .find(|c| c.attr("xs.id") == Some(id.as_str()))
+        .ok_or_else(|| FormatError::Invalid("track not found".into()))?;
+    let mut st: Vec<&mut Element> = vec![track];
+    while let Some(e) = st.pop() {
+        if e.name == "ICMvTrack_Source" {
+            if let Some(ud) = e.child_field_mut("userData") {
+                let entries: Vec<(Element, Element)> = events
+                    .iter()
+                    .map(|(f, v)| (i("key", i64::from(*f)), s("value", v)))
+                    .collect();
+                *ud = entry_map("userData", entries);
+            }
+            return Ok(());
+        }
+        st.extend(e.children.iter_mut());
+    }
+    Err(FormatError::Invalid("track without source".into()))
+}

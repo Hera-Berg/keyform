@@ -55,6 +55,10 @@ pub struct AnimState {
     pub audio: Option<crate::audio_out::AudioOut>,
     /// Sound was started (or failed to start) for this run of playback.
     audio_tried: bool,
+    /// The Scene settings dialog's draft (the scene without its tracks).
+    pub settings: Option<Scene>,
+    /// The text of a new event (Events ▸ Add).
+    pub event_text: String,
 }
 
 impl AnimState {
@@ -172,6 +176,46 @@ impl AnimState {
         self.redo.clear();
         self.dirty = true;
         Ok(levels.len())
+    }
+
+    /// Replaces the current scene's settings (everything but its tracks)
+    /// as one undo step. spec: dialogs.md §5, animation-model.md §1
+    pub fn apply_settings(&mut self, s: &Scene) {
+        let before = self.doc.animation.clone();
+        let Some(cur) = self.doc.animation.scenes.get_mut(self.scene) else {
+            return;
+        };
+        let tracks = std::mem::take(&mut cur.tracks);
+        *cur = Scene {
+            tracks,
+            ..s.clone()
+        };
+        if self.doc.animation != before {
+            self.undo.push(("Scene settings".into(), before));
+            self.redo.clear();
+            self.dirty = true;
+        }
+    }
+
+    /// Adds (or replaces) an event at `frame` on the model track's user
+    /// data, or removes the one there (`text` = None). One undo step.
+    /// spec: motion3-json.md §2 ("UserData")
+    pub fn set_event(&mut self, frame: i32, text: Option<String>) {
+        let Some((ti, _)) = self.model_track() else {
+            return;
+        };
+        let before = self.doc.animation.clone();
+        let ud = &mut self.doc.animation.scenes[self.scene].tracks[ti].user_data;
+        ud.retain(|e| e.0 != frame);
+        if let Some(t) = text {
+            ud.push((frame, t));
+            ud.sort_by_key(|e| e.0);
+        }
+        if self.doc.animation != before {
+            self.undo.push(("Event".into(), before));
+            self.redo.clear();
+            self.dirty = true;
+        }
     }
 
     /// The selected attribute.
@@ -312,6 +356,8 @@ impl Document {
             sounds: Default::default(),
             audio: None,
             audio_tried: false,
+            settings: None,
+            event_text: String::new(),
         });
         if let Some(a) = d.anim.as_mut() {
             a.load_sounds(log);
@@ -363,6 +409,8 @@ impl Document {
             sounds: Default::default(),
             audio: None,
             audio_tried: false,
+            settings: None,
+            event_text: String::new(),
         });
         Ok(d)
     }
@@ -618,6 +666,126 @@ const ROW_H: f32 = 18.0;
 
 /// The timeline: scene, transport, ruler with work area and playhead, and
 /// one row of keys per attribute. spec: palettes.md §7
+/// Scene settings: name, size, frame rate, length, work area, fades,
+/// curve defaults, target. spec: dialogs.md §5, animation-model.md §1
+fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
+    use keyform_model::animation::CurveType;
+    let Some(mut s) = st.settings.take() else {
+        return;
+    };
+    let mut open = true;
+    let (mut ok, mut cancel) = (false, false);
+    egui::Window::new("Scene settings")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            egui::Grid::new("scene-settings")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Scene Name");
+                    ui.text_edit_singleline(&mut s.name);
+                    ui.end_row();
+                    ui.label("Size");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut s.canvas.0)
+                                .range(16..=16384)
+                                .suffix(" px"),
+                        );
+                        ui.label("×");
+                        ui.add(
+                            egui::DragValue::new(&mut s.canvas.1)
+                                .range(16..=16384)
+                                .suffix(" px"),
+                        );
+                    });
+                    ui.end_row();
+                    ui.label("Frame rate");
+                    ui.add(
+                        egui::DragValue::new(&mut s.fps)
+                            .range(1.0..=240.0)
+                            .suffix(" fps"),
+                    );
+                    ui.end_row();
+                    ui.label("Last frame");
+                    ui.add(egui::DragValue::new(&mut s.duration).range(1..=100_000));
+                    ui.end_row();
+                    ui.label("Work area");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut s.work_start).range(0..=s.duration));
+                        ui.label("–");
+                        ui.add(egui::DragValue::new(&mut s.work_end).range(0..=s.duration));
+                    });
+                    ui.end_row();
+                    ui.label("Fade in / out (ms, −1 = unset)");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut s.fade_in_ms).range(-1..=60_000));
+                        ui.add(egui::DragValue::new(&mut s.fade_out_ms).range(-1..=60_000));
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    ui.checkbox(&mut s.loop_motion, "Loop motion");
+                    ui.end_row();
+                    ui.label("");
+                    ui.checkbox(
+                        &mut s.bezier_restricted,
+                        "Restriction for SDK (handles move vertically only)",
+                    );
+                    ui.end_row();
+                    ui.label("");
+                    ui.checkbox(&mut s.export_motion, "Include in motion export");
+                    ui.end_row();
+                    let ct = |ui: &mut egui::Ui, id: &str, v: &mut CurveType| {
+                        egui::ComboBox::from_id_salt(id)
+                            .selected_text(v.name())
+                            .show_ui(ui, |ui| {
+                                for (n, t) in CurveType::NAMES {
+                                    ui.selectable_value(v, t, n);
+                                }
+                            });
+                    };
+                    ui.label("New parameter keys");
+                    ct(ui, "set-param-curve", &mut s.default_param_curve);
+                    ui.end_row();
+                    ui.label("New part keys");
+                    ct(ui, "set-part-curve", &mut s.default_part_curve);
+                    ui.end_row();
+                    ui.label("Target");
+                    let label = match s.target.as_str() {
+                        "FOR_VIDEO" => "Video",
+                        "FOR_UNITY_SDK" => "SDK (Unity)",
+                        "FOR_AE_PLUGIN" => "AE plug-in",
+                        _ => "SDK (Others)",
+                    };
+                    egui::ComboBox::from_id_salt("set-target")
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for (v, n) in [
+                                ("FOR_VIDEO", "Video"),
+                                ("FOR_UNITY_SDK", "SDK (Unity)"),
+                                ("FOR_SDK", "SDK (Others)"),
+                                ("FOR_AE_PLUGIN", "AE plug-in"),
+                            ] {
+                                ui.selectable_value(&mut s.target, v.to_owned(), n);
+                            }
+                        });
+                    ui.end_row();
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ok = ui.button("OK").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+    s.work_end = s.work_end.min(s.duration).max(s.work_start);
+    if ok {
+        st.apply_settings(&s);
+    } else if open && !cancel {
+        st.settings = Some(s);
+    }
+}
+
 /// A structural change chosen in the timeline header.
 enum SceneOp {
     Add,
@@ -633,6 +801,10 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
     if let Some(st) = doc.anim.as_mut() {
         ui.horizontal(|ui| {
             ui.menu_button("Scene", |ui| {
+                if ui.button("Scene settings…").clicked() {
+                    st.settings = st.scene().map(|s| Scene { tracks: Vec::new(), ..s.clone() });
+                    ui.close();
+                }
                 if ui.button("Create new scene").clicked() {
                     op = Some(SceneOp::Add);
                     ui.close();
@@ -672,6 +844,31 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     ui.close();
                 }
             });
+            ui.menu_button("Events", |ui| {
+                let f = st.frame.round() as i32;
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text("event text").desired_width(140.0));
+                    if ui.button(format!("Add at frame {f}")).clicked() && !st.event_text.is_empty() {
+                        let t = std::mem::take(&mut st.event_text);
+                        st.set_event(f, Some(t));
+                    }
+                });
+                let events = st.model_track().map(|(ti, _)| st.scene().map(|s| s.tracks[ti].user_data.clone()).unwrap_or_default()).unwrap_or_default();
+                if events.is_empty() {
+                    ui.weak("No events.");
+                }
+                for (ef, text) in events {
+                    ui.horizontal(|ui| {
+                        if ui.small_button("✕").on_hover_text("Delete Event").clicked() {
+                            st.set_event(ef, None);
+                        }
+                        if ui.link(format!("{ef}: {text}")).clicked() {
+                            st.frame = f64::from(ef);
+                            st.playing = false;
+                        }
+                    });
+                }
+            });
             if let Some(name) = st.rename.as_mut() {
                 let r = ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
                 if ui.button("OK").clicked()
@@ -684,6 +881,9 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 }
             }
         });
+    }
+    if let Some(st) = doc.anim.as_mut() {
+        settings_dialog(ui.ctx(), st);
     }
     if let Some(op) = op {
         let scene = doc.anim.as_ref().map_or(0, |a| a.scene);
@@ -914,6 +1114,27 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                         egui::Stroke::NONE,
                     ));
                 }
+            }
+            // Events (user data markers) on the ruler.
+            for (ef, text) in &scene.tracks[ti].user_data {
+                let x = x_of(f64::from(*ef));
+                let tip = [
+                    egui::pos2(x, ruler.bottom()),
+                    egui::pos2(x - 4.0, ruler.top() + 4.0),
+                    egui::pos2(x + 4.0, ruler.top() + 4.0),
+                ];
+                p.add(egui::Shape::convex_polygon(
+                    tip.to_vec(),
+                    tokens.warning,
+                    egui::Stroke::NONE,
+                ));
+                p.text(
+                    egui::pos2(x + 5.0, ruler.top()),
+                    egui::Align2::LEFT_TOP,
+                    text,
+                    egui::FontId::proportional(10.0),
+                    tokens.warning,
+                );
             }
             // Playhead.
             let xh = x_of(st.frame);
@@ -1237,6 +1458,19 @@ mod tests {
         assert_eq!(a.doc.animation.scenes.len(), 1);
         doc.anim_structure(|d, m| d.add_scene("Two", m, 60, 30.0).map(|_| ()))
             .unwrap();
+        // Scene settings and an event, as undoable steps.
+        {
+            let a = doc.anim.as_mut().unwrap();
+            a.scene = 0;
+            let mut s = a.scene().unwrap().clone();
+            s.fps = 24.0;
+            s.fade_in_ms = 300;
+            a.apply_settings(&s);
+            a.set_event(12, Some("blink".into()));
+            assert_eq!(a.undo.len(), 2);
+            assert_eq!(a.step(false).as_deref(), Some("Event"));
+            assert_eq!(a.step(true).as_deref(), Some("Event"));
+        }
         doc.tick(0.0, &Default::default(), &mut log);
         let dir = std::env::temp_dir().join(format!("kf-newanim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1255,6 +1489,9 @@ mod tests {
             .map(|s| s.name.clone())
             .collect();
         assert_eq!(names, vec!["Scene1".to_string(), "Two".to_string()]);
+        let s0 = &back.anim.as_ref().unwrap().doc.animation.scenes[0];
+        assert_eq!((s0.fps, s0.fade_in_ms), (24.0, 300));
+        assert_eq!(s0.tracks[1].user_data, vec![(12, "blink".to_string())]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

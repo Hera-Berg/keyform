@@ -3315,3 +3315,55 @@ fn can3_structure() {
         .unwrap();
     }
 }
+
+/// Scene settings and track events save in place and reach the motion3
+/// export (dialogs.md §5, motion3-json.md §2 "UserData").
+#[test]
+fn can3_scene_settings_and_events() {
+    use keyform_anim::motion_export::{export_motion, ExportOptions};
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::{CurveType, TrackKind};
+    let Some(path) = sample_files("can3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_pro_t04.can3"))
+    else {
+        return;
+    };
+    let mut doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    {
+        let s = &mut doc.animation.scenes[0];
+        s.name = "Renamed".into();
+        s.fps = 60.0;
+        s.work_start = 10;
+        s.work_end = 100;
+        s.fade_in_ms = 500;
+        s.fade_out_ms = 250;
+        s.bezier_restricted = true;
+        s.loop_motion = true;
+        s.default_part_curve = CurveType::Linear;
+        let ti = s
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Model(_)))
+            .unwrap();
+        s.tracks[ti].user_data = vec![(20, "wave".into()), (60, "smile".into())];
+    }
+    let edited = doc.animation.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Can3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.animation, edited);
+    let s = &back.animation.scenes[0];
+    let ti = s
+        .tracks
+        .iter()
+        .position(|t| matches!(t.kind, TrackKind::Model(_)))
+        .unwrap();
+    let m = export_motion(s, ti, &ExportOptions::default(), &|_| None, &|_| None).unwrap();
+    assert_eq!(m.fade_in, Some(0.5));
+    assert!(m.beziers_restricted);
+    // Events in the work area, times from its start: (20−10)/60, (60−10)/60.
+    assert_eq!(m.user_data.len(), 2);
+    // (2 decimals: the last curve processed is a PartOpacity one.)
+    assert!((m.user_data[0].0 - 10.0 / 60.0).abs() < 0.01 && m.user_data[0].1 == "wave");
+}

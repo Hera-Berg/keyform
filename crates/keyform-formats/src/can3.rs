@@ -70,7 +70,29 @@ impl Can3Document {
     fn sync(&mut self) -> Result<()> {
         let mut xml = self.xml.clone();
         let changed = changed_attrs(&self.saved, &self.animation);
-        if changed.is_empty() {
+        // Scene settings and track user data (events) changed in place.
+        let mut other = false;
+        let without_tracks =
+            |s: &keyform_model::animation::Scene| keyform_model::animation::Scene {
+                tracks: Vec::new(),
+                ..s.clone()
+            };
+        for (si, s) in self.animation.scenes.iter().enumerate() {
+            let Some(old) = self.saved.scenes.get(si) else {
+                continue;
+            };
+            if without_tracks(old) != without_tracks(s) {
+                crate::can3_build::write_scene_settings(&mut xml, si, s)?;
+                other = true;
+            }
+            for (ti, t) in s.tracks.iter().enumerate() {
+                if old.tracks.get(ti).map(|o| &o.user_data) != Some(&t.user_data) {
+                    crate::can3_build::write_user_data(&mut xml, si, ti, &t.user_data)?;
+                    other = true;
+                }
+            }
+        }
+        if changed.is_empty() && !other {
             return Ok(());
         }
         for key in changed {
