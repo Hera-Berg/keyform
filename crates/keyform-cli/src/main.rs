@@ -9,7 +9,8 @@ use keyform_model::{DeformerKind, Model};
 const USAGE: &str = "usage:
   kf info <file.cmo3>             summary of a model project
   kf roundtrip <in.cmo3> <out>    load and save a project unchanged
-  kf xml <in.cmo3> <out.xml>      extract the project's main.xml
+  kf xml <in.cmo3|can3> <out.xml> extract the document's main.xml
+  kf motions <in.can3> <outdir>   export the scenes as motion3.json
   kf set <in.cmo3> <out.cmo3> KIND:ID.FIELD=VALUE ...
                                    edit fields and save (see edit.rs)
   kf moc3info <file.moc3>          summary of a runtime model
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
             edit::set_cmd(Path::new(input), Path::new(output), edits)
         }
         ["xml", input, output] => xml_dump(Path::new(input), Path::new(output)),
+        ["motions", input, outdir] => export_motions(Path::new(input), Path::new(outdir)),
         ["moc3info", path] => load_any(Path::new(path)).map(|m| print_summary(&m)),
         ["export", input, output] => export(Path::new(input), Path::new(output), None),
         ["export", input, output, v] => match v.parse() {
@@ -336,5 +338,32 @@ fn xml_dump(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error
     let entry = archive.main_xml().ok_or("no main_xml entry")?;
     let doc = keyform_formats::xml::XmlDocument::parse(&entry.data)?;
     std::fs::write(output, doc.write())?;
+    Ok(())
+}
+
+/// Exports every scene of a `.can3` marked for motion export as
+/// `<scene>.motion3.json` (its first model track). spec: motion3-json.md §2
+fn export_motions(input: &Path, outdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use keyform_anim::motion_export::{export_motion, ExportOptions};
+    use keyform_model::animation::TrackKind;
+    let doc = keyform_formats::can3::Can3Document::read(&std::fs::read(input)?)?;
+    for w in &doc.warnings {
+        eprintln!("warning: {w}");
+    }
+    std::fs::create_dir_all(outdir)?;
+    let o = ExportOptions {
+        legacy_smooth: doc.animation.smooth_legacy,
+        ..Default::default()
+    };
+    for s in doc.animation.scenes.iter().filter(|s| s.export_motion) {
+        let Some(ti) = s.tracks.iter().position(|t| matches!(t.kind, TrackKind::Model(_))) else {
+            eprintln!("{}: no model track", s.name);
+            continue;
+        };
+        let Some(m) = export_motion(s, ti, &o, &|_| None, &|_| None) else { continue };
+        let out = outdir.join(format!("{}.motion3.json", s.name));
+        std::fs::write(&out, keyform_anim::json::to_string(&m.to_json()))?;
+        println!("{}", out.display());
+    }
     Ok(())
 }
