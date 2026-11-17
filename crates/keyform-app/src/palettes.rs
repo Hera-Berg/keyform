@@ -589,6 +589,20 @@ fn deformer_children(
 /// Key values of the selected object on parameter `p` (key marks, §3).
 fn selected_keys(doc: &Document, p: usize) -> Vec<f32> {
     match doc.primary() {
+        // Blend-shape parameters: the base (0) and the entry keys.
+        Some(o)
+            if doc
+                .model
+                .parameters
+                .get(p)
+                .is_some_and(|q| q.kind == keyform_model::ParameterKind::BlendShape) =>
+        {
+            let mut k = keyform_edit::keys::blend_keys_of(&doc.model, o, p);
+            if !k.is_empty() {
+                k.insert(0, 0.0);
+            }
+            k
+        }
         Some(o) => keyform_edit::keys_of(&doc.model, o, p),
         None => Vec::new(),
     }

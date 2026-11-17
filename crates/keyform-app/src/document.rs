@@ -60,6 +60,8 @@ struct MoveTarget {
     points: Option<Vec<(usize, f32)>>,
     /// Warp net level when the points are Bezier net points.
     net_level: Option<u8>,
+    /// The blend-shape entry edited instead of the grid keyform.
+    blend: Option<usize>,
 }
 
 enum DragKind {
@@ -776,10 +778,39 @@ impl Document {
         let Some(param) = self.model.parameters.get(p).cloned() else {
             return Err("No such parameter.".into());
         };
-        if param.kind == keyform_model::ParameterKind::BlendShape {
-            return Err("The keyforms for Blend Shape parameters cannot be edited.".into());
-        }
         let v = param.clamp(self.shown_value(p));
+        if param.kind == keyform_model::ParameterKind::BlendShape {
+            // Blend-shape keys: entries at the max (Add 2/3 keys, as
+            // observed) or at the current value; 0 is the implicit base.
+            // spec: blend-shapes.md §1, §3
+            let (name, key) = match op {
+                KeyOp::AddTwo | KeyOp::AddThree => ("Add Blend Shape", Some(param.max)),
+                KeyOp::Add => ("Add Blend Shape", Some(v)),
+                KeyOp::Delete => ("Delete Blend Shape", Some(v)),
+                KeyOp::DeleteAll => ("Delete Blend Shapes", None),
+            };
+            let adding = matches!(op, KeyOp::Add | KeyOp::AddTwo | KeyOp::AddThree);
+            let mut failure = None;
+            self.edit(name, |m| {
+                if adding {
+                    if let Err(e) =
+                        keyform_edit::keys::add_blend_shape(m, o, p, key.unwrap_or(param.max))
+                    {
+                        if !(matches!(op, KeyOp::AddTwo | KeyOp::AddThree)
+                            && e == KeyError::TooClose)
+                        {
+                            failure = Some(match e {
+                                KeyError::TooClose => "Cannot set an existing value.".to_owned(),
+                                _ => NO_OBJECT.to_owned(),
+                            });
+                        }
+                    }
+                } else if !keyform_edit::keys::remove_blend_shape(m, o, p, key) {
+                    failure = Some("There is no key at the current value.".to_owned());
+                }
+            });
+            return failure.map_or(Ok(None), Err);
+        }
         let keys = keys_of(&self.model, o, p);
         // Keys can't be added or removed while extended interpolation is
         // set on that binding (extended-interpolation.md §5).
@@ -947,6 +978,7 @@ impl Document {
                 parent,
                 points: which,
                 net_level,
+                blend: keyform_edit::keys::blend_target(&self.model, o, &self.values).map(|t| t.1),
             });
         }
         if targets.is_empty() {
@@ -1023,7 +1055,11 @@ impl Document {
         let mut m = d.base.clone();
         let r = match &d.kind {
             DragKind::Move(targets) => targets.iter().try_for_each(|t| {
-                match (t.net_level, t.points.as_deref()) {
+                // A blend-shape key: edit its entry (swapped into the cell).
+                if let Some(e) = t.blend {
+                    keyform_edit::keys::swap_blend_form(&mut m, t.object, t.cell, e);
+                }
+                let r = match (t.net_level, t.points.as_deref()) {
                     (Some(level), Some(which)) => {
                         let idx: Vec<usize> = which.iter().map(|w| w.0).collect();
                         keyform_edit::translate_net(
@@ -1045,7 +1081,11 @@ impl Document {
                         t.points.as_deref(),
                     ),
                 }
-                .map(|_| ())
+                .map(|_| ());
+                if let Some(e) = t.blend {
+                    keyform_edit::keys::swap_blend_form(&mut m, t.object, t.cell, e);
+                }
+                r
             }),
             DragKind::Rotate {
                 target,

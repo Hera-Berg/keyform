@@ -110,3 +110,58 @@ fn nested_scene_matches_reference() {
         );
     }
 }
+
+/// Blend shapes made in Keyform like in the reference: "Add 2 keys" on a
+/// blend-shape parameter adds an entry at its max; a drag at that value
+/// edits the entry; the model then matches the reference-made bs.cmo3's
+/// shape (ArtMesh49 moved) when evaluated at 0, 0.5 and 1.
+#[test]
+fn blend_shape_keys_and_drag() {
+    let Some(d) = dir() else { return };
+    let mut log = crate::log::Log::default();
+    let mut doc = crate::document::Document::open(&d.join("bs.cmo3"), &mut log).unwrap();
+    let mi = doc
+        .model
+        .art_meshes
+        .iter()
+        .position(|a| a.info.id == "ArtMesh49")
+        .unwrap();
+    let p = doc
+        .model
+        .parameters
+        .iter()
+        .position(|q| q.id == "ParamBsTest")
+        .unwrap();
+    // Start from no blend shapes on the mesh.
+    doc.select(Some(crate::document::Selection::ArtMesh(mi)));
+    doc.key_op(crate::document::KeyOp::DeleteAll, p).unwrap();
+    assert!(keyform_edit::keys::blend_keys_of(
+        &doc.model,
+        crate::document::Selection::ArtMesh(mi),
+        p
+    )
+    .is_empty());
+    doc.key_op(crate::document::KeyOp::AddTwo, p).unwrap();
+    assert_eq!(
+        keyform_edit::keys::blend_keys_of(&doc.model, crate::document::Selection::ArtMesh(mi), p),
+        vec![1.0]
+    );
+    // At 0 nothing moved; at 1 a drag edits the entry only.
+    let at = |doc: &mut crate::document::Document, v: f32| {
+        doc.values[p] = v;
+        doc.tick(0.0, &Default::default(), &mut crate::log::Log::default());
+        doc.frame.as_ref().unwrap().meshes[mi].positions[0..2].to_vec()
+    };
+    let p0 = at(&mut doc, 0.0);
+    let q0 = at(&mut doc, 1.0);
+    assert_eq!(p0, q0);
+    doc.drag_begin(false).unwrap();
+    doc.drag_update([50.0, 0.0], false);
+    doc.drag_end();
+    let q1 = at(&mut doc, 1.0);
+    let h = at(&mut doc, 0.5);
+    let p1 = at(&mut doc, 0.0);
+    assert!((q1[0] - q0[0] - 50.0).abs() < 0.5, "{q0:?} → {q1:?}");
+    assert!((h[0] - q0[0] - 25.0).abs() < 0.5, "half: {h:?}");
+    assert!((p1[0] - p0[0]).abs() < 1e-3, "base unchanged");
+}

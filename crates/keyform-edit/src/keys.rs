@@ -360,3 +360,227 @@ mod tests {
         assert_eq!(delete_all_keys(&mut m, a, 0, 5.0), Ok(false));
     }
 }
+
+/// An operation on an object's grid together with its blend shapes.
+trait BlendOp {
+    type Out;
+    fn run<F: Blend + Clone>(
+        self,
+        params: &[std::sync::Arc<keyform_model::Parameter>],
+        grid: &mut KeyformGrid<F>,
+        blend: &mut keyform_model::BlendShapes<F>,
+    ) -> Self::Out;
+}
+
+fn with_blend<O: BlendOp>(m: &mut Model, o: ObjectRef, op: O) -> Option<O::Out> {
+    let params = m.parameters.clone();
+    Some(match o {
+        ObjectRef::Part(i) => {
+            let x = Arc::make_mut(m.parts.get_mut(i)?);
+            op.run(&params, &mut x.grid, &mut x.blend_shapes)
+        }
+        ObjectRef::ArtMesh(i) => {
+            let x = Arc::make_mut(m.art_meshes.get_mut(i)?);
+            op.run(&params, &mut x.grid, &mut x.blend_shapes)
+        }
+        ObjectRef::Glue(i) => {
+            let x = Arc::make_mut(m.glues.get_mut(i)?);
+            op.run(&params, &mut x.grid, &mut x.blend_shapes)
+        }
+        ObjectRef::Deformer(i) => match &mut Arc::make_mut(m.deformers.get_mut(i)?).kind {
+            DeformerKind::Warp(w) => op.run(&params, &mut w.grid, &mut w.blend_shapes),
+            DeformerKind::Rotation(r) => op.run(&params, &mut r.grid, &mut r.blend_shapes),
+        },
+    })
+}
+
+/// The key of a blend-shape entry (unset = the parameter's max).
+fn entry_key(
+    params: &[std::sync::Arc<keyform_model::Parameter>],
+    p: ParamIndex,
+    key: Option<f32>,
+) -> f32 {
+    key.unwrap_or_else(|| params.get(p).map_or(1.0, |q| q.max))
+}
+
+struct AddBlend {
+    p: ParamIndex,
+    key: f32,
+}
+
+impl BlendOp for AddBlend {
+    type Out = Result<bool, KeyError>;
+    fn run<F: Blend + Clone>(
+        self,
+        params: &[std::sync::Arc<keyform_model::Parameter>],
+        grid: &mut KeyformGrid<F>,
+        blend: &mut keyform_model::BlendShapes<F>,
+    ) -> Self::Out {
+        let eps = params.get(self.p).map_or(1e-3, |q| q.snap_epsilon);
+        if self.key.abs() < eps {
+            // 0 is the implicit base key (blend-shapes.md §3).
+            return Err(KeyError::TooClose);
+        }
+        if blend.shapes.iter().any(|s| {
+            s.parameter == self.p && (entry_key(params, self.p, s.key) - self.key).abs() < eps
+        }) {
+            return Err(KeyError::TooClose);
+        }
+        let base = keyform_eval::interp::base_keyform(params, grid)
+            .ok_or(KeyError::Missing)?
+            .clone();
+        let max = params.get(self.p).map_or(1.0, |q| q.max);
+        blend.shapes.push(keyform_model::BlendShape {
+            parameter: self.p,
+            // An entry at the max is stored unset, as the reference does.
+            key: ((self.key - max).abs() >= eps).then_some(self.key),
+            form: base,
+        });
+        Ok(true)
+    }
+}
+
+struct RemoveBlend {
+    p: ParamIndex,
+    key: Option<f32>,
+}
+
+impl BlendOp for RemoveBlend {
+    type Out = bool;
+    fn run<F: Blend + Clone>(
+        self,
+        params: &[std::sync::Arc<keyform_model::Parameter>],
+        _grid: &mut KeyformGrid<F>,
+        blend: &mut keyform_model::BlendShapes<F>,
+    ) -> Self::Out {
+        let eps = params.get(self.p).map_or(1e-3, |q| q.snap_epsilon);
+        let n = blend.shapes.len();
+        blend.shapes.retain(|s| {
+            s.parameter != self.p
+                || self
+                    .key
+                    .is_some_and(|k| (entry_key(params, self.p, s.key) - k).abs() >= eps)
+        });
+        if self.key.is_none() {
+            blend.constraints.retain(|c| c.blend_parameter != self.p);
+        }
+        blend.shapes.len() != n
+    }
+}
+
+/// Adds a blend-shape entry of parameter `p` at key `key` to object `o`,
+/// starting as the object's base keyform (so nothing moves).
+/// spec: 30-algorithms/blend-shapes.md §1, §3
+// TODO(Q-0037): the reference's rules for adding blend-shape keys.
+pub fn add_blend_shape(
+    m: &mut Model,
+    o: ObjectRef,
+    p: ParamIndex,
+    key: f32,
+) -> Result<bool, KeyError> {
+    if m.parameters
+        .get(p)
+        .is_none_or(|q| q.kind != ParameterKind::BlendShape)
+    {
+        return Err(KeyError::Missing);
+    }
+    with_blend(m, o, AddBlend { p, key }).ok_or(KeyError::Missing)?
+}
+
+/// Removes `o`'s blend-shape entry of `p` at `key`, or all of them (and
+/// their constraints) with `None`.
+pub fn remove_blend_shape(m: &mut Model, o: ObjectRef, p: ParamIndex, key: Option<f32>) -> bool {
+    with_blend(m, o, RemoveBlend { p, key }).unwrap_or(false)
+}
+
+/// Blend-shape key values of `o` on `p` (unset keys as the max).
+pub fn blend_keys_of(m: &Model, o: ObjectRef, p: ParamIndex) -> Vec<f32> {
+    let params = &m.parameters;
+    let keys = |shapes: Vec<(ParamIndex, Option<f32>)>| -> Vec<f32> {
+        let mut v: Vec<f32> = shapes
+            .into_iter()
+            .filter(|s| s.0 == p)
+            .map(|s| entry_key(params, p, s.1))
+            .collect();
+        v.sort_by(f32::total_cmp);
+        v
+    };
+    macro_rules! of {
+        ($b:expr) => {
+            keys($b.shapes.iter().map(|s| (s.parameter, s.key)).collect())
+        };
+    }
+    match o {
+        ObjectRef::Part(i) => m.parts.get(i).map(|x| of!(x.blend_shapes)),
+        ObjectRef::ArtMesh(i) => m.art_meshes.get(i).map(|x| of!(x.blend_shapes)),
+        ObjectRef::Glue(i) => m.glues.get(i).map(|x| of!(x.blend_shapes)),
+        ObjectRef::Deformer(i) => m.deformers.get(i).map(|d| match &d.kind {
+            DeformerKind::Warp(w) => of!(w.blend_shapes),
+            DeformerKind::Rotation(r) => of!(r.blend_shapes),
+        }),
+    }
+    .unwrap_or_default()
+}
+
+/// The blend-shape entry an edit at `values` goes to: a blend-shape
+/// parameter whose value is on one of `o`'s entry keys (other than 0).
+/// Returns (parameter, entry index in the object's list).
+// TODO(Q-0037): the reference's rule when several are on keys.
+pub fn blend_target(m: &Model, o: ObjectRef, values: &[f32]) -> Option<(ParamIndex, usize)> {
+    let params = &m.parameters;
+    let find = |shapes: Vec<(ParamIndex, Option<f32>)>| {
+        shapes.iter().enumerate().find_map(|(i, (p, key))| {
+            let q = params.get(*p)?;
+            let v = values.get(*p).copied().unwrap_or(q.default);
+            let k = entry_key(params, *p, *key);
+            (k.abs() >= q.snap_epsilon && (v - k).abs() < q.snap_epsilon).then_some((*p, i))
+        })
+    };
+    macro_rules! of {
+        ($b:expr) => {
+            find($b.shapes.iter().map(|s| (s.parameter, s.key)).collect())
+        };
+    }
+    match o {
+        ObjectRef::Part(i) => m.parts.get(i).and_then(|x| of!(x.blend_shapes)),
+        ObjectRef::ArtMesh(i) => m.art_meshes.get(i).and_then(|x| of!(x.blend_shapes)),
+        ObjectRef::Glue(i) => m.glues.get(i).and_then(|x| of!(x.blend_shapes)),
+        ObjectRef::Deformer(i) => m.deformers.get(i).and_then(|d| match &d.kind {
+            DeformerKind::Warp(w) => of!(w.blend_shapes),
+            DeformerKind::Rotation(r) => of!(r.blend_shapes),
+        }),
+    }
+}
+
+struct SwapBlend {
+    cell: usize,
+    entry: usize,
+}
+
+impl BlendOp for SwapBlend {
+    type Out = bool;
+    fn run<F: Blend + Clone>(
+        self,
+        _params: &[std::sync::Arc<keyform_model::Parameter>],
+        grid: &mut KeyformGrid<F>,
+        blend: &mut keyform_model::BlendShapes<F>,
+    ) -> Self::Out {
+        match (
+            grid.keyforms.get_mut(self.cell),
+            blend.shapes.get_mut(self.entry),
+        ) {
+            (Some(k), Some(s)) => {
+                std::mem::swap(k, &mut s.form);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Swaps grid keyform `cell` with blend-shape entry `entry` of `o`: edit
+/// functions written for grid keyforms then edit the entry (swap, edit,
+/// swap back).
+pub fn swap_blend_form(m: &mut Model, o: ObjectRef, cell: usize, entry: usize) -> bool {
+    with_blend(m, o, SwapBlend { cell, entry }).unwrap_or(false)
+}
