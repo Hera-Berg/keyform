@@ -181,7 +181,7 @@ impl<'m> CpuRenderer<'m> {
             )));
         }
         let (w, h) = (v.width as usize * ss, v.height as usize * ss);
-        let mut t = Target {
+        let t = Target {
             w,
             h,
             px: vec![opts.background.unwrap_or([0.0; 4]); w * h],
@@ -196,6 +196,10 @@ impl<'m> CpuRenderer<'m> {
         let mut mask_cache: HashMap<(Vec<MeshIndex>, bool), Vec<f32>> = HashMap::new();
         let mut written = vec![0u32; w * h];
         let mut stamp = 0u32;
+        // Offscreen parts (offscreen.md): a buffer per active offscreen
+        // ancestor, outermost first; `t` is the bottom of the stack.
+        let mut stack: Vec<(usize, Target)> = Vec::new();
+        let mut base = t;
         for &mi in &frame.render_order {
             let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
                 continue;
@@ -203,6 +207,25 @@ impl<'m> CpuRenderer<'m> {
             if !ms.is_drawn() {
                 continue;
             }
+            let chain = offscreen_chain(m, am.info.parent_part);
+            while !stack.is_empty()
+                && !chain.starts_with(&stack.iter().map(|(p, _)| *p).collect::<Vec<_>>())
+            {
+                let (p, buf) = stack.pop().expect("non-empty");
+                let dst = stack.last_mut().map_or(&mut base, |(_, b)| b);
+                self.composite_part(frame, p, &buf, dst, &mut mask_cache, &to_px, ss, opts.msaa);
+            }
+            for &p in &chain[stack.len()..] {
+                stack.push((
+                    p,
+                    Target {
+                        w,
+                        h,
+                        px: vec![[0.0; 4]; w * h],
+                    },
+                ));
+            }
+            let t = stack.last_mut().map_or(&mut base, |(_, b)| b);
             let Some(tex) = m
                 .texture_slot(am)
                 .and_then(|ti| self.textures.get(ti))
@@ -267,7 +290,7 @@ impl<'m> CpuRenderer<'m> {
                 };
                 let tri_uv = [uv(i0), uv(i1), uv(i2)];
                 let g = Sampler::new([p0, p1, p2], tri_uv, ss, opts.msaa);
-                raster_triangle(&mut t, [p0, p1, p2], tri_uv, |x, y, u, vv, t| {
+                raster_triangle(t, [p0, p1, p2], tri_uv, |x, y, u, vv, t| {
                     let idx = y * t.w + x;
                     if !simple {
                         // One blend per pixel per mesh (blending.md §2).
@@ -281,6 +304,11 @@ impl<'m> CpuRenderer<'m> {
                 });
             }
         }
+        while let Some((p, buf)) = stack.pop() {
+            let dst = stack.last_mut().map_or(&mut base, |(_, b)| b);
+            self.composite_part(frame, p, &buf, dst, &mut mask_cache, &to_px, ss, opts.msaa);
+        }
+        let t = base;
 
         Ok(finish_image(
             &t.px,
@@ -289,6 +317,78 @@ impl<'m> CpuRenderer<'m> {
             v.height as usize,
             ss,
         ))
+    }
+
+    /// Composites an offscreen part's buffer into `dst`: the part's
+    /// multiply / screen colours, opacity (own × visibility × ancestors up to
+    /// the next offscreen ancestor), clip mask and blend modes.
+    /// spec: offscreen.md §1 step 3, appearance.md §2
+    #[allow(clippy::too_many_arguments)]
+    fn composite_part(
+        &self,
+        frame: &Frame,
+        p: usize,
+        buf: &Target,
+        dst: &mut Target,
+        mask_cache: &mut HashMap<(Vec<MeshIndex>, bool), Vec<f32>>,
+        to_px: &dyn Fn(&[f32]) -> V2,
+        ss: usize,
+        msaa: bool,
+    ) {
+        let m = self.model;
+        let (Some(part), Some(st)) = (m.parts.get(p), frame.parts.get(p)) else {
+            return;
+        };
+        let mut alpha = st.form.opacity.clamp(0.0, 1.0) * if st.visible { 1.0 } else { 0.0 };
+        let mut q = part.info.parent_part;
+        let mut steps = 0;
+        while let Some(a) = q {
+            steps += 1;
+            if steps > m.parts.len() || m.parts[a].offscreen {
+                break;
+            }
+            alpha *= frame.parts.get(a).map_or(1.0, |s| s.form.opacity);
+            q = m.parts[a].info.parent_part;
+        }
+        if alpha <= 0.0 {
+            return;
+        }
+        let mask = if part.clip.is_empty() {
+            None
+        } else {
+            let key = (part.clip.clone(), part.invert_clip);
+            if !mask_cache.contains_key(&key) {
+                let mk = self.build_mask(
+                    frame,
+                    &part.clip,
+                    part.invert_clip,
+                    buf.w,
+                    buf.h,
+                    to_px,
+                    ss,
+                    msaa,
+                );
+                mask_cache.insert(key.clone(), mk);
+            }
+            mask_cache.get(&key).cloned()
+        };
+        let c = |c: keyform_model::Color| [c[0], c[1], c[2]];
+        let shade = Shade {
+            alpha,
+            mul: c(st.form.multiply),
+            scr: c(st.form.screen),
+            cc: part.color_composition,
+            ac: part.alpha_composition,
+            simple: blend::is_simple(part.color_composition, part.alpha_composition),
+            illegal: false,
+        };
+        for (i, px) in buf.px.iter().enumerate() {
+            if px[3] <= 0.0 {
+                continue;
+            }
+            let k = mask.as_ref().map_or(1.0, |m| m[i]);
+            shade.apply(*px, k, &mut dst.px[i]);
+        }
     }
 
     /// Mask image from clip sources' texture alpha, accumulated with "over";
@@ -386,6 +486,24 @@ pub fn composite_group(img: &mut RgbaImage, opacity: f32, background: Option<[f3
             None => p[3] = (a * 255.0).round() as u8,
         }
     }
+}
+
+/// The offscreen parts above a drawable, outermost first.
+pub(crate) fn offscreen_chain(m: &Model, mut p: Option<usize>) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut steps = 0;
+    while let Some(q) = p {
+        steps += 1;
+        if steps > m.parts.len() {
+            break;
+        }
+        if m.parts.get(q).is_some_and(|x| x.offscreen) {
+            out.push(q);
+        }
+        p = m.parts.get(q).and_then(|x| x.info.parent_part);
+    }
+    out.reverse();
+    out
 }
 
 /// Box-filters a premultiplied `ss`× supersampled buffer of width `w` down to

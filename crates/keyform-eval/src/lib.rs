@@ -484,11 +484,14 @@ impl<'m> Evaluator<'m> {
                     (t.total_opacity, t.total_multiply, t.total_screen)
                 });
                 let mut part_op = 1.0;
+                // Up to (not including) the first offscreen ancestor, whose
+                // opacity applies when its buffer is composited.
+                // spec: appearance.md §1 step 3
                 for p in self.ancestors(a.info.parent_part) {
-                    part_op *= parts[p].form.opacity;
                     if m.parts[p].offscreen {
                         break;
                     }
+                    part_op *= parts[p].form.opacity;
                 }
                 let vis = if a.info.visible { 1.0 } else { 0.0 };
                 let f = &r.form;

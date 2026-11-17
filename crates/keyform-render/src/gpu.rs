@@ -587,16 +587,98 @@ impl GpuRenderer {
                 .and_then(Option::as_ref)
         };
 
-        // Draw list in render order.
+        // Draw list in render order, with offscreen parts (offscreen.md):
+        // Push opens a buffer for a part, Pop composites it into the target
+        // below as a full-target quad.
         struct Item {
             mesh: MeshIndex,
+            /// An offscreen buffer composited instead of a mesh.
+            buffer: Option<usize>,
             kind: PipeKind,
             cull: Cull,
             mask: Option<usize>,
             uniform: DrawUniform,
         }
-        let mut items = Vec::new();
+        enum Op {
+            Draw(usize),
+            Push(usize),
+            Pop(usize),
+        }
+        let mut items: Vec<Item> = Vec::new();
+        let mut ops: Vec<Op> = Vec::new();
+        let mut buffers = 0usize;
+        let mut stack: Vec<(usize, usize)> = Vec::new(); // (part, buffer)
         let mut mask_keys: Vec<Vec<MeshIndex>> = Vec::new();
+        let kind_of = |cc: ColorComposition, ac: keyform_model::AlphaComposition| {
+            if !blend::is_simple(cc, ac) {
+                PipeKind::Advanced
+            } else {
+                match cc {
+                    ColorComposition::Add => PipeKind::Add,
+                    ColorComposition::Multiply => PipeKind::Multiply,
+                    _ => PipeKind::Normal,
+                }
+            }
+        };
+        let pop = |items: &mut Vec<Item>,
+                   ops: &mut Vec<Op>,
+                   mask_keys: &mut Vec<Vec<MeshIndex>>,
+                   geo: &mut HashMap<MeshIndex, (wgpu::Buffer, wgpu::Buffer, u32)>,
+                   (p, b): (usize, usize)| {
+            let (Some(part), Some(st)) = (m.parts.get(p), frame.parts.get(p)) else {
+                return;
+            };
+            let mut a = st.form.opacity.clamp(0.0, 1.0) * if st.visible { 1.0 } else { 0.0 };
+            let mut q = part.info.parent_part;
+            let mut steps = 0;
+            while let Some(x) = q {
+                steps += 1;
+                if steps > m.parts.len() || m.parts[x].offscreen {
+                    break;
+                }
+                a *= frame.parts.get(x).map_or(1.0, |s| s.form.opacity);
+                q = m.parts[x].info.parent_part;
+            }
+            let mask = (!part.clip.is_empty()).then(|| {
+                for &c in &part.clip {
+                    geometry(geo, c);
+                }
+                match mask_keys.iter().position(|k| *k == part.clip) {
+                    Some(i) => i,
+                    None => {
+                        mask_keys.push(part.clip.clone());
+                        mask_keys.len() - 1
+                    }
+                }
+            });
+            let (mu, sc) = (st.form.multiply, st.form.screen);
+            items.push(Item {
+                mesh: usize::MAX,
+                buffer: Some(b),
+                kind: kind_of(part.color_composition, part.alpha_composition),
+                cull: Cull::None,
+                mask,
+                uniform: DrawUniform {
+                    base: [a, a, a, a],
+                    mul: [mu[0], mu[1], mu[2], 1.0],
+                    scr: [sc[0], sc[1], sc[2], 1.0],
+                    flags: [
+                        f32::from(u8::from(mask.is_some())),
+                        f32::from(u8::from(part.invert_clip)),
+                        a,
+                        0.0,
+                    ],
+                    modes: [
+                        u32::from(part.color_composition.moc3_code()),
+                        u32::from(part.alpha_composition.moc3_code()),
+                        0,
+                        0,
+                    ],
+                    uvs: [1.0, 1.0, 0.0, 0.0],
+                },
+            });
+            ops.push(Op::Pop(items.len() - 1));
+        };
         for &mi in &frame.render_order {
             let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
                 continue;
@@ -607,6 +689,18 @@ impl GpuRenderer {
             geometry(&mut geo, mi);
             if !geo.contains_key(&mi) {
                 continue;
+            }
+            let chain = crate::offscreen_chain(m, am.info.parent_part);
+            while !stack.is_empty()
+                && !chain.starts_with(&stack.iter().map(|(p, _)| *p).collect::<Vec<_>>())
+            {
+                let top = stack.pop().expect("non-empty");
+                pop(&mut items, &mut ops, &mut mask_keys, &mut geo, top);
+            }
+            for &p in &chain[stack.len()..] {
+                stack.push((p, buffers));
+                ops.push(Op::Push(buffers));
+                buffers += 1;
             }
             let mask = (!am.clip.is_empty()).then(|| {
                 for &c in &am.clip {
@@ -624,18 +718,13 @@ impl GpuRenderer {
             let mask = if illegal { None } else { mask };
             let kind = if illegal {
                 PipeKind::Normal
-            } else if !blend::is_simple(am.color_composition, am.alpha_composition) {
-                PipeKind::Advanced
             } else {
-                match am.color_composition {
-                    ColorComposition::Add => PipeKind::Add,
-                    ColorComposition::Multiply => PipeKind::Multiply,
-                    _ => PipeKind::Normal,
-                }
+                kind_of(am.color_composition, am.alpha_composition)
             };
             let a = ms.opacity;
             items.push(Item {
                 mesh: mi,
+                buffer: None,
                 kind,
                 // A mirrored view reverses on-screen winding: cull the other
                 // face so the same triangles stay visible (blending.md §4).
@@ -667,7 +756,58 @@ impl GpuRenderer {
                     },
                 },
             });
+            ops.push(Op::Draw(items.len() - 1));
         }
+        while let Some(top) = stack.pop() {
+            pop(&mut items, &mut ops, &mut mask_keys, &mut geo, top);
+        }
+        // Offscreen buffers and the full-target quad they are drawn with.
+        let buffer_tex: Vec<wgpu::Texture> = (0..buffers)
+            .map(|_| self.target(w, h, Self::TARGET_USAGE, TARGET_FORMAT, "offscreen"))
+            .collect();
+        let buffer_gpu: Vec<GpuTex> = buffer_tex
+            .iter()
+            .map(|t| GpuTex {
+                view: t.create_view(&Default::default()),
+                uv_scale: [1.0, 1.0],
+                sampler: SAMPLER_BILINEAR,
+            })
+            .collect();
+        let quad = (buffers > 0).then(|| {
+            let verts = [
+                Vertex {
+                    pos: [-1.0, 1.0],
+                    uv: [0.0, 0.0],
+                },
+                Vertex {
+                    pos: [1.0, 1.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    pos: [1.0, -1.0],
+                    uv: [1.0, 1.0],
+                },
+                Vertex {
+                    pos: [-1.0, -1.0],
+                    uv: [0.0, 1.0],
+                },
+            ];
+            let vb = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("quad vertices"),
+                    contents: bytemuck::cast_slice(&verts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let ib = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("quad indices"),
+                    contents: bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3]),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            (vb, ib, 6u32)
+        });
 
         let bind = |uniform: &DrawUniform,
                     tex: &GpuTex,
@@ -785,61 +925,93 @@ impl GpuRenderer {
                 } else {
                     &self.dummy.view
                 };
-                bind(
-                    &it.uniform,
-                    tex_of(it.mesh).unwrap_or(&self.dummy),
-                    mask,
-                    dst,
-                )
+                let tex = match it.buffer {
+                    Some(b) => &buffer_gpu[b],
+                    None => tex_of(it.mesh).unwrap_or(&self.dummy),
+                };
+                bind(&it.uniform, tex, mask, dst)
             })
             .collect();
 
-        // Clear, then draw in passes: each advanced draw first copies the target.
-        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &color_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: bg[0].into(),
-                        g: bg[1].into(),
-                        b: bg[2].into(),
-                        a: bg[3].into(),
+        // Targets: the colour target, or the open offscreen buffer.
+        let views: Vec<&wgpu::TextureView> = buffer_gpu.iter().map(|g| &g.view).collect();
+        let clear_pass = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, c: [f32; 4]| {
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: c[0].into(),
+                            g: c[1].into(),
+                            b: c[2].into(),
+                            a: c[3].into(),
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &stencil_view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
                     }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &stencil_view,
-                depth_ops: None,
-                stencil_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0),
-                    store: wgpu::StoreOp::Store,
                 }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }));
-        let mut start = 0;
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }));
+        };
+        clear_pass(&mut enc, &color_view, bg);
+        let mut target: Vec<Option<usize>> = vec![None];
         let mut stencil_ref = 0u32;
-        while start < items.len() {
-            let advanced = items[start].kind == PipeKind::Advanced;
-            let end = if advanced {
-                enc.copy_texture_to_texture(
-                    color.as_image_copy(),
-                    dst_copy.as_image_copy(),
-                    color.size(),
-                );
-                start + 1
-            } else {
-                (start..items.len())
-                    .find(|&i| items[i].kind == PipeKind::Advanced)
-                    .unwrap_or(items.len())
+        let mut k = 0;
+        while k < ops.len() {
+            match ops[k] {
+                Op::Push(b) => {
+                    clear_pass(&mut enc, views[b], [0.0; 4]);
+                    stencil_ref = 0;
+                    target.push(Some(b));
+                    k += 1;
+                    continue;
+                }
+                Op::Pop(_) => {
+                    target.pop();
+                }
+                Op::Draw(_) => {}
+            }
+            // A run of draws into the current target (an advanced draw, or a
+            // composite, alone after copying the target for reading).
+            let cur = *target.last().expect("colour target");
+            let (cur_tex, cur_view) = match cur {
+                Some(b) => (&buffer_tex[b], views[b]),
+                None => (color, &color_view),
             };
-            // 8-bit stencil: references cycle 1…255, clearing on wrap.
+            let item_of = |op: &Op| match op {
+                Op::Draw(i) | Op::Pop(i) => Some(*i),
+                Op::Push(_) => None,
+            };
+            let first = item_of(&ops[k]).expect("draw");
+            let advanced = items[first].kind == PipeKind::Advanced;
+            let end = if advanced || matches!(ops[k], Op::Pop(_)) {
+                k + 1
+            } else {
+                (k..ops.len())
+                    .find(
+                        |&x| !matches!(ops[x], Op::Draw(i) if items[i].kind != PipeKind::Advanced),
+                    )
+                    .unwrap_or(ops.len())
+            };
+            if advanced {
+                enc.copy_texture_to_texture(
+                    cur_tex.as_image_copy(),
+                    dst_copy.as_image_copy(),
+                    cur_tex.size(),
+                );
+            }
             let clear_stencil = advanced && stencil_ref >= 255;
             if clear_stencil {
                 stencil_ref = 0;
@@ -847,7 +1019,7 @@ impl GpuRenderer {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("draw"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
+                    view: cur_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -871,9 +1043,16 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for i in start..end {
+            for op in &ops[k..end] {
+                let Some(i) = item_of(op) else {
+                    continue;
+                };
                 let it = &items[i];
-                let Some((vb, ib, n)) = geo.get(&it.mesh) else {
+                let g = match it.buffer {
+                    Some(_) => quad.as_ref(),
+                    None => geo.get(&it.mesh),
+                };
+                let Some((vb, ib, n)) = g.map(|(vb, ib, n)| (vb, ib, *n)) else {
                     continue;
                 };
                 pass.set_pipeline(&self.pipelines[&(it.kind, it.cull)]);
@@ -884,10 +1063,10 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &groups[i], &[]);
                 pass.set_vertex_buffer(0, vb.slice(..));
                 pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..*n, 0, 0..1);
+                pass.draw_indexed(0..n, 0, 0..1);
             }
             drop(pass);
-            start = end;
+            k = end;
         }
 
         Ok(enc)
