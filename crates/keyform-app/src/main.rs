@@ -5,6 +5,7 @@
 
 mod animation;
 mod app;
+mod audio_out;
 mod auto_mesh_dialog;
 mod canvas;
 mod create_deformer;

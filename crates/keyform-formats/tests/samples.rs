@@ -3223,6 +3223,49 @@ fn can3_structure() {
         )
         .unwrap();
     }
+    // A sound track (WAV next to the animation) as the lip-sync source.
+    if let Some(out) = out_dir.as_ref() {
+        let wav = out.join("tone_kf.wav");
+        let rate = 44100u32;
+        let samples: Vec<i16> = (0..rate)
+            .map(|i| ((i as f32 * 0.05).sin() * 12000.0) as i16)
+            .collect();
+        let mut d = Vec::new();
+        let n = (samples.len() * 2) as u32;
+        d.extend_from_slice(b"RIFF");
+        d.extend_from_slice(&(36 + n).to_le_bytes());
+        d.extend_from_slice(b"WAVEfmt ");
+        d.extend_from_slice(&16u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&rate.to_le_bytes());
+        d.extend_from_slice(&(rate * 2).to_le_bytes());
+        d.extend_from_slice(&2u16.to_le_bytes());
+        d.extend_from_slice(&16u16.to_le_bytes());
+        d.extend_from_slice(b"data");
+        d.extend_from_slice(&n.to_le_bytes());
+        for x in &samples {
+            d.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(&wav, d).unwrap();
+        let mut back = back;
+        back.add_sound_track(0, &wav.to_string_lossy()).unwrap();
+        let s = &back.animation.scenes[0];
+        assert!(matches!(s.tracks[2].kind, TrackKind::Sound(_)));
+        let TrackKind::Model(m) = &s.tracks[1].kind else {
+            panic!()
+        };
+        assert_eq!(
+            m.lip_sync.as_ref().unwrap().sync_track.as_ref(),
+            Some(&s.tracks[2].guid)
+        );
+        let edited = back.animation.clone();
+        let bytes = back.save_bytes().unwrap();
+        let again = Can3Document::read(&bytes).unwrap();
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+        assert_eq!(again.animation, edited);
+        std::fs::write(out.join("new_sound_kf.can3"), &bytes).unwrap();
+    }
     // Scenes added to a sample, renamed, one deleted.
     let Some(sample) = sample_files("can3")
         .into_iter()

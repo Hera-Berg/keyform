@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use keyform_anim::scene::{eval_attr, param_value, step_frame};
+use keyform_anim::scene::{eval_attr, step_frame};
 use keyform_formats::can3::Can3Document;
 use keyform_model::animation::{Attr, IntCurve, ModelTrack, Scene, TrackKind};
 
@@ -49,11 +49,129 @@ pub struct AnimState {
     pub untitled: bool,
     /// The scene name being edited (Rename).
     pub rename: Option<String>,
+    /// Decoded WAVs of the sound resources, by resource GUID.
+    pub sounds: std::collections::HashMap<String, keyform_anim::audio::Pcm>,
+    /// The sound playing with the playhead.
+    pub audio: Option<crate::audio_out::AudioOut>,
+    /// Sound was started (or failed to start) for this run of playback.
+    audio_tried: bool,
 }
 
 impl AnimState {
     pub fn scene(&self) -> Option<&Scene> {
         self.doc.animation.scenes.get(self.scene)
+    }
+
+    /// A resource file: next to the animation by name, else as stored.
+    fn resource_path(&self, stored: &str) -> PathBuf {
+        let p = PathBuf::from(stored.replace('\\', "/"));
+        if let (Some(dir), Some(name)) = (self.path.parent(), p.file_name()) {
+            let near = dir.join(name);
+            if near.exists() {
+                return near;
+            }
+        }
+        p
+    }
+
+    /// Decodes the WAVs of the sound tracks' resources (once each).
+    pub fn load_sounds(&mut self, log: &mut Log) {
+        let wanted: Vec<String> = self
+            .doc
+            .animation
+            .scenes
+            .iter()
+            .flat_map(|s| s.tracks.iter())
+            .filter_map(|t| match &t.kind {
+                TrackKind::Sound(st) => st.resource.clone(),
+                _ => None,
+            })
+            .collect();
+        for g in wanted {
+            if self.sounds.contains_key(&g) {
+                continue;
+            }
+            let Some(r) = self.doc.animation.resources.iter().find(|r| r.guid == g) else {
+                continue;
+            };
+            let path = self.resource_path(&r.path);
+            match std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|d| keyform_anim::audio::read_wav(&d).map_err(|e| e.to_string()))
+            {
+                Ok(pcm) => {
+                    self.sounds.insert(g, pcm);
+                }
+                Err(e) => log.warn(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+
+    /// The lip-sync level of model track `m` at scene frame `frame` from
+    /// its linked sound track: the RMS over the frame, times the track's
+    /// volume. spec: animation-model.md §4
+    pub fn lip_level(&self, m: &ModelTrack, frame: f64) -> Option<f64> {
+        let s = self.scene()?;
+        let g = m.lip_sync.as_ref()?.sync_track.as_ref()?;
+        let track = s.tracks.iter().find(|t| &t.guid == g)?;
+        let TrackKind::Sound(st) = &track.kind else {
+            return None;
+        };
+        let pcm = self.sounds.get(st.resource.as_ref()?)?;
+        let local = frame - f64::from(track.start) + f64::from(track.offset);
+        let t = local / s.fps * st.speed + f64::from(st.start_frame) / s.fps;
+        let lvl = keyform_anim::scene::sound_level(&pcm.samples, pcm.rate, t, t + st.speed / s.fps);
+        let vol = st.volume.as_ref().map_or(1.0, |v| {
+            keyform_anim::scene::eval_curve(&v.curve, local) / 100.0
+        });
+        Some(lvl * vol)
+    }
+
+    /// Bake Lip-sync: the linked sound's level as a LINEAR key on every
+    /// frame of the model track's soundLevel (one undo step).
+    pub fn bake_lip_sync(&mut self) -> Result<usize, String> {
+        let scene = self.scene().ok_or("No scene.")?.clone();
+        let (ti, m) = self
+            .model_track()
+            .map(|(i, m)| (i, m.clone()))
+            .ok_or("This scene has no model track.")?;
+        if m.lip_sync
+            .as_ref()
+            .and_then(|e| e.sync_track.as_ref())
+            .is_none()
+        {
+            return Err("The lip-sync effect has no sound track.".into());
+        }
+        let levels: Vec<(i32, f64)> = (scene.start_frame..=scene.duration)
+            .filter_map(|f| {
+                self.lip_level(&m, f64::from(f))
+                    .map(|l| (f, (l * 10000.0).round() / 10000.0))
+            })
+            .collect();
+        if levels.is_empty() {
+            return Err("The sound could not be read.".into());
+        }
+        let before = self.doc.animation.clone();
+        let TrackKind::Model(mt) = &mut self.doc.animation.scenes[self.scene].tracks[ti].kind
+        else {
+            return Err("no model track".into());
+        };
+        let legacy = before.smooth_legacy;
+        let Some(ls) = mt.lip_sync.as_mut() else {
+            return Err("no lip sync".into());
+        };
+        let (lo, hi) = keyform_anim::scene::clamp_range(&ls.sound_level);
+        let c = &mut ls.sound_level.curve;
+        c.keys.clear();
+        c.types.clear();
+        for &(f, l) in &levels {
+            keyform_anim::scene::set_key(c, f, l, keyform_model::animation::CurveType::Linear);
+        }
+        keyform_anim::scene::refresh(c, lo, hi, legacy);
+        self.undo.push(("Bake Lip-sync".into(), before));
+        self.redo.clear();
+        self.dirty = true;
+        Ok(levels.len())
     }
 
     /// The selected attribute.
@@ -191,7 +309,13 @@ impl Document {
             dirty: false,
             untitled: false,
             rename: None,
+            sounds: Default::default(),
+            audio: None,
+            audio_tried: false,
         });
+        if let Some(a) = d.anim.as_mut() {
+            a.load_sounds(log);
+        }
         Ok(d)
     }
 
@@ -236,6 +360,9 @@ impl Document {
             dirty: true,
             untitled: true,
             rename: None,
+            sounds: Default::default(),
+            audio: None,
+            audio_tried: false,
         });
         Ok(d)
     }
@@ -257,6 +384,11 @@ impl Document {
         st.scene = st
             .scene
             .min(st.doc.animation.scenes.len().saturating_sub(1));
+        let mut log = Log::default();
+        st.load_sounds(&mut log);
+        if let Some((_, msg)) = log.entries.last() {
+            self.notice = Some(msg.clone());
+        }
         Ok(())
     }
 
@@ -286,7 +418,9 @@ impl Document {
             };
             let step = group_step(pi).or(track.frame_step.as_ref());
             let xf = step_frame(x, step);
-            values[pi] = model.parameters[pi].clamp(param_value(m, k, xf) as f32);
+            let sound = st.lip_level(m, xf + f64::from(track.start) - f64::from(track.offset));
+            values[pi] = model.parameters[pi]
+                .clamp(keyform_anim::scene::param_value_with(m, k, xf, sound) as f32);
         }
         let mut parts = vec![None; model.parts.len()];
         for a in &m.parts {
@@ -361,15 +495,32 @@ impl Document {
         let Some(s) = st.scene() else { return };
         let (a, b, fps) = (f64::from(s.work_start), f64::from(s.work_end), s.fps);
         let (lo, hi) = (f64::from(s.start_frame), f64::from(s.duration));
+        let mut wrapped = false;
         if st.playing {
             st.frame += f64::from(dt) * fps;
             if st.frame > b {
                 if st.looping {
                     st.frame = a + (st.frame - b) % (b - a + 1.0).max(1.0);
+                    wrapped = true;
                 } else {
                     st.frame = b;
                     st.playing = false;
                 }
+            }
+        }
+        // Sound tracks play with the playhead (restarted on a loop).
+        if !st.playing || wrapped {
+            st.audio = None;
+            st.audio_tried = false;
+        }
+        if st.playing && !st.audio_tried && !st.sounds.is_empty() {
+            st.audio_tried = true;
+            const RATE: u32 = 44100;
+            if let Some(mix) = crate::audio_out::mix_scene(st, RATE) {
+                let start = (st.frame / fps * f64::from(RATE)) as usize;
+                // No device (or an unsupported one): playback stays silent.
+                st.audio =
+                    crate::audio_out::AudioOut::play(std::sync::Arc::new(mix), RATE, start).ok();
             }
         }
         st.frame = st.frame.clamp(lo, hi.max(lo));
@@ -473,6 +624,8 @@ enum SceneOp {
     Rename(String),
     Delete,
     AddTrack,
+    AddSound(PathBuf),
+    BakeLipSync,
 }
 
 pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::Tokens) {
@@ -501,6 +654,21 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 ui.separator();
                 if ui.button("Add model track").clicked() {
                     op = Some(SceneOp::AddTrack);
+                    ui.close();
+                }
+                if ui
+                    .button("Add sound track (WAV)…")
+                    .on_hover_text("Currently only wav files are supported (16 bit or less PCM, 44100 Hz recommended). It becomes the lip-sync source.")
+                    .clicked()
+                {
+                    ui.close();
+                    if let Some(p) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
+                        op = Some(SceneOp::AddSound(p));
+                    }
+                }
+                ui.separator();
+                if ui.button("Bake Lip-sync").on_hover_text("Write the sound's level as keys on the lip-sync volume").clicked() {
+                    op = Some(SceneOp::BakeLipSync);
                     ui.close();
                 }
             });
@@ -541,6 +709,16 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             SceneOp::Rename(name) => doc.anim_structure(|d, _| d.rename_scene(scene, &name)),
             SceneOp::Delete => doc.anim_structure(|d, _| d.delete_scene(scene)),
             SceneOp::AddTrack => doc.anim_structure(|d, m| d.add_model_track(scene, m, &m.name)),
+            SceneOp::AddSound(p) => {
+                let abs = std::fs::canonicalize(&p).unwrap_or(p);
+                doc.anim_structure(|d, _| d.add_sound_track(scene, &abs.to_string_lossy()))
+            }
+            SceneOp::BakeLipSync => doc
+                .anim
+                .as_mut()
+                .map_or(Err("No animation is open.".into()), |a| {
+                    a.bake_lip_sync().map(|_| ())
+                }),
         };
         match r {
             Ok(()) => {
@@ -1077,6 +1255,91 @@ mod tests {
             .map(|s| s.name.clone())
             .collect();
         assert_eq!(names, vec!["Scene1".to_string(), "Two".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_wav(path: &Path, samples: &[i16], rate: u32) {
+        let mut d = Vec::new();
+        let data_len = (samples.len() * 2) as u32;
+        d.extend_from_slice(b"RIFF");
+        d.extend_from_slice(&(36 + data_len).to_le_bytes());
+        d.extend_from_slice(b"WAVEfmt ");
+        d.extend_from_slice(&16u32.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&rate.to_le_bytes());
+        d.extend_from_slice(&(rate * 2).to_le_bytes());
+        d.extend_from_slice(&2u16.to_le_bytes());
+        d.extend_from_slice(&16u16.to_le_bytes());
+        d.extend_from_slice(b"data");
+        d.extend_from_slice(&data_len.to_le_bytes());
+        for x in samples {
+            d.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(path, d).unwrap();
+    }
+
+    /// A sound track drives lip sync: silent first second, loud second
+    /// second; the mouth opens only in the loud part; Bake writes keys;
+    /// the animation saves and reloads with its sound.
+    #[test]
+    fn sound_track_lip_sync() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("kf-sound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("voice.wav");
+        let rate = 44100;
+        let samples: Vec<i16> = (0..2 * rate)
+            .map(|i| {
+                if i < rate {
+                    0
+                } else {
+                    ((i as f32 * 0.05).sin() * 20000.0) as i16
+                }
+            })
+            .collect();
+        write_wav(&wav, &samples, rate);
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        doc.anim_structure(|d, _| d.add_sound_track(0, &wav.to_string_lossy()))
+            .unwrap();
+        let a = doc.anim.as_ref().unwrap();
+        assert_eq!(a.sounds.len(), 1, "{:?}", log.entries);
+        let (_, m) = a.model_track().unwrap();
+        assert!(m.lip_sync.as_ref().unwrap().sync_track.is_some());
+        assert!(a.lip_level(m, 10.0).unwrap() < 1e-6);
+        assert!(a.lip_level(m, 45.0).unwrap() > 0.3);
+        // The mouth parameter follows (frame 45 = 1.5 s, loud).
+        let mouth = doc
+            .model
+            .parameters
+            .iter()
+            .position(|p| p.id == "ParamMouthOpenY")
+            .unwrap();
+        let quiet = doc.anim_values_at(10.0).unwrap().0[mouth];
+        let loud = doc.anim_values_at(45.0).unwrap().0[mouth];
+        assert!(loud > quiet + 0.3, "{quiet} → {loud}");
+        // The playback mix: silent first second, loud second.
+        let mix = crate::audio_out::mix_scene(doc.anim.as_ref().unwrap(), 44100).unwrap();
+        assert!(mix[..44000].iter().all(|x| *x == 0.0));
+        assert!(mix[50000..60000].iter().any(|x| x.abs() > 0.3));
+        // Bake: one key per frame on soundLevel.
+        let n = doc.anim.as_mut().unwrap().bake_lip_sync().unwrap();
+        assert_eq!(n, 121);
+        let out = dir.join("talk.can3");
+        doc.save_animation_to(Some(&out)).unwrap();
+        let back = Document::open_animation(&out, &mut log).unwrap();
+        let b = back.anim.as_ref().unwrap();
+        assert_eq!(b.sounds.len(), 1);
+        let (_, m2) = b.model_track().unwrap();
+        assert_eq!(
+            m2.lip_sync.as_ref().unwrap().sound_level.curve.keys.len(),
+            121
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

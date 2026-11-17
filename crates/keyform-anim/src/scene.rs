@@ -489,15 +489,17 @@ pub fn eye_blink(e: &EyeBlinkEffect, v: f64, lo: f64, hi: f64, x: f64) -> f64 {
     (v + (target - v) * l).clamp(lo, hi)
 }
 
-/// Lip sync result (the sound level from its attribute curve). §4
-pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64) -> f64 {
+/// Lip sync result: the sound level from the linked sound (`sound`) or
+/// else the soundLevel curve. §4
+pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64, sound: Option<f64>) -> f64 {
     if !e.active {
         return v.clamp(lo, hi);
     }
     let l = eval_curve(&e.level.curve, x) / 100.0;
     let scale = eval_curve(&e.scale.curve, x);
     let base = eval_curve(&e.base.curve, x);
-    let o = ((eval_curve(&e.sound_level.curve, x) - base) * scale).clamp(0.0, 1.0);
+    let level = sound.unwrap_or_else(|| eval_curve(&e.sound_level.curve, x));
+    let o = ((level - base) * scale).clamp(0.0, 1.0);
     let r = hi - lo;
     let target = match (e.relative, e.invert) {
         (true, false) => v + o * r,
@@ -512,16 +514,38 @@ pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64) -> f64 {
 /// for its group), with effect selection: lip sync, else eye blink, else
 /// the clamped curve value. spec: §4 "Effect selection"
 pub fn param_value(m: &ModelTrack, k: usize, x: f64) -> f64 {
+    param_value_with(m, k, x, None)
+}
+
+/// [`param_value`] with the lip-sync level from a sound (`sound`).
+pub fn param_value_with(m: &ModelTrack, k: usize, x: f64, sound: Option<f64>) -> f64 {
     let a = &m.params[k];
     let (lo, hi) = (a.range.0.min(a.range.1), a.range.0.max(a.range.1));
     let v = eval_curve(&a.curve, x);
     if let Some(e) = m.lip_sync.as_ref().filter(|e| e.targets.contains(&a.id)) {
-        return lip_sync(e, v, lo, hi, x);
+        return lip_sync(e, v, lo, hi, x, sound);
     }
     if let Some(e) = m.eye_blink.as_ref().filter(|e| e.targets.contains(&a.id)) {
         return eye_blink(e, v, lo, hi, x);
     }
     v.clamp(lo, hi)
+}
+
+/// The volume level of mono samples at `rate` over [t0, t1) seconds: the
+/// RMS (0–1). spec: animation-model.md §4 ("volume envelope")
+// TODO(Q-0031): the reference's envelope (window, RMS or peak).
+pub fn sound_level(samples: &[f32], rate: u32, t0: f64, t1: f64) -> f64 {
+    let r = f64::from(rate);
+    let a = (t0 * r).floor().max(0.0) as usize;
+    let b = ((t1 * r).ceil().max(0.0) as usize).min(samples.len());
+    if a >= b {
+        return 0.0;
+    }
+    let sum: f64 = samples[a..b]
+        .iter()
+        .map(|&x| f64::from(x) * f64::from(x))
+        .sum();
+    (sum / (b - a) as f64).sqrt().clamp(0.0, 1.0)
 }
 
 /// The model parameter ID an attribute animates (`live2dParam_<Id>`).

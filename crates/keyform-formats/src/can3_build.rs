@@ -1406,3 +1406,203 @@ pub fn delete_track_xml(xml: &mut XmlDocument, index: usize, t: usize) -> Result
     }
     Ok(())
 }
+
+/// Adds a sound track playing the WAV `path` to scene `index` (from frame
+/// 0), registers it as a linked sound resource, and makes it the lip-sync
+/// source of the scene's first model track. Returns nothing; the typed
+/// animation is reloaded by the caller.
+// TODO(Q-0031): the sound effect's ID and volume attribute are provisional.
+pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> Result<()> {
+    let (sh, j) = scene_obj(xml, index)?;
+    let scene_el = &xml.root.children[sh].children[j];
+    let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
+    let root = field_ref(scene_el, "rootTrack")
+        .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
+    let frames: i32 = scene_el
+        .child_field("movieInfo")
+        .and_then(|m| m.child_field("duration"))
+        .and_then(|d| d.text.trim().parse().ok())
+        .unwrap_or(60);
+    let model_track = scene_el
+        .child_field("trackSourceSet")
+        .and_then(|t| t.child_field("_sources"))
+        .and_then(|l| {
+            l.children
+                .iter()
+                .find(|c| c.name == "CMvTrack_Live2DModel_Source")
+        })
+        .and_then(|c| c.attr("xs.ref"))
+        .map(str::to_owned);
+    let root_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(root.as_str()))
+        .ok_or_else(|| FormatError::Invalid("root track not found".into()))?;
+    let root_guid = field_ref(root_el.child_field("super").unwrap_or(root_el), "guid")
+        .ok_or_else(|| FormatError::Invalid("root track without guid".into()))?;
+    // The resource manager and its root group GUID.
+    let (_, k) = animation_obj(xml).ok_or_else(|| FormatError::Invalid("no CAnimation".into()))?;
+    let rm = field_ref(&xml.root.children[sh].children[k], "resourceManager")
+        .ok_or_else(|| FormatError::Invalid("no resource manager".into()))?;
+    let rm_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(rm.as_str()))
+        .ok_or_else(|| FormatError::Invalid("resource manager not found".into()))?;
+    let rgg = rm_el
+        .child_field("rootGroup")
+        .and_then(|g| g.child_field("guid"))
+        .and_then(|g| g.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid("resource group without guid".into()))?;
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+    const T: &str = "CMvTrack_JavaSoundTrack_Source";
+    let mut g = Graph::on(xml)?;
+    let res = g.guid("CResourceGuid", &name);
+    let mut rf = named("ACResource_File", "super");
+    rf.children = vec![
+        text("file", "srcFile", path.to_owned()),
+        r("CResourceGuid", "guid", &res),
+        s("name", &name),
+    ];
+    let mut link = named("CResource_Linked_Sound", "resourceRef");
+    link.children = vec![rf];
+    let mut entry = named("ACResourceEntry", "super");
+    entry.children = vec![
+        r("CResourceGroupGuid", "parentGuid", &rgg),
+        r("CResourceManager", "_resourceManager", &rm),
+    ];
+    let rdata = g.add("CResourceData", vec![entry, null("customName"), link], &[]);
+    let tg = g.guid("CTrackGuid", &format!("{name} {T}"));
+    let track = g.reserve(T);
+    let relative = g.add("AdaptType", vec![s("text", "Relative")], &[]);
+    let eid = g.reserve("CEffectId");
+    {
+        let shx = shared(g.xml).expect("shared");
+        if let Some(e) = g.xml.root.children[shx]
+            .children
+            .iter_mut()
+            .find(|c| c.attr("xs.id") == Some(eid.as_str()))
+        {
+            e.attrs.insert(0, ("idstr".into(), "SoundDefault".into()));
+        }
+    }
+    let vol = float_attr(
+        &mut g,
+        FloatAttr {
+            id: "volume",
+            name: "Volume",
+            guid: null("guid"),
+            adapt: &relative,
+            opts: Vec::new(),
+            base: 100.0,
+            range: (0.0, 100.0),
+            repeat: false,
+            fixed: false,
+        },
+        T,
+        &track,
+    );
+    let effect = g.add(
+        "CMvEffect_SoundDefault",
+        vec![
+            effect_super(
+                &eid,
+                false,
+                &[("CMvAttrF".into(), vol.clone(), "volume".into())],
+                T,
+                &track,
+            ),
+            r("CMvAttrF", "attrVolume", &vol),
+        ],
+        &[],
+    );
+    let mut src = track_source(
+        &name,
+        &tg,
+        frames,
+        T,
+        &track,
+        None,
+        Some(&root_guid),
+        &scene_id,
+    );
+    src.children[14] = r("CMvEffect_SoundDefault", "soundEffect", &effect);
+    if let Some(em) = src.children.get_mut(16) {
+        em.children = vec![typed_array(
+            "effectList",
+            "ICMvEffect",
+            vec![item("CMvEffect_SoundDefault", &effect)],
+        )];
+    }
+    let mut linked = named("ICMvTrack_Linked", "super");
+    linked.children = vec![src, r("CResourceGuid", "_resourceGuid", &res)];
+    g.fill(
+        &track,
+        vec![linked, d("speed", 1.0), i("startFrame", 0)],
+        &[],
+    );
+    let shx = shared(xml).expect("shared");
+    // Resource manager lists, scene sources, root children, lip-sync link.
+    let lip = model_track.and_then(|m| {
+        xml.root.children[shx]
+            .children
+            .iter()
+            .find(|c| c.attr("xs.id") == Some(m.as_str()))
+            .and_then(|c| field_ref(c, "lipSyncEffect"))
+    });
+    for e in xml.root.children[shx].children.iter_mut() {
+        let id = e.attr("xs.id").map(str::to_owned);
+        if id.as_deref() == Some(rm.as_str()) {
+            if let Some(l) = e.child_field_mut("_resourceRefList") {
+                l.children.push(item("CResourceData", &rdata));
+                l.set_attr("count", l.children.len().to_string());
+            }
+            if let Some(m) = e.child_field_mut("resourceGuidMap") {
+                let mut en = Element::new("entry");
+                en.children = vec![
+                    r("CResourceGuid", "key", &res),
+                    r("CResourceData", "value", &rdata),
+                ];
+                m.children.push(en);
+                m.attrs.retain(|(k, _)| k != "keyType");
+                m.set_attr("count", m.children.len().to_string());
+            }
+            if let Some(l) = e
+                .child_field_mut("rootGroup")
+                .and_then(|g| g.child_field_mut("_childGuids"))
+            {
+                l.children.push(item("CResourceGuid", &res));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.as_deref() == Some(scene_id.as_str()) {
+            if let Some(l) = e
+                .child_field_mut("trackSourceSet")
+                .and_then(|t| t.child_field_mut("_sources"))
+            {
+                l.children.push(item(T, &track));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.as_deref() == Some(root.as_str()) {
+            if let Some(l) = e.child_field_mut("_childTrackGuids") {
+                l.children.push(item("CTrackGuid", &tg));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.is_some() && id == lip {
+            if let Some(f) = e
+                .children
+                .iter_mut()
+                .find(|c| c.field_name() == Some("syncTrackGuid"))
+            {
+                *f = r("CTrackGuid", "syncTrackGuid", &tg);
+            }
+        }
+    }
+    fix_markers(xml);
+    Ok(())
+}

@@ -17,9 +17,16 @@ use crate::xml::XmlDocument;
 
 type O<'g, 'd> = Obj<'g, 'd>;
 
-/// A curve attribute's place: (scene, track, part attribute?, index in
-/// the model track's params / parts).
-pub type AttrKey = (usize, usize, bool, usize);
+/// Which list of a model track an attribute is in.
+pub const PARAMS: u8 = 0;
+pub const PARTS: u8 = 1;
+/// Eye blink: 0 = eyeOpen, 1 = effectLevel.
+pub const EYE_BLINK: u8 = 2;
+/// Lip sync: 0 = soundLevel, 1 = scale, 2 = base, 3 = level.
+pub const LIP_SYNC: u8 = 3;
+
+/// A curve attribute's place: (scene, track, list, index in the list).
+pub type AttrKey = (usize, usize, u8, usize);
 
 /// A loaded `.can3`.
 pub struct Can3Document {
@@ -232,6 +239,14 @@ impl Can3Document {
         Ok(())
     }
 
+    /// Adds a sound track playing the WAV `path` to scene `index`, as the
+    /// lip-sync source of the scene's model track.
+    pub fn add_sound_track(&mut self, index: usize, path: &str) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::add_sound_track_xml(&mut self.xml, index, path)?;
+        self.reload()
+    }
+
     pub fn rename_scene(&mut self, index: usize, name: &str) -> Result<()> {
         self.sync()?;
         crate::can3_build::rename_scene_xml(&mut self.xml, index, name)?;
@@ -275,14 +290,25 @@ fn drop_unreachable(xml: &mut XmlDocument) {
     });
 }
 
-fn attr_at(a: &Animation, (s, t, part, k): AttrKey) -> Option<&Attr> {
+/// The attribute at `key`.
+pub fn attr_at(a: &Animation, (s, t, list, k): AttrKey) -> Option<&Attr> {
     let TrackKind::Model(m) = &a.scenes.get(s)?.tracks.get(t)?.kind else {
         return None;
     };
-    if part {
-        m.parts.get(k)
-    } else {
-        m.params.get(k)
+    match list {
+        PARAMS => m.params.get(k),
+        PARTS => m.parts.get(k),
+        EYE_BLINK => {
+            let e = m.eye_blink.as_ref()?;
+            [&e.eye_open, &e.level].get(k).copied()
+        }
+        LIP_SYNC => {
+            let e = m.lip_sync.as_ref()?;
+            [&e.sound_level, &e.scale, &e.base, &e.level]
+                .get(k)
+                .copied()
+        }
+        _ => None,
     }
 }
 
@@ -294,10 +320,20 @@ fn changed_attrs(a: &Animation, b: &Animation) -> Vec<AttrKey> {
             let TrackKind::Model(m) = &t.kind else {
                 continue;
             };
-            for (part, list) in [(false, &m.params), (true, &m.parts)] {
-                for (k, at) in list.iter().enumerate() {
-                    if attr_at(a, (si, ti, part, k)).map(|x| &x.curve) != Some(&at.curve) {
-                        out.push((si, ti, part, k));
+            let mut lists: Vec<(u8, Vec<&Attr>)> = vec![
+                (PARAMS, m.params.iter().collect()),
+                (PARTS, m.parts.iter().collect()),
+            ];
+            if let Some(e) = &m.eye_blink {
+                lists.push((EYE_BLINK, vec![&e.eye_open, &e.level]));
+            }
+            if let Some(e) = &m.lip_sync {
+                lists.push((LIP_SYNC, vec![&e.sound_level, &e.scale, &e.base, &e.level]));
+            }
+            for (list, attrs) in lists {
+                for (k, at) in attrs.into_iter().enumerate() {
+                    if attr_at(a, (si, ti, list, k)).map(|x| &x.curve) != Some(&at.curve) {
+                        out.push((si, ti, list, k));
                     }
                 }
             }
@@ -488,7 +524,7 @@ fn curve_type(o: Option<&str>) -> CurveType {
 }
 
 /// Attribute element ids found while reading: (track, part?, index, id).
-type AttrIds = Vec<(usize, bool, usize, String)>;
+type AttrIds = Vec<(usize, u8, usize, String)>;
 
 fn scene(s: &O, warnings: &mut Vec<String>, ids: &mut AttrIds) -> Result<Scene> {
     let mi = s
@@ -550,7 +586,7 @@ fn scene(s: &O, warnings: &mut Vec<String>, ids: &mut AttrIds) -> Result<Scene> 
     Ok(sc)
 }
 
-fn track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<(Track, Option<String>)> {
+fn track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<(Track, Option<String>)> {
     let src = source_of(t)?;
     let mut tr = Track {
         name: src.string("name")?.unwrap_or_default(),
@@ -601,6 +637,21 @@ fn track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<(Track, Option<S
     tr.kind = match t.tag() {
         "CMvTrack_Group_Source" => TrackKind::Group,
         "CMvTrack_Live2DModel_Source" => TrackKind::Model(Box::new(model_track(t, ids)?)),
+        "CMvTrack_JavaSoundTrack_Source" => {
+            let volume = match src.field("soundEffect")?.filter(|e| !e.is_null()) {
+                Some(e) => match e.field("attrVolume")? {
+                    Some(a) => Some(float_attr(&a)?),
+                    None => None,
+                },
+                None => None,
+            };
+            TrackKind::Sound(Box::new(keyform_model::animation::SoundTrack {
+                resource: t.guid("_resourceGuid")?.map(str::to_owned),
+                speed: t.f64("speed")?.unwrap_or(1.0),
+                start_frame: t.i32("startFrame")?.unwrap_or(0),
+                volume,
+            }))
+        }
         other => TrackKind::Other(other.to_owned()),
     };
     Ok((tr, parent))
@@ -751,7 +802,7 @@ fn id_list(o: &O, name: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack> {
+fn model_track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<ModelTrack> {
     let mut m = ModelTrack {
         resource: t.guid("_resourceGuid")?.map(str::to_owned),
         ..Default::default()
@@ -760,7 +811,7 @@ fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack
         for a in effect_attrs(&e)? {
             if a.tag() == "CMvAttrF" {
                 if let Some(id) = a.attr("xs.id") {
-                    ids.push((false, m.params.len(), id.to_owned()));
+                    ids.push((PARAMS, m.params.len(), id.to_owned()));
                 }
                 m.params.push(float_attr(&a)?);
             }
@@ -786,7 +837,7 @@ fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack
         for a in effect_attrs(&e)? {
             if a.tag() == "CMvAttrF" {
                 if let Some(id) = a.attr("xs.id") {
-                    ids.push((true, m.parts.len(), id.to_owned()));
+                    ids.push((PARTS, m.parts.len(), id.to_owned()));
                 }
                 m.parts.push(float_attr(&a)?);
             }
@@ -802,10 +853,18 @@ fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack
         };
         for a in effect_attrs(&e)? {
             let at = float_attr(&a)?;
-            match at.id.as_str() {
-                "effectLevel" => eb.level = at,
-                "eyeOpen" => eb.eye_open = at,
-                _ => {}
+            let slot = match at.id.as_str() {
+                "eyeOpen" => 0,
+                "effectLevel" => 1,
+                _ => continue,
+            };
+            if let Some(id) = a.attr("xs.id") {
+                ids.push((EYE_BLINK, slot, id.to_owned()));
+            }
+            if slot == 0 {
+                eb.eye_open = at;
+            } else {
+                eb.level = at;
             }
         }
         m.eye_blink = Some(eb);
@@ -821,12 +880,21 @@ fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack
         };
         for a in effect_attrs(&e)? {
             let at = float_attr(&a)?;
-            match at.id.as_str() {
-                "soundLevel" => ls.sound_level = at,
-                "lipSyncScale" => ls.scale = at,
-                "lipSyncBase" => ls.base = at,
-                "lipSyncLevel" => ls.level = at,
-                _ => {}
+            let slot = match at.id.as_str() {
+                "soundLevel" => 0,
+                "lipSyncScale" => 1,
+                "lipSyncBase" => 2,
+                "lipSyncLevel" => 3,
+                _ => continue,
+            };
+            if let Some(id) = a.attr("xs.id") {
+                ids.push((LIP_SYNC, slot, id.to_owned()));
+            }
+            match slot {
+                0 => ls.sound_level = at,
+                1 => ls.scale = at,
+                2 => ls.base = at,
+                _ => ls.level = at,
             }
         }
         m.lip_sync = Some(ls);

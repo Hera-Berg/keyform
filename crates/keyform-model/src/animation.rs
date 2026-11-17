@@ -182,10 +182,23 @@ pub struct ModelTrack {
     pub lip_sync: Option<LipSyncEffect>,
 }
 
+/// A sound track (`CMvTrack_JavaSoundTrack_Source`, WAV).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SoundTrack {
+    /// The linked sound resource.
+    pub resource: Option<Guid>,
+    pub speed: f64,
+    /// First frame of the sound used.
+    pub start_frame: i32,
+    /// The sound effect's volume (`attrVolume`, percent).
+    pub volume: Option<Attr>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackKind {
     Group,
     Model(Box<ModelTrack>),
+    Sound(Box<SoundTrack>),
     /// Kept as stored; not evaluated yet (image, sound, text, …).
     Other(String),
 }
