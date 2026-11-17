@@ -69,8 +69,9 @@ pub fn mix_scene(st: &crate::animation::AnimState, rate: u32) -> Option<Vec<f32>
             continue;
         };
         any = true;
+        // Volume in dB: gain = 10^(dB/20). spec: animation-model.md §4.1
         let vol = snd.volume.as_ref().map_or(1.0, |v| {
-            keyform_anim::scene::eval_curve(&v.curve, 0.0) as f32 / 100.0
+            10f32.powf(keyform_anim::scene::eval_curve(&v.curve, 0.0) as f32 / 20.0)
         });
         for (i, o) in out.iter_mut().enumerate() {
             let scene_t = i as f64 / f64::from(rate);
@@ -79,7 +80,10 @@ pub fn mix_scene(st: &crate::animation::AnimState, rate: u32) -> Option<Vec<f32>
             if local < 0.0 {
                 continue;
             }
-            let src_t = local / s.fps * snd.speed + f64::from(snd.start_frame) / s.fps;
+            if local >= f64::from(t.offset + t.duration.max(1)) {
+                continue;
+            }
+            let src_t = local / s.fps * snd.speed / 100.0 + f64::from(snd.start_frame) / s.fps;
             if let Some(x) = pcm.samples.get((src_t * f64::from(pcm.rate)) as usize) {
                 *o += x * vol;
             }

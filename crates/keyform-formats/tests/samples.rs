@@ -2842,14 +2842,18 @@ fn can3_motion_export() {
             if mine.user_data != reference.user_data {
                 notes.push("user data".into());
             }
-            // hiyori_free's runtime m07 was exported from another revision
-            // of the scene (its ParamCheek key at frame 30 is 0 in the .can3,
-            // 1 in the motion).
-            // hiyori_free m03 / m05: the reference didn't clamp two
-            // recomputed handles to their ±10 attribute range there, though
-            // it did in hiyori_pro (Q-0029).
+            // hiyori_free's runtime motions come from an older editor
+            // (Q-0029): m07 from another revision of the scene, m03/m05 with
+            // unclamped handles / unrounded anchors, m02/m04 with ParamCheek
+            // not clamped to its −1…0 range. Fresh 5.3.04 exports of all
+            // eight scenes match exactly (KEYFORM_MOTION_STRICT=1 with a
+            // runtime/motion folder holding them).
             let known = path.ends_with("hiyori_free_t03.can3")
-                && matches!(s.name.as_str(), "hiyori_m07" | "hiyori_m03" | "hiyori_m05");
+                && matches!(
+                    s.name.as_str(),
+                    "hiyori_m02" | "hiyori_m03" | "hiyori_m04" | "hiyori_m05" | "hiyori_m07"
+                )
+                && std::env::var_os("KEYFORM_MOTION_STRICT").is_none();
             if !notes.is_empty() && !known {
                 differ += 1;
                 eprintln!("{}: {}", s.name, notes.join("; "));
@@ -3201,7 +3205,23 @@ fn can3_structure() {
         .params
         .iter()
         .all(|p| p.guid.is_some() && p.curve.keys.is_empty()));
-    assert_eq!(s.tracks[1].opacity.as_ref().unwrap().curve.base, 100.0);
+    // New tracks (animation-model.md §5.1): opacity 0–1 base 1, 100 %,
+    // xy at the scene centre, anchor at the model canvas centre.
+    let op = s.tracks[1].opacity.as_ref().unwrap();
+    assert_eq!((op.curve.base, op.range), (1.0, (0.0, 1.0)));
+    let v = s.tracks[1].visual.as_ref().unwrap();
+    assert_eq!((v.scale_x.curve.base, v.scale_y.curve.base), (100.0, 100.0));
+    assert_eq!(
+        v.xy.keys[0].1,
+        [s.canvas.0 as f32 / 2.0, s.canvas.1 as f32 / 2.0]
+    );
+    assert_eq!(
+        v.anchor.keys[0].1,
+        [
+            model.canvas.width as f32 / 2.0,
+            model.canvas.height as f32 / 2.0
+        ]
+    );
     // Keys on the new scene save and reload.
     if let TrackKind::Model(m) = &mut doc.animation.scenes[0].tracks[1].kind {
         let c = &mut m.params[0].curve;
@@ -3249,16 +3269,22 @@ fn can3_structure() {
         }
         std::fs::write(&wav, d).unwrap();
         let mut back = back;
-        back.add_sound_track(0, &wav.to_string_lossy()).unwrap();
+        back.add_sound_track(0, &wav.to_string_lossy(), 1.0)
+            .unwrap();
         let s = &back.animation.scenes[0];
-        assert!(matches!(s.tracks[2].kind, TrackKind::Sound(_)));
+        // §4.1: 100 % speed, dB volume fixed at 0, duration from the
+        // sound (1 s × fps), no lip-sync link.
+        let TrackKind::Sound(snd) = &s.tracks[2].kind else {
+            panic!()
+        };
+        assert_eq!(snd.speed, 100.0);
+        let v = snd.volume.as_ref().unwrap();
+        assert!(v.curve.fixed && v.curve.base == 0.0 && v.range == (-48.0, 6.0));
+        assert_eq!(s.tracks[2].duration, s.fps.floor() as i32);
         let TrackKind::Model(m) = &s.tracks[1].kind else {
             panic!()
         };
-        assert_eq!(
-            m.lip_sync.as_ref().unwrap().sync_track.as_ref(),
-            Some(&s.tracks[2].guid)
-        );
+        assert!(m.lip_sync.as_ref().unwrap().sync_track.is_none());
         let edited = back.animation.clone();
         let bytes = back.save_bytes().unwrap();
         let again = Can3Document::read(&bytes).unwrap();

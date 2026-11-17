@@ -230,11 +230,13 @@ pub fn canvas_ui(
                 };
                 match r.render_to(&doc.model, frame, &opts, tex) {
                     Ok(()) => {
+                        // Group opacity: the premultiplied image × opacity.
+                        let a = (doc.group_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                         painter.image(
                             *id,
                             rect,
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
+                            Color32::from_rgba_premultiplied(a, a, a, a),
                         );
                     }
                     Err(e) => {

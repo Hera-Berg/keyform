@@ -91,6 +91,8 @@ pub struct IntCurve {
 pub struct PointCurve {
     pub base: [f32; 2],
     pub keys: Vec<(i32, [f32; 2])>,
+    /// `isCorner` per key (same order as `keys`).
+    pub corners: Vec<bool>,
 }
 
 /// A track's visual effect (`CMvEffect_VisualDefault`): where and how the
@@ -221,10 +223,11 @@ pub struct ModelTrack {
 pub struct SoundTrack {
     /// The linked sound resource.
     pub resource: Option<Guid>,
+    /// Playback speed in percent (100 = normal).
     pub speed: f64,
     /// First frame of the sound used.
     pub start_frame: i32,
-    /// The sound effect's volume (`attrVolume`, percent).
+    /// The sound effect's volume (`volume`, dB: −48…+6, base 0).
     pub volume: Option<Attr>,
 }
 

@@ -6,6 +6,7 @@
 pub mod audio;
 pub mod expression;
 pub mod json;
+pub mod lipsync_bake;
 pub mod motion;
 pub mod motion_export;
 pub mod motion_import;

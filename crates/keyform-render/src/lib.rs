@@ -368,6 +368,26 @@ pub(crate) fn check_view(v: &View) -> Result<(), RenderError> {
     Ok(())
 }
 
+/// Composites a rendered (straight-alpha) group image with `opacity`
+/// (clamped to 0–1) over an opaque `background`, or leaves it transparent
+/// with its alpha scaled. spec: 60-animation/animation-model.md §5.1
+pub fn composite_group(img: &mut RgbaImage, opacity: f32, background: Option<[f32; 3]>) {
+    let op = opacity.clamp(0.0, 1.0);
+    for p in img.data.chunks_exact_mut(4) {
+        let a = f32::from(p[3]) / 255.0 * op;
+        match background {
+            Some(bg) => {
+                for i in 0..3 {
+                    let c = f32::from(p[i]) / 255.0 * a + bg[i] * (1.0 - a);
+                    p[i] = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                p[3] = 255;
+            }
+            None => p[3] = (a * 255.0).round() as u8,
+        }
+    }
+}
+
 /// Box-filters a premultiplied `ss`× supersampled buffer of width `w` down to
 /// `ow`×`oh` and converts to straight 8-bit RGBA.
 pub(crate) fn finish_image(

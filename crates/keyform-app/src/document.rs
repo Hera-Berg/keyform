@@ -320,6 +320,9 @@ pub struct Document {
     /// Playback clock (seconds).
     pub time: f64,
     pub frame: Option<Frame>,
+    /// Opacity the rendered frame is composited with (an animation track's
+    /// group opacity, animation-model.md §5.1); 1 elsewhere.
+    pub group_opacity: f32,
     pub view: ViewState,
     pub selection: SelectionSet,
     pub hit_areas: Vec<(String, String)>,
@@ -666,6 +669,7 @@ impl Document {
             looping: true,
             time: 0.0,
             frame: None,
+            group_opacity: 1.0,
             view: ViewState {
                 center: [0.0, 0.0],
                 zoom: 1.0,
@@ -2058,8 +2062,10 @@ impl Document {
                 Evaluator::new(&self.model).evaluate_full(&self.live, EvalOptions::default(), &ov)
             });
             self.frame = Some(f);
+            self.group_opacity = self.anim_group_opacity(at);
             return;
         }
+        self.group_opacity = 1.0;
         if self.mode == Mode::Modeling {
             // The model exactly at the slider values, nothing animated.
             self.live.clone_from(&self.values);

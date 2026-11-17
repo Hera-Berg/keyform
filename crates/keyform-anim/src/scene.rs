@@ -378,29 +378,226 @@ pub fn delete_key(c: &mut Curve, i: usize) {
 
 // --------------------------------------------------------------- placement
 
-/// A point curve at frame x: linear between its keys (held before the
-/// first and after the last), else its base point.
-// TODO(Q-0030): the TNS (tension / continuity / bias) interpolation.
-pub fn eval_point(c: &keyform_model::animation::PointCurve, x: f64) -> [f32; 2] {
-    let k = &c.keys;
-    match k.len() {
-        0 => return c.base,
-        1 => return k[0].1,
-        _ => {}
+type P2 = [f64; 2];
+
+fn p_sub(a: P2, b: P2) -> P2 {
+    [a[0] - b[0], a[1] - b[1]]
+}
+fn p_add(a: P2, b: P2) -> P2 {
+    [a[0] + b[0], a[1] + b[1]]
+}
+fn p_mul(a: P2, k: f64) -> P2 {
+    [a[0] * k, a[1] * k]
+}
+fn p_len2(a: P2) -> f64 {
+    a[0] * a[0] + a[1] * a[1]
+}
+fn p_unit(a: P2) -> P2 {
+    let l = p_len2(a).sqrt();
+    if l > 0.0 {
+        p_mul(a, 1.0 / l)
+    } else {
+        [0.0, 0.0]
     }
+}
+
+/// Tangents (in, out) of a point curve's keys with 3 or more points: the
+/// SNS-like path of animation-model.md §5.1 (frame gaps as weights, three
+/// lagged passes, 4ab/(a+b)² damping without corners, split tangents at
+/// corners).
+fn point_tangents(c: &keyform_model::animation::PointCurve) -> (Vec<P2>, Vec<P2>) {
+    let n = c.keys.len();
+    let p: Vec<P2> = c
+        .keys
+        .iter()
+        .map(|k| [f64::from(k.1[0]), f64::from(k.1[1])])
+        .collect();
+    let d: Vec<f64> = (0..n - 1)
+        .map(|i| f64::from((c.keys[i + 1].0 - c.keys[i].0).max(1)))
+        .collect();
+    let corner = |i: usize| c.corners.get(i).copied().unwrap_or(false);
+    let any_corner = (0..n).any(corner);
+    // v_in[i] ends segment i−1; v_out[i] starts segment i.
+    let mut vin = vec![[0.0f64; 2]; n];
+    let mut vout = vec![[0.0f64; 2]; n];
+    let start = |vin: &[P2], i: usize| {
+        p_mul(
+            p_sub(p_mul(p_sub(p[i + 1], p[i]), 3.0 / d[i]), vin[i + 1]),
+            0.5,
+        )
+    };
+    let end = |vout: &[P2], i: usize| {
+        p_mul(
+            p_sub(p_mul(p_sub(p[i], p[i - 1]), 3.0 / d[i - 1]), vout[i - 1]),
+            0.5,
+        )
+    };
+    for i in 1..n - 1 {
+        if !corner(i) {
+            let v = p_unit(p_sub(
+                p_unit(p_sub(p[i + 1], p[i])),
+                p_unit(p_sub(p[i - 1], p[i])),
+            ));
+            vin[i] = v;
+            vout[i] = v;
+        }
+    }
+    // Ends and corners: the helper toward a smooth interior neighbour,
+    // else the unit chord (§5.1).
+    let smooth = |i: usize| i > 0 && i + 1 < n && !corner(i);
+    let edges = |vin: &mut Vec<P2>, vout: &mut Vec<P2>| {
+        for i in 0..n {
+            if smooth(i) {
+                continue;
+            }
+            if i + 1 < n {
+                vout[i] = if smooth(i + 1) {
+                    start(vin, i)
+                } else {
+                    p_unit(p_sub(p[i + 1], p[i]))
+                };
+            }
+            if i > 0 {
+                vin[i] = if smooth(i - 1) {
+                    end(vout, i)
+                } else {
+                    p_unit(p_sub(p[i], p[i - 1]))
+                };
+            }
+        }
+    };
+    if !any_corner {
+        // Exactly the SNS order (sns-spline.md §1): V₀ = start(0) after the
+        // interior initialisation, V₍ₙ₋₁₎ = end(n−1); each pass lagged,
+        // then the 4ab/(a+b)² damping of the interior.
+        let mut v: Vec<P2> = vin.clone();
+        let st = |v: &[P2], i: usize| {
+            p_mul(
+                p_sub(p_mul(p_sub(p[i + 1], p[i]), 3.0 / d[i]), v[i + 1]),
+                0.5,
+            )
+        };
+        let en = |v: &[P2], i: usize| {
+            p_mul(
+                p_sub(p_mul(p_sub(p[i], p[i - 1]), 3.0 / d[i - 1]), v[i - 1]),
+                0.5,
+            )
+        };
+        v[0] = st(&v, 0);
+        v[n - 1] = en(&v, n - 1);
+        for _ in 0..3 {
+            let mut carry = st(&v, 0);
+            let mut new = carry;
+            for i in 1..n - 1 {
+                let s = d[i - 1] + d[i];
+                if s > 0.0 {
+                    new = p_mul(
+                        p_add(p_mul(st(&v, i), d[i - 1]), p_mul(en(&v, i), d[i])),
+                        1.0 / s,
+                    );
+                }
+                v[i - 1] = carry;
+                carry = new;
+            }
+            v[n - 1] = en(&v, n - 1);
+            v[n - 2] = carry;
+            // TODO(Q-0032): §5.1 writes a = |Pᵢ − Pᵢ₋₁|²/dᵢ₋₁; the reference's
+            // exported frames match speeds (|ΔP|/d) instead.
+            for i in 1..n - 1 {
+                let a = p_len2(p_sub(p[i], p[i - 1])).sqrt() / d[i - 1];
+                let b = p_len2(p_sub(p[i + 1], p[i])).sqrt() / d[i];
+                let den = (a + b) * (a + b);
+                if den > 0.0 {
+                    v[i] = p_mul(v[i], 4.0 * a * b / den);
+                }
+            }
+        }
+        return (v.clone(), v);
+    }
+    edges(&mut vin, &mut vout);
+    for _ in 0..3 {
+        // Lagged in-place update of the smooth interior nodes.
+        let mut carry: Option<(usize, P2)> = None;
+        for i in 1..n - 1 {
+            if corner(i) {
+                continue;
+            }
+            let s = d[i - 1] + d[i];
+            let new = if s > 0.0 {
+                p_mul(
+                    p_add(p_mul(start(&vin, i), d[i - 1]), p_mul(end(&vout, i), d[i])),
+                    1.0 / s,
+                )
+            } else {
+                vout[i]
+            };
+            if let Some((k, v)) = carry.take() {
+                vin[k] = v;
+                vout[k] = v;
+            }
+            carry = Some((i, new));
+        }
+        if let Some((k, v)) = carry {
+            vin[k] = v;
+            vout[k] = v;
+        }
+        edges(&mut vin, &mut vout);
+    }
+    (vin, vout)
+}
+
+/// A point curve at an integer frame. spec: animation-model.md §5.1
+fn point_at_frame(
+    c: &keyform_model::animation::PointCurve,
+    tangents: Option<&(Vec<P2>, Vec<P2>)>,
+    f: i64,
+) -> [f32; 2] {
+    let k = &c.keys;
+    let to32 = |p: P2| [p[0] as f32, p[1] as f32];
+    let x = f as f64;
     if x <= f64::from(k[0].0) {
         return k[0].1;
     }
-    if x >= f64::from(k[k.len() - 1].0) {
-        return k[k.len() - 1].1;
+    let last = k.len() - 1;
+    if x >= f64::from(k[last].0) {
+        return k[last].1;
     }
-    let i = k.partition_point(|p| f64::from(p.0) <= x) - 1;
-    let (a, b) = (k[i], k[i + 1]);
-    let t = ((x - f64::from(a.0)) / f64::from(b.0 - a.0)) as f32;
-    [
-        a.1[0] + (b.1[0] - a.1[0]) * t,
-        a.1[1] + (b.1[1] - a.1[1]) * t,
-    ]
+    let i = k.partition_point(|q| f64::from(q.0) <= x) - 1;
+    let p0 = [f64::from(k[i].1[0]), f64::from(k[i].1[1])];
+    let p3 = [f64::from(k[i + 1].1[0]), f64::from(k[i + 1].1[1])];
+    let d = f64::from(k[i + 1].0 - k[i].0).max(1.0);
+    let u = (x - f64::from(k[i].0)) / d;
+    let Some((vin, vout)) = tangents else {
+        return to32(p_add(p0, p_mul(p_sub(p3, p0), u)));
+    };
+    let p1 = p_add(p0, p_mul(vout[i], d / 3.0));
+    let p2 = p_sub(p3, p_mul(vin[i + 1], d / 3.0));
+    let w = 1.0 - u;
+    to32([
+        w * w * w * p0[0] + 3.0 * w * w * u * p1[0] + 3.0 * w * u * u * p2[0] + u * u * u * p3[0],
+        w * w * w * p0[1] + 3.0 * w * w * u * p1[1] + 3.0 * w * u * u * p2[1] + u * u * u * p3[1],
+    ])
+}
+
+/// A point curve (`CXY_TNSSequence`) at frame x: base point without keys,
+/// the key with one, a straight line (linear in frames) with two, the
+/// §5.1 smooth path with more; values per integer frame, lerped between.
+/// spec: animation-model.md §5.1
+pub fn eval_point(c: &keyform_model::animation::PointCurve, x: f64) -> [f32; 2] {
+    match c.keys.len() {
+        0 => return c.base,
+        1 => return c.keys[0].1,
+        _ => {}
+    }
+    let tangents = (c.keys.len() >= 3).then(|| point_tangents(c));
+    let f0 = x.floor();
+    let a = point_at_frame(c, tangents.as_ref(), f0 as i64);
+    let t = (x - f0) as f32;
+    if t == 0.0 {
+        return a;
+    }
+    let b = point_at_frame(c, tangents.as_ref(), f0 as i64 + 1);
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 
 /// Where a track sits in the scene at one frame (its visual effect).
@@ -427,15 +624,16 @@ impl Placement {
         opacity: 1.0,
     };
 
-    /// Track point → scene point: xy + R(rotate)·Shear·S(scale)·(p − anchor).
-    // TODO(Q-0030): the order and the shear's meaning are provisional.
+    /// Track point → scene point: T(xy)·R(rotate)·H(shear)·S(scale)·
+    /// T(−anchor)·p. spec: animation-model.md §5.1
     pub fn apply(&self, p: [f32; 2]) -> [f32; 2] {
         let mut q = [
             (p[0] - self.anchor[0]) * self.scale[0],
             (p[1] - self.anchor[1]) * self.scale[1],
         ];
+        // H: a horizontal shear by the raw value (§5.1).
         if self.shear != 0.0 {
-            q[0] += self.shear.to_radians().tan() * q[1];
+            q[0] += self.shear * q[1];
         }
         if self.rotate != 0.0 {
             let (s, c) = self.rotate.to_radians().sin_cos();
@@ -452,14 +650,11 @@ pub fn placement(t: &keyform_model::animation::Track, x: f64) -> Placement {
         return Placement::IDENTITY;
     };
     let pct = |a: &Attr| eval_curve(&a.curve, x) as f32 / 100.0;
-    let opacity = t.opacity.as_ref().map_or(1.0, |o| {
-        let v = eval_attr(o, x) as f32;
-        if o.range.1 > 1.0 {
-            v / 100.0
-        } else {
-            v
-        }
-    });
+    // Group opacity = clamp(value, 0, 1); never divided by 100 (§5.1).
+    let opacity = t
+        .opacity
+        .as_ref()
+        .map_or(1.0, |o| eval_curve(&o.curve, x) as f32);
     Placement {
         xy: eval_point(&v.xy, x),
         anchor: eval_point(&v.anchor, x),
@@ -533,16 +728,16 @@ pub fn eye_blink(e: &EyeBlinkEffect, v: f64, lo: f64, hi: f64, x: f64) -> f64 {
     (v + (target - v) * l).clamp(lo, hi)
 }
 
-/// Lip sync result: the sound level from the linked sound (`sound`) or
-/// else the soundLevel curve. §4
-pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64, sound: Option<f64>) -> f64 {
+/// Lip sync result from the soundLevel curve (there is no live sound
+/// envelope; audio gets in through Bake Lip-sync). spec: §4, §4.1
+pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64) -> f64 {
     if !e.active {
         return v.clamp(lo, hi);
     }
     let l = eval_curve(&e.level.curve, x) / 100.0;
     let scale = eval_curve(&e.scale.curve, x);
     let base = eval_curve(&e.base.curve, x);
-    let level = sound.unwrap_or_else(|| eval_curve(&e.sound_level.curve, x));
+    let level = eval_curve(&e.sound_level.curve, x);
     let o = ((level - base) * scale).clamp(0.0, 1.0);
     let r = hi - lo;
     let target = match (e.relative, e.invert) {
@@ -558,38 +753,16 @@ pub fn lip_sync(e: &LipSyncEffect, v: f64, lo: f64, hi: f64, x: f64, sound: Opti
 /// for its group), with effect selection: lip sync, else eye blink, else
 /// the clamped curve value. spec: §4 "Effect selection"
 pub fn param_value(m: &ModelTrack, k: usize, x: f64) -> f64 {
-    param_value_with(m, k, x, None)
-}
-
-/// [`param_value`] with the lip-sync level from a sound (`sound`).
-pub fn param_value_with(m: &ModelTrack, k: usize, x: f64, sound: Option<f64>) -> f64 {
     let a = &m.params[k];
     let (lo, hi) = (a.range.0.min(a.range.1), a.range.0.max(a.range.1));
     let v = eval_curve(&a.curve, x);
     if let Some(e) = m.lip_sync.as_ref().filter(|e| e.targets.contains(&a.id)) {
-        return lip_sync(e, v, lo, hi, x, sound);
+        return lip_sync(e, v, lo, hi, x);
     }
     if let Some(e) = m.eye_blink.as_ref().filter(|e| e.targets.contains(&a.id)) {
         return eye_blink(e, v, lo, hi, x);
     }
     v.clamp(lo, hi)
-}
-
-/// The volume level of mono samples at `rate` over [t0, t1) seconds: the
-/// RMS (0–1). spec: animation-model.md §4 ("volume envelope")
-// TODO(Q-0031): the reference's envelope (window, RMS or peak).
-pub fn sound_level(samples: &[f32], rate: u32, t0: f64, t1: f64) -> f64 {
-    let r = f64::from(rate);
-    let a = (t0 * r).floor().max(0.0) as usize;
-    let b = ((t1 * r).ceil().max(0.0) as usize).min(samples.len());
-    if a >= b {
-        return 0.0;
-    }
-    let sum: f64 = samples[a..b]
-        .iter()
-        .map(|&x| f64::from(x) * f64::from(x))
-        .sum();
-    (sum / (b - a) as f64).sqrt().clamp(0.0, 1.0)
 }
 
 /// The model parameter ID an attribute animates (`live2dParam_<Id>`).
@@ -612,6 +785,73 @@ pub fn same_anchors(a: &[Key], b: &[Key]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A 3-key xy curve against the reference (5.3.04 image sequence of a
+    /// Keyform-written scene: scale 25/20 %, rotate −10°, shear 0.3, keys
+    /// at frames 0/10/30). Positions from the rendered alpha centroids
+    /// (affine, so they move with xy). spec: animation-model.md §5.1
+    #[test]
+    fn point_curve_matches_reference() {
+        let c = keyform_model::animation::PointCurve {
+            base: [0.0, 0.0],
+            keys: vec![
+                (0, [300.0, 400.0]),
+                (10, [600.0, 700.0]),
+                (30, [350.0, 900.0]),
+            ],
+            corners: vec![false; 3],
+        };
+        let reference = [
+            (3, [416.88, 510.03]),
+            (5, [486.2, 576.51]),
+            (7, [543.93, 634.51]),
+            (15, [614.79, 770.87]),
+            (20, [561.98, 821.98]),
+            (25, [465.68, 862.11]),
+        ];
+        for (f, r) in reference {
+            let p = eval_point(&c, f64::from(f));
+            assert!(
+                (p[0] - r[0]).abs() < 0.1 && (p[1] - r[1]).abs() < 0.1,
+                "frame {f}: {p:?} vs {r:?}"
+            );
+        }
+        // Fractional frames lerp between integer frames.
+        let (a, b, m) = (
+            eval_point(&c, 3.0),
+            eval_point(&c, 4.0),
+            eval_point(&c, 3.25),
+        );
+        assert!((m[0] - (a[0] + 0.25 * (b[0] - a[0]))).abs() < 1e-4);
+        // Two keys: a straight line, linear in frames.
+        let two = keyform_model::animation::PointCurve {
+            keys: c.keys[..2].to_vec(),
+            corners: vec![false; 2],
+            ..c.clone()
+        };
+        assert_eq!(eval_point(&two, 5.0), [450.0, 550.0]);
+    }
+
+    /// The track transform: shear is a raw factor applied after scaling and
+    /// before rotation; rotation is clockwise on screen. spec: §5.1
+    #[test]
+    fn transform_with_shear() {
+        let pl = Placement {
+            xy: [300.0, 400.0],
+            anchor: [100.0, 50.0],
+            scale: [0.5, 2.0],
+            rotate: 90.0,
+            shear: 0.3,
+            opacity: 1.0,
+        };
+        // p − anchor = (20, 10) → scale (10, 20) → shear (10 + 0.3·20, 20)
+        // = (16, 20) → rotate 90° clockwise (y down): (−20, 16) → + xy.
+        let q = pl.apply([120.0, 60.0]);
+        assert!(
+            (q[0] - 280.0).abs() < 1e-3 && (q[1] - 416.0).abs() < 1e-3,
+            "{q:?}"
+        );
+    }
+
     use super::*;
 
     fn key(frame: i32, value: f64) -> Key {

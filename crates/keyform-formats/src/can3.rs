@@ -24,6 +24,11 @@ pub const PARTS: u8 = 1;
 pub const EYE_BLINK: u8 = 2;
 /// Lip sync: 0 = soundLevel, 1 = scale, 2 = base, 3 = level.
 pub const LIP_SYNC: u8 = 3;
+/// A track's visual effect (any track kind): 0 = scalex, 1 = scaley,
+/// 2 = rotate, 3 = shear, 4 = opacity.
+pub const VISUAL: u8 = 4;
+/// A track's visual point attributes: 0 = xy, 1 = anchor.
+pub const VISUAL_PT: u8 = 5;
 
 /// A curve attribute's place: (scene, track, list, index in the list).
 pub type AttrKey = (usize, usize, u8, usize);
@@ -101,6 +106,12 @@ impl Can3Document {
                     "attribute {key:?}: no stored element"
                 )));
             };
+            if key.2 == VISUAL_PT {
+                let p = point_at(&self.animation, key)
+                    .ok_or_else(|| FormatError::Invalid(format!("attribute {key:?} missing")))?;
+                write_point_curve(&mut xml, id, p)?;
+                continue;
+            }
             let attr = attr_at(&self.animation, key)
                 .ok_or_else(|| FormatError::Invalid(format!("attribute {key:?} missing")))?;
             write_curve(&mut xml, id, attr)?;
@@ -263,9 +274,10 @@ impl Can3Document {
 
     /// Adds a sound track playing the WAV `path` to scene `index`, as the
     /// lip-sync source of the scene's model track.
-    pub fn add_sound_track(&mut self, index: usize, path: &str) -> Result<()> {
+    /// Adds a sound track for the WAV at `path`, `seconds` long.
+    pub fn add_sound_track(&mut self, index: usize, path: &str, seconds: f64) -> Result<()> {
         self.sync()?;
-        crate::can3_build::add_sound_track_xml(&mut self.xml, index, path)?;
+        crate::can3_build::add_sound_track_xml(&mut self.xml, index, path, seconds)?;
         self.reload()
     }
 
@@ -314,7 +326,19 @@ fn drop_unreachable(xml: &mut XmlDocument) {
 
 /// The attribute at `key`.
 pub fn attr_at(a: &Animation, (s, t, list, k): AttrKey) -> Option<&Attr> {
-    let TrackKind::Model(m) = &a.scenes.get(s)?.tracks.get(t)?.kind else {
+    let tr = a.scenes.get(s)?.tracks.get(t)?;
+    if list == VISUAL {
+        let v = tr.visual.as_ref();
+        return match k {
+            0 => v.map(|v| &v.scale_x),
+            1 => v.map(|v| &v.scale_y),
+            2 => v.map(|v| &v.rotate),
+            3 => v.map(|v| &v.shear),
+            4 => tr.opacity.as_ref(),
+            _ => None,
+        };
+    }
+    let TrackKind::Model(m) = &tr.kind else {
         return None;
     };
     match list {
@@ -334,11 +358,40 @@ pub fn attr_at(a: &Animation, (s, t, list, k): AttrKey) -> Option<&Attr> {
     }
 }
 
-/// Model-track attributes whose curves differ between `a` and `b`.
+/// A track's visual point attribute at `key` (list [`VISUAL_PT`]).
+pub fn point_at(
+    a: &Animation,
+    (s, t, _, k): AttrKey,
+) -> Option<&keyform_model::animation::PointCurve> {
+    let v = a.scenes.get(s)?.tracks.get(t)?.visual.as_ref()?;
+    match k {
+        0 => Some(&v.xy),
+        1 => Some(&v.anchor),
+        _ => None,
+    }
+}
+
+/// Attributes whose curves differ between `a` and `b`.
 fn changed_attrs(a: &Animation, b: &Animation) -> Vec<AttrKey> {
     let mut out = Vec::new();
     for (si, s) in b.scenes.iter().enumerate() {
         for (ti, t) in s.tracks.iter().enumerate() {
+            for k in 0..5 {
+                let key = (si, ti, VISUAL, k);
+                if let Some(at) = attr_at(b, key) {
+                    if attr_at(a, key).map(|x| &x.curve) != Some(&at.curve) {
+                        out.push(key);
+                    }
+                }
+            }
+            for k in 0..2 {
+                let key = (si, ti, VISUAL_PT, k);
+                if let Some(p) = point_at(b, key) {
+                    if point_at(a, key) != Some(p) {
+                        out.push(key);
+                    }
+                }
+            }
             let TrackKind::Model(m) = &t.kind else {
                 continue;
             };
@@ -368,6 +421,68 @@ fn scalar_el(tag: &str, name: &str, text: String) -> crate::xml::Element {
     let mut e = crate::xml::Element::new(tag).with_attr("xs.n", name);
     e.text = text;
     e
+}
+
+/// Rebuilds the key points of the shared point attribute `id`
+/// (`CXY_TNSSequence` of `CPtTNS`). spec: can3-schema.md, animation-model.md §5.1
+fn write_point_curve(
+    xml: &mut XmlDocument,
+    id: &str,
+    c: &keyform_model::animation::PointCurve,
+) -> Result<()> {
+    use crate::graph::format_f32;
+    use crate::xml::Element;
+    let shared = xml
+        .root
+        .children
+        .iter_mut()
+        .find(|c| c.name == "shared")
+        .ok_or_else(|| FormatError::Invalid("document has no <shared>".into()))?;
+    let el = shared
+        .children
+        .iter_mut()
+        .find(|c| c.attr("xs.id") == Some(id))
+        .ok_or_else(|| FormatError::Invalid(format!("ref id {id}: not found")))?;
+    let vd = el
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("valueDataXY"))
+        .ok_or_else(|| FormatError::Invalid(format!("{id}: no valueDataXY")))?;
+    let v2 = |name: &str, p: [f32; 2]| {
+        let mut e = Element::new("GVector2").with_attr("xs.n", name);
+        e.children = vec![
+            scalar_el("f", "x", format_f32(p[0])),
+            scalar_el("f", "y", format_f32(p[1])),
+        ];
+        e
+    };
+    let mut points = Element::new("array")
+        .with_attr("xs.n", "points")
+        .with_attr("count", c.keys.len().to_string())
+        .with_attr("type", "CPtTNS");
+    for (i, (f, p)) in c.keys.iter().enumerate() {
+        let mut e = Element::new("CPtTNS");
+        e.children = vec![
+            v2("super", *p),
+            scalar_el(
+                "b",
+                "isCorner",
+                c.corners.get(i).copied().unwrap_or(false).to_string(),
+            ),
+            v2("value", *p),
+            scalar_el("i", "pos", f.to_string()),
+        ];
+        points.children.push(e);
+    }
+    match vd
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("points"))
+    {
+        Some(old) => *old = points,
+        None => vd.children.insert(0, points),
+    }
+    Ok(())
 }
 
 /// Rebuilds the `valueData` of the shared attribute `id` from `a`'s curve.
@@ -642,6 +757,19 @@ fn track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<(Track, Option<Str
     if let Some(v) = src.field("visualEffect")?.filter(|v| !v.is_null()) {
         let mut vis = keyform_model::animation::Visual::default();
         for at in effect_attrs(&v)? {
+            let slot = match attr_id(&at)?.as_str() {
+                "scalex" => Some((VISUAL, 0)),
+                "scaley" => Some((VISUAL, 1)),
+                "rotate" => Some((VISUAL, 2)),
+                "shear" => Some((VISUAL, 3)),
+                "opacity" => Some((VISUAL, 4)),
+                "xy" => Some((VISUAL_PT, 0)),
+                "anchor" => Some((VISUAL_PT, 1)),
+                _ => None,
+            };
+            if let (Some((list, k)), Some(id)) = (slot, at.attr("xs.id")) {
+                ids.push((list, k, id.to_owned()));
+            }
             match attr_id(&at)?.as_str() {
                 "opacity" => tr.opacity = Some(float_attr(&at)?),
                 "frameStep" => tr.frame_step = int_curve(&at)?,
@@ -669,7 +797,7 @@ fn track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<(Track, Option<Str
             };
             TrackKind::Sound(Box::new(keyform_model::animation::SoundTrack {
                 resource: t.guid("_resourceGuid")?.map(str::to_owned),
-                speed: t.f64("speed")?.unwrap_or(1.0),
+                speed: t.f64("speed")?.unwrap_or(100.0),
                 start_frame: t.i32("startFrame")?.unwrap_or(0),
                 volume,
             }))
@@ -792,11 +920,17 @@ fn point_curve(a: &O) -> Result<keyform_model::animation::PointCurve> {
         })
     };
     c.base = xy(v.field("basePt")?)?;
+    let mut pts = Vec::new();
     for p in v.list("points")? {
-        c.keys
-            .push((p.i32("pos")?.unwrap_or(0), xy(p.field("value")?)?));
+        pts.push((
+            p.i32("pos")?.unwrap_or(0),
+            xy(p.field("value")?)?,
+            p.bool("isCorner")?.unwrap_or(false),
+        ));
     }
-    c.keys.sort_by_key(|k| k.0);
+    pts.sort_by_key(|k| k.0);
+    c.keys = pts.iter().map(|k| (k.0, k.1)).collect();
+    c.corners = pts.iter().map(|k| k.2).collect();
     Ok(c)
 }
 

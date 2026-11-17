@@ -463,14 +463,11 @@ fn model_track(
     const T: &str = "CMvTrack_Live2DModel_Source";
     let guid = g.guid("CTrackGuid", &format!("{name} CMvTrack_Live2DModel_Source"));
     let track = g.reserve(T);
-    // Visual effect: the model centred in the scene, scaled to fit.
+    // Visual effect: xy at the scene centre, anchor at the model canvas
+    // centre, 100 %, no fit-to-scene. spec: animation-model.md §5.1
     let (mw, mh) = (model.canvas.width as f32, model.canvas.height as f32);
     let (sw, sh) = (scene_size.0 as f32, scene_size.1 as f32);
-    let scale = if mw > 0.0 && mh > 0.0 {
-        (sw / mw).min(sh / mh) * 100.0
-    } else {
-        100.0
-    };
+    let scale = 100.0f32;
     let xy = point_attr(
         g,
         "xy",
@@ -512,7 +509,7 @@ fn model_track(
         T,
         &track,
     );
-    let op = fa(g, "opacity", "Opacity", 100.0, (0.0, 100.0));
+    let op = fa(g, "opacity", "Opacity", 1.0, (0.0, 1.0));
     let fs = int_attr(g, "frameStep", "Frame Step", &c.relative, 1, T, &track);
     let apw = fa(
         g,
@@ -1407,32 +1404,30 @@ pub fn delete_track_xml(xml: &mut XmlDocument, index: usize, t: usize) -> Result
     Ok(())
 }
 
-/// Adds a sound track playing the WAV `path` to scene `index` (from frame
-/// 0), registers it as a linked sound resource, and makes it the lip-sync
-/// source of the scene's first model track. Returns nothing; the typed
-/// animation is reloaded by the caller.
-// TODO(Q-0031): the sound effect's ID and volume attribute are provisional.
-pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> Result<()> {
+/// Adds a sound track playing the WAV `path` (`seconds` long) to scene
+/// `index` from frame 0 and registers it as a linked sound resource. It
+/// does not link lip sync (`syncTrackGuid` stays unset; Bake Lip-sync asks
+/// for the sound track). The typed animation is reloaded by the caller.
+/// spec: animation-model.md §4.1 "New sound track"
+pub fn add_sound_track_xml(
+    xml: &mut XmlDocument,
+    index: usize,
+    path: &str,
+    seconds: f64,
+) -> Result<()> {
     let (sh, j) = scene_obj(xml, index)?;
     let scene_el = &xml.root.children[sh].children[j];
     let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
     let root = field_ref(scene_el, "rootTrack")
         .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
-    let frames: i32 = scene_el
+    let fps: f64 = scene_el
         .child_field("movieInfo")
-        .and_then(|m| m.child_field("duration"))
+        .and_then(|m| m.child_field("fps"))
         .and_then(|d| d.text.trim().parse().ok())
-        .unwrap_or(60);
-    let model_track = scene_el
-        .child_field("trackSourceSet")
-        .and_then(|t| t.child_field("_sources"))
-        .and_then(|l| {
-            l.children
-                .iter()
-                .find(|c| c.name == "CMvTrack_Live2DModel_Source")
-        })
-        .and_then(|c| c.attr("xs.ref"))
-        .map(str::to_owned);
+        .unwrap_or(30.0);
+    // Duration = ⌊seconds × speed/100 × fps⌋, at least 1 (speed 100 %).
+    const SPEED: f64 = 100.0;
+    let frames = ((seconds * SPEED / 100.0 * fps).floor() as i32).max(1);
     let root_el = xml.root.children[sh]
         .children
         .iter()
@@ -1497,10 +1492,11 @@ pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> R
             guid: null("guid"),
             adapt: &relative,
             opts: Vec::new(),
-            base: 100.0,
-            range: (0.0, 100.0),
+            // dB, kept as a fixed (keyless) sequence.
+            base: 0.0,
+            range: (-48.0, 6.0),
             repeat: false,
-            fixed: false,
+            fixed: true,
         },
         T,
         &track,
@@ -1541,18 +1537,11 @@ pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> R
     linked.children = vec![src, r("CResourceGuid", "_resourceGuid", &res)];
     g.fill(
         &track,
-        vec![linked, d("speed", 1.0), i("startFrame", 0)],
+        vec![linked, d("speed", SPEED), i("startFrame", 0)],
         &[],
     );
     let shx = shared(xml).expect("shared");
-    // Resource manager lists, scene sources, root children, lip-sync link.
-    let lip = model_track.and_then(|m| {
-        xml.root.children[shx]
-            .children
-            .iter()
-            .find(|c| c.attr("xs.id") == Some(m.as_str()))
-            .and_then(|c| field_ref(c, "lipSyncEffect"))
-    });
+    // Resource manager lists, scene sources, root children.
     for e in xml.root.children[shx].children.iter_mut() {
         let id = e.attr("xs.id").map(str::to_owned);
         if id.as_deref() == Some(rm.as_str()) {
@@ -1591,15 +1580,6 @@ pub fn add_sound_track_xml(xml: &mut XmlDocument, index: usize, path: &str) -> R
             if let Some(l) = e.child_field_mut("_childTrackGuids") {
                 l.children.push(item("CTrackGuid", &tg));
                 l.set_attr("count", l.children.len().to_string());
-            }
-        }
-        if id.is_some() && id == lip {
-            if let Some(f) = e
-                .children
-                .iter_mut()
-                .find(|c| c.field_name() == Some("syncTrackGuid"))
-            {
-                *f = r("CTrackGuid", "syncTrackGuid", &tg);
             }
         }
     }

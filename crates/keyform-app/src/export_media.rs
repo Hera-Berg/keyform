@@ -99,17 +99,25 @@ pub fn render_frame(
         mirror: false,
     };
     let f = doc.anim_frame_at(frame).ok_or("No animation is open.")?;
-    CpuRenderer::new(&doc.model)
+    // The track is drawn offscreen (transparent), then composited with its
+    // group opacity over the background. spec: animation-model.md §5.1
+    let mut img = CpuRenderer::new(&doc.model)
         .render(
             &f,
             &RenderOptions {
                 view,
-                background: white.then_some([1.0, 1.0, 1.0, 1.0]),
+                background: None,
                 supersample: 2,
                 msaa: true,
             },
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    keyform_render::composite_group(
+        &mut img,
+        doc.anim_group_opacity(frame),
+        white.then_some([1.0, 1.0, 1.0]),
+    );
+    Ok(img)
 }
 
 fn jpeg(img: &RgbaImage, path: &Path, quality: u8) -> Result<(), String> {

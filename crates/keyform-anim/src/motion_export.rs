@@ -118,16 +118,29 @@ fn sub_bezier(p: [P; 4], a: f64, b: f64) -> [P; 4] {
 /// The curve as written: SMOOTH handles recomputed and clamped to the
 /// attribute's own range (unbounded for repeat attributes); key values
 /// as stored. spec: motion3-json.md §2, animation-model.md §3.2–3.3
+/// The curve as the export reads it: reading the key list forces the
+/// update: SMOOTH handles recomputed and clamped, then anchors clamped to
+/// the attribute's range and rounded to 1/10000 (fresh 5.3.04
+/// exports of hiyori_free: ParamCheek's stored 1 in range −1…0 is written
+/// as 0; a stored 9.79949… as 9.8). spec: motion3-json.md §2 (Q-0029)
 fn export_curve(a: &Attr, legacy: bool) -> KeyCurve {
     let mut c = a.curve.clone();
-    if c.types.contains(&CurveType::Smooth) {
-        crate::scene::smooth_handles(&mut c, legacy);
-        let (lo, hi) = if a.repeat.is_some() {
-            (f64::NEG_INFINITY, f64::INFINITY)
-        } else {
-            (a.range.0.min(a.range.1), a.range.0.max(a.range.1))
-        };
-        crate::scene::clamp_handles(&mut c, lo, hi);
+    if c.keys.is_empty() {
+        return c;
+    }
+    let (lo, hi) = if a.repeat.is_some() {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    } else {
+        (a.range.0.min(a.range.1), a.range.0.max(a.range.1))
+    };
+    // Handles from the stored anchors first; then the anchors are clamped
+    // and rounded to 1/10000 without moving their handles (m05: anchor
+    // 9.79949… → 9.8, its flat handle stays 9.799).
+    c.types.resize(c.keys.len(), CurveType::Smooth);
+    crate::scene::smooth_handles(&mut c, legacy);
+    crate::scene::clamp_handles(&mut c, lo, hi);
+    for k in &mut c.keys {
+        k.value = (k.value.clamp(lo, hi) * 10000.0).round() / 10000.0;
     }
     c
 }
