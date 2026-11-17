@@ -261,6 +261,176 @@ impl Document {
     }
 }
 
+impl Document {
+    /// Solves the controllers that have a target (another controller) at
+    /// scene `frame`: each one's effector is driven onto its target
+    /// marker, all of them as one system. Returns (parameter index, value)
+    /// for their parameters. spec: form-animation-and-controllers.md §2.1–2.3
+    pub fn solve_ctrl_targets(&self, frame: f64) -> Vec<(usize, f64)> {
+        let Some(st) = self.anim.as_ref() else {
+            return Vec::new();
+        };
+        let set = st.ctrls();
+        let active: Vec<usize> = (0..set.controllers.len())
+            .filter(|&i| {
+                set.controllers[i]
+                    .target
+                    .is_some_and(|(t, _)| t < set.controllers.len() && t != i)
+            })
+            .collect();
+        if active.is_empty() {
+            return Vec::new();
+        }
+        let Some((values, parts)) = self.anim_values_at(frame) else {
+            return Vec::new();
+        };
+        let mut pis: Vec<usize> = Vec::new();
+        for &i in &active {
+            for id in &set.controllers[i].params {
+                if let Some(pi) = self.model.parameters.iter().position(|p| &p.id == id) {
+                    if !pis.contains(&pi) {
+                        pis.push(pi);
+                    }
+                }
+            }
+        }
+        let unknowns: Vec<Unknown> = pis
+            .iter()
+            .map(|&pi| {
+                let p = &self.model.parameters[pi];
+                Unknown {
+                    value: f64::from(values[pi]),
+                    min: f64::from(p.min),
+                    max: f64::from(p.max),
+                    repeat: p.repeat,
+                }
+            })
+            .collect();
+        let mesh_of: Vec<Option<usize>> = set
+            .points
+            .iter()
+            .map(|p| doc_mesh(&self.model, p))
+            .collect();
+        let canvas = [
+            f64::from(self.model.canvas.width),
+            f64::from(self.model.canvas.height),
+        ];
+        let mut eval = |p: &[f64]| -> Vec<([f64; 2], [f64; 2])> {
+            let mut v = values.clone();
+            for (k, &pi) in pis.iter().enumerate() {
+                v[pi] = p[k] as f32;
+            }
+            let ov = keyform_eval::Overrides {
+                part_opacity: parts.clone(),
+                ..Default::default()
+            };
+            let f = keyform_eval::Evaluator::new(&self.model).evaluate_full(
+                &v,
+                keyform_eval::EvalOptions::default(),
+                &ov,
+            );
+            let pos = |i: usize| {
+                pc::point_position(
+                    set.points.get(i)?,
+                    &f.meshes.get((*mesh_of.get(i)?)?)?.positions,
+                )
+            };
+            active
+                .iter()
+                .filter_map(|&i| {
+                    let c = &set.controllers[i];
+                    let (ti, ext) = c.target?;
+                    let tc = &set.controllers[ti];
+                    let a = match (&c.shape, &tc.shape) {
+                        (CtrlShape::Single(_), CtrlShape::Single(q)) => Assessor::Point(pos(*q)?),
+                        (CtrlShape::Single(_), CtrlShape::Line(a, b)) => Assessor::Area {
+                            a: pos(*a)?,
+                            b: pos(*b)?,
+                            pre: ext,
+                            post: ext,
+                        },
+                        (CtrlShape::Line(..), CtrlShape::Single(q)) => Assessor::Aim {
+                            t: pos(*q)?,
+                            post: ext,
+                        },
+                        (CtrlShape::Line(..), CtrlShape::Line(a, b)) => {
+                            let (a, b) = (pos(*a)?, pos(*b)?);
+                            Assessor::Direction([b[0] - a[0], b[1] - a[1]])
+                        }
+                    };
+                    pc::effector_and_target(&c.shape, &a, &pos)
+                })
+                .collect()
+        };
+        let solved = pc::solve(&unknowns, canvas, &mut eval);
+        pis.into_iter().zip(solved).collect()
+    }
+
+    /// Bake Animation from Parameter Controller: solves the controllers'
+    /// targets at every frame of the scene and writes the results as keys
+    /// (default curve type), one undo step. Returns the number of keys.
+    /// spec: form-animation-and-controllers.md §2.3
+    pub fn bake_controllers(&mut self) -> Result<usize, String> {
+        let st = self.anim.as_ref().ok_or("No animation is open.")?;
+        let scene = st.scene().ok_or("No scene.")?.clone();
+        let (ti, _) = st.model_track().ok_or("This scene has no model track.")?;
+        let tr = &scene.tracks[ti];
+        let mut per_frame = Vec::new();
+        for f in 0..=scene.duration {
+            per_frame.push((f, self.solve_ctrl_targets(f64::from(f))));
+        }
+        if per_frame.iter().all(|(_, v)| v.is_empty()) {
+            return Err("No parameter controller has a target.".into());
+        }
+        let shift = tr.offset - tr.start;
+        let ids: Vec<String> = self
+            .model
+            .parameters
+            .iter()
+            .map(|p| format!("live2dParam_{}", p.id))
+            .collect();
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        let before = st.doc.animation.clone();
+        let legacy = before.smooth_legacy;
+        let s = st.scene;
+        let TrackKind::Model(mt) = &mut st.doc.animation.scenes[s].tracks[ti].kind else {
+            return Err("no model track".into());
+        };
+        let mut n = 0;
+        let mut touched = Vec::new();
+        for (f, vals) in &per_frame {
+            for &(pi, v) in vals {
+                if let Some(k) = mt.params.iter().position(|a| a.id == ids[pi]) {
+                    let a = &mut mt.params[k];
+                    a.curve.fixed = false;
+                    keyform_anim::scene::set_key(
+                        &mut a.curve,
+                        f + shift,
+                        v,
+                        scene.default_param_curve,
+                    );
+                    n += 1;
+                    if !touched.contains(&k) {
+                        touched.push(k);
+                    }
+                }
+            }
+        }
+        for k in touched {
+            let a = &mut mt.params[k];
+            let (lo, hi) = keyform_anim::scene::clamp_range(a);
+            keyform_anim::scene::refresh(&mut a.curve, lo, hi, legacy);
+        }
+        st.undo.push((
+            "Bake Animation from Parameter Controller".into(),
+            UndoStep::Anim(before),
+        ));
+        st.redo.clear();
+        st.dirty = true;
+        Ok(n)
+    }
+}
+
 /// Canvas input for the controller tools.
 pub fn input(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect: Rect, ppp: f32) {
     let view = crate::canvas::view_of(doc, rect, ppp);
@@ -398,6 +568,7 @@ pub fn draw(painter: &egui::Painter, doc: &Document, to_screen: &dyn Fn([f32; 2]
 pub enum CtrlFileOp {
     Export(std::path::PathBuf),
     Import(std::path::PathBuf),
+    Bake,
 }
 
 /// The Controllers menu: tools, the controller list (parameters, delete),
@@ -421,6 +592,16 @@ pub fn menu(
         *t = CtrlTool::AddLine(None);
     }
     ui.selectable_value(t, CtrlTool::Off, "No controller tool");
+    ui.separator();
+    ui.checkbox(&mut st.ctrl_follow, "Target follow")
+        .on_hover_text("During playback, controllers with a target follow it");
+    if ui
+        .button("Bake Animation from Parameter Controller")
+        .clicked()
+    {
+        op = Some(CtrlFileOp::Bake);
+        ui.close();
+    }
     ui.separator();
     let mut delete = None;
     let before = st.doc.animation.clone();
@@ -488,6 +669,7 @@ pub fn run_file_op(doc: &mut Document, op: CtrlFileOp) -> Result<(), String> {
             std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))
         }
         CtrlFileOp::Import(p) => doc.import_controllers(&p),
+        CtrlFileOp::Bake => doc.bake_controllers().map(|_| ()),
     }
 }
 
@@ -624,5 +806,68 @@ mod tests {
         let _ = std::fs::remove_file(&out);
         let _ = std::fs::remove_file(&model_copy);
         let _ = std::fs::remove_file(f);
+    }
+
+    /// A controller targeting another: Bake writes keys on every frame and
+    /// brings the effector closer to the target marker.
+    #[test]
+    fn bake_controller_target() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        doc.frame = doc.anim_frame_at(0.0);
+        let ax = doc
+            .model
+            .parameters
+            .iter()
+            .position(|p| p.id == "ParamAngleX")
+            .unwrap();
+        let (m0, m1) = (
+            doc.ctrl_meshes(&[]).unwrap(),
+            doc.ctrl_meshes(&[(ax, 20.0)]).unwrap(),
+        );
+        let fr = doc.frame.clone().unwrap();
+        let moved = |i: usize| (m1[i][0] - m0[i][0]).hypot(m1[i][1] - m0[i][1]);
+        let drawn: Vec<usize> = (0..m0.len())
+            .filter(|&i| fr.meshes[i].is_drawn() && !m0[i].is_empty())
+            .collect();
+        let mover = *drawn
+            .iter()
+            .max_by(|&&a, &&b| moved(a).total_cmp(&moved(b)))
+            .unwrap();
+        let still = *drawn
+            .iter()
+            .min_by(|&&a, &&b| moved(a).total_cmp(&moved(b)))
+            .unwrap();
+        let at = |i: usize| [fr.meshes[i].positions[0], fr.meshes[i].positions[1]];
+        let pa = doc.pin_ctrl_point(at(mover)).unwrap();
+        doc.add_controller(CtrlShape::Single(pa));
+        let pb = doc.pin_ctrl_point(at(still)).unwrap();
+        doc.add_controller(CtrlShape::Single(pb));
+        {
+            let set = doc.anim.as_mut().unwrap().ctrls_mut().unwrap();
+            set.controllers[0].target = Some((1, false));
+            set.controllers[0].params = vec!["ParamAngleX".into()];
+            set.controllers[1].params.clear();
+        }
+        let dist = |doc: &Document| {
+            let m = doc.ctrl_meshes(&[]).unwrap();
+            let st = doc.anim.as_ref().unwrap();
+            let (a, b) = (
+                doc.ctrl_handle(&m, &st.ctrls().controllers[0]).unwrap(),
+                doc.ctrl_handle(&m, &st.ctrls().controllers[1]).unwrap(),
+            );
+            (a[0] - b[0]).hypot(a[1] - b[1])
+        };
+        let d0 = dist(&doc);
+        let n = doc.bake_controllers().unwrap();
+        let dur = doc.anim.as_ref().unwrap().scene().unwrap().duration;
+        assert_eq!(n, (dur + 1) as usize);
+        let d1 = dist(&doc);
+        assert!(d1 < d0, "{d0} → {d1}");
     }
 }

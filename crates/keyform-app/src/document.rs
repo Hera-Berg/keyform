@@ -2053,8 +2053,21 @@ impl Document {
             if let Some((values, _)) = self.anim_values_at(at) {
                 self.live = values;
             }
-            // Placed in the scene by the track's visual effect.
-            let f = self.anim_frame_at(at).unwrap_or_else(|| {
+            // Placed in the scene by the track's visual effect; controllers
+            // with a target follow it when asked (§2.3).
+            let follow = self.anim.as_ref().is_some_and(|a| a.ctrl_follow);
+            let opts = crate::animation::FrameOpts {
+                values: if follow {
+                    self.solve_ctrl_targets(at)
+                        .into_iter()
+                        .map(|(pi, v)| (pi, v as f32))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            };
+            let f = self.anim_frame_opts(at, &opts).unwrap_or_else(|| {
                 let ov = Overrides {
                     part_opacity: vec![None; self.model.parts.len()],
                     model_opacity: 1.0,

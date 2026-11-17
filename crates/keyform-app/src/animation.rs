@@ -72,6 +72,8 @@ pub struct AnimState {
     pub form_mesh: Option<usize>,
     pub ctrl_tool: crate::param_ctrl_ui::CtrlTool,
     pub ctrl_drag: Option<crate::param_ctrl_ui::CtrlDrag>,
+    /// Controllers with a target follow it during playback.
+    pub ctrl_follow: bool,
     /// The text of a new event (Events ▸ Add).
     pub event_text: String,
 }
@@ -87,6 +89,8 @@ pub struct FrameOpts {
     pub extra_local: Option<(usize, Vec<f32>)>,
     /// Another scene than the current one (nested scene tracks).
     pub scene: Option<usize>,
+    /// Parameter values replacing the animated ones (target follow).
+    pub values: Vec<(usize, f32)>,
 }
 
 /// One Animation-workspace undo step: the typed animation before a curve
@@ -494,6 +498,7 @@ impl Document {
             form_mesh: None,
             ctrl_tool: Default::default(),
             ctrl_drag: None,
+            ctrl_follow: false,
             event_text: String::new(),
         });
         if let Some(a) = d.anim.as_mut() {
@@ -557,6 +562,7 @@ impl Document {
             form_mesh: None,
             ctrl_tool: Default::default(),
             ctrl_drag: None,
+            ctrl_follow: false,
             event_text: String::new(),
         });
         Ok(d)
@@ -853,7 +859,12 @@ impl Document {
     pub fn anim_frame_opts(&self, frame: f64, o: &FrameOpts) -> Option<keyform_eval::Frame> {
         let st = self.anim.as_ref()?;
         let si = o.scene.unwrap_or(st.scene);
-        let (values, parts) = self.anim_values_in(si, frame)?;
+        let (mut values, parts) = self.anim_values_in(si, frame)?;
+        for &(pi, v) in &o.values {
+            if let Some(x) = values.get_mut(pi) {
+                *x = self.model.parameters[pi].clamp(v);
+            }
+        }
         let (ti, _) = st.model_track_in(si)?;
         let track = &st.doc.animation.scenes.get(si)?.tracks[ti];
         let x = frame - f64::from(track.start) + f64::from(track.offset);
