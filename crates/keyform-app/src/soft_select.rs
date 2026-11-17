@@ -37,6 +37,7 @@ impl Document {
         self.soft_select = on.then_some(SoftSelect { stroke: false });
         if on {
             let _ = self.set_glue_tool(None);
+            let _ = self.set_path_tool(false);
             self.lasso = false;
         }
         Ok(())

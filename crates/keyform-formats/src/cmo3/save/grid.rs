@@ -42,6 +42,9 @@ pub(super) struct Ctx<'a> {
     pub(super) deleted: Vec<(String, String, String, String, usize)>,
     /// Shared ids that may have lost their last reference.
     pub orphans: Vec<String>,
+    /// Art meshes whose deform paths changed: (element, GUID), written
+    /// after every object (they share keyforms in place).
+    pub pending_paths: Vec<(ElementPath, String)>,
     /// Whether any element was added or removed (sources must be reloaded).
     pub structural: bool,
     /// New texture-manager elements and archive entries of this save.
@@ -107,6 +110,7 @@ impl<'a> Ctx<'a> {
             deleted: Vec::new(),
             tex: Default::default(),
             orphans: Vec::new(),
+            pending_paths: Vec::new(),
             structural: false,
         }
     }

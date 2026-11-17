@@ -342,6 +342,12 @@ pub struct Document {
     pub soft_select: Option<crate::soft_select::SoftSelect>,
     /// Soft Selection brush settings (size 100 px, weight 100 %).
     pub soft_prefs: crate::glue_tool::GluePrefs,
+    /// Control Point edit tool [P] (deform paths), when active.
+    pub path_tool: Option<crate::path_tool::PathTool>,
+    /// Its Tool Details settings, kept while the tool is off.
+    pub path_prefs: crate::path_tool::PathPrefs,
+    /// Temporary path handler, while active (deform-paths.md §6).
+    pub temp_path: Option<crate::path_tool::TempPath>,
     /// Copy Form data (form-tools.md §1).
     pub form_clipboard: Vec<keyform_edit::form_tools::CopiedForm>,
     /// Never saved yet: the first save asks for a location.
@@ -664,6 +670,9 @@ impl Document {
             glue_prefs: Default::default(),
             lasso: false,
             soft_select: None,
+            path_tool: None,
+            path_prefs: Default::default(),
+            temp_path: None,
             soft_prefs: Default::default(),
             form_clipboard: Vec::new(),
             untitled: false,

@@ -2121,6 +2121,19 @@ fn deform_paths_load() {
             .map(|p| p.targets.len())
             .sum();
         eprintln!("{path:?}: {paths} paths, {points} control points, {targets} target points");
+        let names: Vec<String> = m
+            .art_meshes
+            .iter()
+            .filter(|a| !a.paths.is_empty())
+            .map(|a| {
+                format!(
+                    "{} (level {})",
+                    a.info.display_name(),
+                    a.paths[0].edit_level
+                )
+            })
+            .collect();
+        eprintln!("  on: {}", names.join(", "));
         for a in &m.art_meshes {
             for p in &a.paths {
                 for c in &p.curves {

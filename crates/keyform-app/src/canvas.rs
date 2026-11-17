@@ -125,6 +125,15 @@ pub fn canvas_ui(
         track_cursor(ui, &response, doc, rect);
     } else if doc.mesh_edit.is_some() {
         mesh_tool(ui, &response, doc, gpu, rect, ppp);
+    } else if doc.temp_path.is_some() {
+        crate::path_tool::temp_input(ui, &response, doc, rect, ppp);
+    } else if doc.path_tool.is_some()
+        && !ui.input(|i| i.modifiers.command && !i.modifiers.alt)
+        && !doc.is_dragging()
+    {
+        // Ctrl gives the Arrow tool temporarily; Ctrl+Alt is the fold
+        // toggle (deform-paths.md §5).
+        crate::path_tool::input(ui, &response, doc, rect, ppp);
     } else if doc.soft_select.is_some()
         && !ui.input(|i| i.modifiers.command && !i.modifiers.shift)
         && !doc.is_dragging()
@@ -255,6 +264,12 @@ pub fn canvas_ui(
         draw_selection(&painter, doc, &to_screen, tokens);
         if doc.glue_tool.is_some() {
             crate::glue_tool::draw(ui.ctx(), &painter, doc, rect, &to_screen, tokens);
+        }
+        if doc.path_tool.is_some() {
+            crate::path_tool::draw(&painter, doc, &to_screen, tokens);
+        }
+        if doc.temp_path.is_some() {
+            crate::path_tool::temp_draw(&painter, doc, &to_screen, tokens);
         }
         if doc.soft_select.is_some() {
             if let Some(c) = ui

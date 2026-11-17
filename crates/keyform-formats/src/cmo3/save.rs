@@ -146,7 +146,7 @@ impl Cmo3Document {
             let Some(&i) = old_meshes.get(&n.info.guid) else {
                 let path = objects::create_art_mesh(&mut root, ctx, &self.archive, new, n)?;
                 if !n.paths.is_empty() {
-                    paths::write_paths(&mut root, ctx, &path, &[], n)?;
+                    ctx.pending_paths.push((path, n.info.guid.clone()));
                 }
                 ctx.structural = true;
                 continue;
@@ -194,6 +194,17 @@ impl Cmo3Document {
                     path.as_deref().unwrap_or_default(),
                     "affecterSourceSet",
                 )?;
+            }
+        }
+        for (path, guid) in std::mem::take(&mut ctx.pending_paths) {
+            let empty = Vec::new();
+            let o = old
+                .art_meshes
+                .iter()
+                .find(|a| a.info.guid == guid)
+                .map_or(&empty, |a| &a.paths);
+            if let Some(n) = new.art_meshes.iter().find(|a| a.info.guid == guid) {
+                paths::write_paths(&mut root, ctx, &path, o, n)?;
             }
         }
         paths::relink_targets(&mut root, ctx)?;
@@ -1291,12 +1302,6 @@ fn write_art_mesh_fields(
         };
         mesh::write_generator(root, &path, n)?;
     }
-    if o.paths != n.paths {
-        let Some(path) = src.element.clone() else {
-            return invalid("art mesh has no element");
-        };
-        paths::write_paths(root, ctx, &path, &o.paths, n)?;
-    }
     write_parents(
         root,
         ctx,
@@ -1324,6 +1329,14 @@ fn write_art_mesh_fields(
         (o.color_composition, o.alpha_composition),
         (n.color_composition, n.alpha_composition),
     );
+    // Deferred: sharing keyforms in place would move elements other
+    // writers address by path.
+    if o.paths != n.paths {
+        let Some(path) = src.element.clone() else {
+            return invalid("art mesh has no element");
+        };
+        ctx.pending_paths.push((path, n.info.guid.clone()));
+    }
     Ok(())
 }
 

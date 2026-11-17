@@ -20,6 +20,7 @@ mod new_model_dialog;
 mod palettes;
 mod param_dialog;
 mod parts_settings;
+mod path_tool;
 mod psd_dialog;
 mod soft_select;
 mod texture_atlas;

@@ -1212,7 +1212,10 @@ impl KeyformApp {
                 .map(|s| &mut s.doc)
                 .filter(|d| d.mode == crate::document::Mode::Modeling)
             {
-                let arrow = !d.lasso && d.glue_tool.is_none() && d.soft_select.is_none();
+                let arrow = !d.lasso
+                    && d.glue_tool.is_none()
+                    && d.soft_select.is_none()
+                    && d.path_tool.is_none();
                 if ui
                     .add(egui::Button::selectable(arrow, "Arrow"))
                     .on_hover_text("Arrow tool (A): click to select, drag for a rectangle")
@@ -1220,6 +1223,7 @@ impl KeyformApp {
                 {
                     d.lasso = false;
                     let _ = d.set_glue_tool(None);
+                    let _ = d.set_path_tool(false);
                 }
                 if ui
                     .add(egui::Button::selectable(d.lasso, "Lasso"))
@@ -1236,6 +1240,28 @@ impl KeyformApp {
                 {
                     let on = d.soft_select.is_none();
                     let _ = d.set_soft_select(on);
+                }
+                if ui
+                    .add(egui::Button::selectable(d.path_tool.is_some(), "Path"))
+                    .on_hover_text("Control Point edit (P): deform paths")
+                    .clicked()
+                {
+                    let on = d.path_tool.is_none();
+                    if let Err(e) = d.set_path_tool(on) {
+                        d.notice = Some(e);
+                    }
+                }
+                if ui
+                    .add(egui::Button::selectable(d.temp_path.is_some(), "Temp path"))
+                    .on_hover_text(
+                        "Temporary path: bend the selected points along a temporary line",
+                    )
+                    .clicked()
+                {
+                    let on = d.temp_path.is_none();
+                    if let Err(e) = d.set_temp_path(on) {
+                        d.notice = Some(e);
+                    }
                 }
                 ui.separator();
             }
@@ -1579,17 +1605,27 @@ impl KeyformApp {
         }
         // Arrow tool [A] / Lasso Tool [L] (menus.md "Keyboard-only commands").
         if !ctx.egui_wants_keyboard_input() {
-            let (a, l, b) = ctx.input_mut(|i| {
+            let (a, l, b, p) = ctx.input_mut(|i| {
                 (
                     i.consume_shortcut(&K::new(M::NONE, Key::A)),
                     i.consume_shortcut(&K::new(M::NONE, Key::L)),
                     i.key_pressed(Key::B) && i.modifiers.is_none(),
+                    i.consume_shortcut(&K::new(M::NONE, Key::P)),
                 )
             });
+            // Control Point edit [P] (canvas-and-tools.md §4).
+            if p {
+                if let Some(d) = self.active_doc() {
+                    if let Err(e) = d.set_path_tool(true) {
+                        self.log.warn(e);
+                    }
+                }
+            }
             if a || l {
                 if let Some(d) = self.active_doc() {
                     d.lasso = l;
                     let _ = d.set_soft_select(false);
+                    let _ = d.set_path_tool(false);
                     if a {
                         let _ = d.set_glue_tool(None);
                     }
@@ -2416,6 +2452,14 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
             }
             if doc.soft_select.is_some() {
                 crate::soft_select::controls(ui, doc);
+                return;
+            }
+            if doc.temp_path.is_some() {
+                crate::path_tool::temp_controls(ui, doc);
+                return;
+            }
+            if doc.path_tool.is_some() {
+                crate::path_tool::controls(ui, doc);
                 return;
             }
             if doc.lasso {
