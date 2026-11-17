@@ -3526,3 +3526,149 @@ fn can3_expression_export() {
     }
     assert_eq!(compared, 7);
 }
+
+#[test]
+#[ignore]
+fn moc3_dump_colors() {
+    use keyform_formats::moc3::Moc3Raw;
+    let r = Moc3Raw::read(&std::fs::read(std::env::var("MOC3").unwrap()).unwrap()).unwrap();
+    let ty = r.i32s("deformers.type");
+    let si = r.i32s("deformers.specific_index");
+    let wb = r.i32s("warps.color_begin");
+    let rb = r.i32s("rotations.color_begin");
+    let wkc = r.i32s("warps.keyform_count");
+    let rkc = r.i32s("rotations.keyform_count");
+    for d in 0..ty.len() {
+        let (b, n) = if ty[d] == 0 {
+            (wb[si[d] as usize], wkc[si[d] as usize])
+        } else {
+            (rb[si[d] as usize], rkc[si[d] as usize])
+        };
+        eprintln!(
+            "deformer {d} type {} idx {} color_begin {b} keyforms {n}",
+            ty[d], si[d]
+        );
+    }
+    let ab = r.i32s("art_meshes.color_begin");
+    eprintln!(
+        "art meshes color_begin first {:?} last {:?}",
+        ab.first(),
+        ab.last()
+    );
+}
+
+#[test]
+#[ignore]
+fn moc3_dump_blend_shapes() {
+    use keyform_formats::moc3::{layout::SECTIONS, Moc3Raw, SectionData};
+    let r = Moc3Raw::read(&std::fs::read(std::env::var("MOC3").unwrap()).unwrap()).unwrap();
+    eprintln!("version {} counts {:?}", r.version, r.counts);
+    for sec in SECTIONS.iter().filter(|s| s.since <= r.version) {
+        if !(sec.name.starts_with("bs_")
+            || sec.name.starts_with("parameters.bs")
+            || sec.name == "parameters.type")
+        {
+            continue;
+        }
+        let d = &r.sections[sec.name];
+        let txt = match d {
+            SectionData::I32(v) => format!("{v:?}"),
+            SectionData::F32(v) => format!("{v:?}"),
+            other => format!("len {}", other.len()),
+        };
+        eprintln!("{} = {}", sec.name, &txt[..txt.len().min(300)]);
+    }
+    let keys = r.f32s("keys");
+    eprintln!(
+        "keys len {} tail {:?}",
+        keys.len(),
+        &keys[keys.len().saturating_sub(40)..]
+    );
+    let ak = r.i32s("art_meshes.keyform_count");
+    let ab = r.i32s("art_meshes.keyform_begin");
+    let ids = match &r.sections["art_meshes.id"] {
+        SectionData::Ids(v) => v.clone(),
+        _ => vec![],
+    };
+    if let Some(i) = ids.iter().position(|x| x == "ArtMesh49") {
+        eprintln!("ArtMesh49 index {i} kf begin {} count {}", ab[i], ak[i]);
+    }
+    let op = r.f32s("art_mesh_keyforms.opacity");
+    eprintln!(
+        "art keyforms {} last 4 opacity {:?}",
+        op.len(),
+        &op[op.len() - 4..]
+    );
+    let dro = r.f32s("art_mesh_keyforms.draw_order");
+    eprintln!("last 4 draw order {:?}", &dro[dro.len() - 4..]);
+    if r.version >= 5 {
+        let mc = r.i32s("art_mesh_keyforms.multiply_color");
+        eprintln!("last 4 mul color idx {:?}", &mc[mc.len() - 4..]);
+        let mr = r.f32s("multiply_colors.r");
+        let sr = r.f32s("screen_colors.r");
+        eprintln!(
+            "mul pool len {} tail {:?} scr tail {:?}",
+            mr.len(),
+            &mr[mr.len() - 4..],
+            &sr[sr.len() - 4..]
+        );
+    }
+    let pb = r.i32s("art_mesh_keyforms.position_begin");
+    eprintln!(
+        "last 4 pos begin {:?} positions len {}",
+        &pb[pb.len() - 4..],
+        r.f32s("keyform_positions.xy").len()
+    );
+}
+
+/// moc3 export of the reference-made Phase 5 test models (`KEYFORM_BB_P5`):
+/// an offscreen part (v6) and a blend shape (v4.2, v5.0, v5.3) match the
+/// reference's exports byte for byte. spec: moc3.md §8.4, §8.9
+#[test]
+fn moc3_export_matches_reference_p5() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::moc3::{export_moc3, ExportOptions};
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    for (model, version, reference) in [
+        ("off.cmo3", 6u8, "off_runtime/off.moc3"),
+        ("bs.cmo3", 4, "bs_v4/bs.moc3"),
+        ("bs.cmo3", 5, "bs_v5/bs.moc3"),
+        ("bs.cmo3", 6, "bs_runtime/bs.moc3"),
+    ] {
+        let doc = Cmo3Document::read(&std::fs::read(dir.join(model)).unwrap()).unwrap();
+        let mut o = ExportOptions::for_model(&doc.model);
+        o.version = version;
+        let (raw, rep) = export_moc3(&doc.model, &o).unwrap();
+        assert!(
+            rep.warnings.is_empty(),
+            "{model} v{version}: {:?}",
+            rep.warnings
+        );
+        let want = std::fs::read(dir.join(reference)).unwrap();
+        assert!(
+            raw.write().unwrap() == want,
+            "{model} v{version} differs from {reference}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn can3_dump_track_opacity() {
+    use keyform_formats::can3::Can3Document;
+    let doc = Can3Document::read(&std::fs::read(std::env::var("CAN3").unwrap()).unwrap()).unwrap();
+    for t in &doc.animation.scenes[0].tracks {
+        if let Some(o) = &t.opacity {
+            eprintln!(
+                "{}: opacity base {} range {:?} keys {}",
+                t.name,
+                o.curve.base,
+                o.range,
+                o.curve.keys.len()
+            );
+        }
+    }
+}

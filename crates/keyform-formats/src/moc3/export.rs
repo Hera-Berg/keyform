@@ -113,6 +113,123 @@ impl Pools {
 
 /// Appends `positions` to the pool, zero-padded so the next block starts on a
 /// 16-float boundary (§8.3). Returns the block's float index.
+/// Blend-shape bindings being built (moc3.md §8.4).
+#[derive(Default)]
+struct BsBuild {
+    /// (export parameter index, keys, base key index).
+    pb: Vec<(usize, Vec<f32>, i32)>,
+    /// (parameter binding id, keyform begin, keyform count, constraint begin, constraint count).
+    kb: Vec<[i32; 5]>,
+    /// (export parameter index, (key, weight) list).
+    constraints: Vec<(usize, Vec<(f32, f32)>)>,
+    constraint_indices: Vec<i32>,
+}
+
+impl BsBuild {
+    /// Adds an object's blend shapes: per blend-shape parameter (in export
+    /// order) its key list with the base at 0, one delta keyform per key
+    /// (pushed by `push`, which returns the keyform index) and its
+    /// constraints. Returns the object's keyform-binding range.
+    fn add<F: keyform_eval::Blend>(
+        &mut self,
+        m: &Model,
+        param_pos: &HashMap<usize, usize>,
+        grid: &KeyformGrid<F>,
+        blend: &keyform_model::BlendShapes<F>,
+        push: &mut dyn FnMut(&F) -> Result<i32>,
+    ) -> Result<(i32, i32)> {
+        let Some(base) = keyform_eval::interp::base_keyform(&m.parameters, grid) else {
+            return invalid("blend shapes on an object without keyforms");
+        };
+        let mut params: Vec<usize> = blend.shapes.iter().map(|s| s.parameter).collect();
+        params.sort_by_key(|p| param_pos.get(p).copied().unwrap_or(usize::MAX));
+        params.dedup();
+        let begin = count(self.kb.len())?;
+        for p in params {
+            let Some(&pe) = param_pos.get(&p) else {
+                continue;
+            };
+            let max = m.parameters.get(p).map_or(1.0, |q| q.max);
+            // Entries, then (0, base); duplicate keys: first wins; sorted.
+            let mut curve: Vec<(f32, &F)> = Vec::new();
+            for s in blend.shapes.iter().filter(|s| s.parameter == p) {
+                let k = s.key.unwrap_or(max);
+                if !curve.iter().any(|c| c.0 == k) {
+                    curve.push((k, &s.form));
+                }
+            }
+            if !curve.iter().any(|c| c.0 == 0.0) {
+                curve.push((0.0, base));
+            }
+            curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let keys: Vec<f32> = curve.iter().map(|c| c.0).collect();
+            let base_idx = count(keys.iter().position(|k| *k == 0.0).unwrap_or(0))?;
+            let pb = match self.pb.iter().position(|(q, k, b)| {
+                *q == pe
+                    && k.iter()
+                        .map(|x| x.to_bits())
+                        .eq(keys.iter().map(|x| x.to_bits()))
+                    && *b == base_idx
+            }) {
+                Some(i) => i,
+                None => {
+                    self.pb.push((pe, keys.clone(), base_idx));
+                    self.pb.len() - 1
+                }
+            };
+            let mut first = None;
+            for (_, f) in &curve {
+                let mut d = f.zeroed();
+                d.add_scaled(f, 1.0);
+                d.add_scaled(base, -1.0);
+                let i = push(&d)?;
+                first.get_or_insert(i);
+            }
+            // Constraints of this parameter, one per constraint parameter.
+            let cbegin = count(self.constraint_indices.len())?;
+            let mut cps: Vec<usize> = blend
+                .constraints
+                .iter()
+                .filter(|c| c.blend_parameter == p)
+                .map(|c| c.constraint_parameter)
+                .collect();
+            cps.dedup();
+            for q in cps {
+                let Some(&qe) = param_pos.get(&q) else {
+                    continue;
+                };
+                let pts: Vec<(f32, f32)> = blend
+                    .constraints
+                    .iter()
+                    .filter(|c| c.blend_parameter == p && c.constraint_parameter == q)
+                    .map(|c| (c.value, c.weight))
+                    .collect();
+                let ci = match self
+                    .constraints
+                    .iter()
+                    .position(|c| c.0 == qe && c.1 == pts)
+                {
+                    Some(i) => i,
+                    None => {
+                        self.constraints.push((qe, pts));
+                        self.constraints.len() - 1
+                    }
+                };
+                self.constraint_indices.push(count(ci)?);
+            }
+            let ccount = count(self.constraint_indices.len())? - cbegin;
+            self.kb.push([
+                count(pb)?,
+                first.unwrap_or(0),
+                count(curve.len())?,
+                cbegin,
+                ccount,
+            ]);
+        }
+        Ok((begin, count(self.kb.len())? - begin))
+    }
+}
+
 fn push_positions(pool: &mut Vec<f32>, positions: &[f32]) -> i32 {
     let begin = pool.len();
     pool.extend_from_slice(positions);
@@ -366,13 +483,27 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             rep.warnings.push(
                 "blend shapes are not supported by this moc3 version and were dropped".into(),
             );
-        } else {
-            // TODO: blend-shape export (moc3.md §8.4).
+        } else if m.parts.iter().any(|p| !p.blend_shapes.is_empty())
+            || m.glues.iter().any(|g| !g.blend_shapes.is_empty())
+            || m.deformers
+                .iter()
+                .any(|d| matches!(&d.kind, DeformerKind::Rotation(r) if !r.blend_shapes.is_empty()))
+        {
+            // TODO(Q-0036): parts / rotation deformers / glue (v5.0) have no
+            // reference export to compare against yet.
             return Err(FormatError::Unsupported(
-                "moc3 blend-shape export not implemented yet".into(),
+                "moc3 export of blend shapes on parts, rotation deformers or glue is not implemented yet".into(),
             ));
         }
     }
+    let param_pos: HashMap<usize, usize> = param_order
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| (p, i))
+        .collect();
+    let mut bs = BsBuild::default();
+    let mut bs_warps: Vec<(i32, i32, i32)> = Vec::new();
+    let mut bs_meshes: Vec<(i32, i32, i32)> = Vec::new();
 
     // §9 step 4: repeat parameters get keys at min and max.
     fn prep<F: keyform_eval::interp::Blend>(m: &Model, g: &KeyformGrid<F>) -> KeyformGrid<F> {
@@ -458,8 +589,34 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
     let mut rot_color_begin = Vec::new();
     let mut warp_kf_colors: Vec<(i32, i32)> = Vec::new();
     let mut rot_kf_colors: Vec<(i32, i32)> = Vec::new();
-    // Warp colors first, then rotations, then art meshes (observed pool order).
-    let mut pending_rot_colors: Vec<Vec<(Color, Color)>> = Vec::new();
+    // Colour pool order (observed, 5.3.04, v4–v6): offscreen keyforms, then
+    // deformer keyforms in deformer-table order, then art meshes.
+    // TODO(Q-0036): confirm the pool order rule.
+    let mut off_colors: Vec<(i32, i32)> = Vec::new();
+    let mut off_opacity: Vec<f32> = Vec::new();
+    let mut part_off_kf: Vec<i32> = Vec::new();
+    let mut part_off: Vec<i32> = Vec::new();
+    let mut off_owner: Vec<i32> = Vec::new();
+    let mut off_parts: Vec<PartIndex> = Vec::new();
+    for (pi, &p) in part_order.iter().enumerate() {
+        let off = v >= 6 && m.parts[p].offscreen;
+        part_off.push(if off { count(off_owner.len())? } else { -1 });
+        for k in &part_grids[pi].keyforms {
+            if off {
+                part_off_kf.push(count(off_opacity.len())?);
+                off_opacity.push(k.opacity);
+                off_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                mul_pool.push(k.multiply);
+                scr_pool.push(k.screen);
+            } else {
+                part_off_kf.push(-1);
+            }
+        }
+        if off {
+            off_owner.push(count(pi)?);
+            off_parts.push(p);
+        }
+    }
     for &d in &def_order {
         let def = &m.deformers[d];
         match &def.kind {
@@ -519,7 +676,7 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                     }
                     t = m.deformers[p].target;
                 }
-                let mut colors = Vec::new();
+                rot_color_begin.push(count(mul_pool.len())?);
                 for k in &g.keyforms {
                     let mut origin = k.origin;
                     if def.target.is_none() {
@@ -536,18 +693,47 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                     });
                     r.rx.push(i32::from(k.reflect_x));
                     r.ry.push(i32::from(k.reflect_y));
-                    colors.push((k.multiply, k.screen));
+                    rot_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                    mul_pool.push(k.multiply);
+                    scr_pool.push(k.screen);
                 }
-                pending_rot_colors.push(colors);
             }
         }
     }
-    for colors in pending_rot_colors {
-        rot_color_begin.push(count(mul_pool.len())?);
-        for (mu, sc) in colors {
-            rot_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
-            mul_pool.push(mu);
-            scr_pool.push(sc);
+
+    // Warp blend-shape deltas follow all warp grid keyforms (§8.4).
+    // TODO(Q-0036): unverified against a reference export with warp blend shapes.
+    if v >= 4 {
+        let mut wi = 0i32;
+        for &d in &def_order {
+            let def = &m.deformers[d];
+            let DeformerKind::Warp(wd) = &def.kind else {
+                continue;
+            };
+            let here = wi;
+            wi += 1;
+            if wd.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &wd.grid);
+            let root = def.target.is_none();
+            let (b, n) = bs.add(m, &param_pos, &g, &wd.blend_shapes, &mut |k: &WarpForm| {
+                let i = count(w.opacity.len())?;
+                let mut pts = k.positions.clone();
+                if root {
+                    let sc = 1.0 / o.pixels_per_unit;
+                    pts.iter_mut().for_each(|x| *x *= sc);
+                }
+                w.opacity.push(k.opacity);
+                w.pos_begin.push(push_positions(&mut positions, &pts));
+                if v >= 5 {
+                    warp_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                    mul_pool.push(k.multiply);
+                    scr_pool.push(k.screen);
+                }
+                Ok(i)
+            })?;
+            bs_warps.push((here, b, n));
         }
     }
 
@@ -659,6 +845,47 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         }
         mesh_draw_orders.push(dos);
     }
+    // Art mesh blend-shape deltas follow all art mesh grid keyforms (§8.4).
+    let mut bs_mesh_draw: Vec<(usize, f32, f32)> = Vec::new();
+    if v >= 4 {
+        for (mi_out, &ai) in mesh_order.iter().enumerate() {
+            let am = &m.art_meshes[ai];
+            if am.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &am.grid);
+            let root = am.target.is_none();
+            let (mut lo, mut hi) = (0.0f32, 0.0f32);
+            let (b, n) = bs.add(
+                m,
+                &param_pos,
+                &g,
+                &am.blend_shapes,
+                &mut |k: &ArtMeshForm| {
+                    let i = count(a.opacity.len())?;
+                    let mut pts = k.positions.clone();
+                    if root {
+                        let sc = 1.0 / o.pixels_per_unit;
+                        pts.iter_mut().for_each(|x| *x *= sc);
+                    }
+                    a.opacity.push(k.opacity);
+                    a.draw_order.push(k.draw_order);
+                    lo = lo.min(k.draw_order);
+                    hi = hi.max(k.draw_order);
+                    a.pos_begin.push(push_positions(&mut positions, &pts));
+                    if v >= 5 {
+                        a.kf_colors
+                            .push((count(mul_pool.len())?, count(scr_pool.len())?));
+                        mul_pool.push(k.multiply);
+                        scr_pool.push(k.screen);
+                    }
+                    Ok(i)
+                },
+            )?;
+            bs_meshes.push((count(mi_out)?, b, n));
+            bs_mesh_draw.push((mi_out, lo, hi));
+        }
+    }
     // Texture index = position among the pages used, in texture-manager order (§8.6).
     tex_used.sort_unstable();
     let tex_pos: HashMap<usize, i32> = tex_used
@@ -744,14 +971,37 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 p_cols.binding_count.push(count(n)?);
             }
             (None, _) => {
-                // Unused parameters store begin −1 (observed).
-                p_cols.binding_begin.push(-1);
+                // Unused parameters store begin −1; a blend-shape parameter
+                // with blend-shape bindings only stores 0 (observed).
+                let pe = param_pos[&p];
+                p_cols
+                    .binding_begin
+                    .push(if bs.pb.iter().any(|b| b.0 == pe) {
+                        0
+                    } else {
+                        -1
+                    });
                 p_cols.binding_count.push(0);
             }
         }
         p_cols
             .kind
             .push(i32::from(par.kind == ParameterKind::BlendShape));
+    }
+    // Blend-shape parameter bindings: sorted by parameter (stable), their
+    // keys after the normal binding keys (§8.4).
+    let mut bs_order: Vec<usize> = (0..bs.pb.len()).collect();
+    bs_order.sort_by_key(|&i| bs.pb[i].0);
+    let mut bs_final = vec![0i32; bs.pb.len()];
+    for (pos, &id) in bs_order.iter().enumerate() {
+        bs_final[id] = count(pos)?;
+    }
+    let (mut bs_kbegin, mut bs_kcount, mut bs_base) = (Vec::new(), Vec::new(), Vec::new());
+    for &id in &bs_order {
+        bs_kbegin.push(count(keys.len())?);
+        bs_kcount.push(count(bs.pb[id].1.len())?);
+        bs_base.push(bs.pb[id].2);
+        keys.extend_from_slice(&bs.pb[id].1);
     }
     // Parameter key lists follow the binding keys. The keys are written for
     // every version (observed in v3 files); the begin/count sections exist from v4.2.
@@ -769,6 +1019,13 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                         .map(|b| f32::from_bits(*b))
                 })
                 .collect();
+            let pe = param_pos[&p];
+            ks.extend(
+                bs.pb
+                    .iter()
+                    .filter(|b| b.0 == pe)
+                    .flat_map(|b| b.1.iter().copied()),
+            );
             ks.sort_by(f32::total_cmp);
             ks.dedup();
             key_list_begin.push(count(keys.len())?);
@@ -788,6 +1045,7 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         &part_order,
         &mesh_order,
         &mesh_draw_orders,
+        v >= 6,
     );
 
     // ---- Fill sections.
@@ -1002,6 +1260,7 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
     raw.counts[c::VERTEX_INDICES] = count(vidx.len())?;
     set(&mut raw, "vertex_indices", SectionData::I16(vidx));
     raw.counts[c::CLIP_MASKS] = count(clips.len())?;
+    let raw_clips = clips.clone();
     set(&mut raw, "clip_masks", i32s(clips));
 
     raw.counts[c::DRAW_ORDER_GROUPS] = count(groups.begin.len())?;
@@ -1085,16 +1344,87 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             }
         }
         set(&mut raw, "parameters.type", i32s(p_cols.kind));
+        // Each blend-shape parameter owns a range of the sorted bindings.
+        let (mut pbb, mut pbc) = (vec![0i32; n_params], vec![0i32; n_params]);
+        for (pos, &id) in bs_order.iter().enumerate() {
+            let pe = bs.pb[id].0;
+            if pbc[pe] == 0 {
+                pbb[pe] = count(pos)?;
+            }
+            pbc[pe] += 1;
+        }
+        set(&mut raw, "parameters.bs_binding_begin", i32s(pbb));
+        set(&mut raw, "parameters.bs_binding_count", i32s(pbc));
+        raw.counts[c::BS_PARAM_BINDINGS] = count(bs_order.len())?;
+        set(&mut raw, "bs_param_bindings.keys_begin", i32s(bs_kbegin));
+        set(&mut raw, "bs_param_bindings.keys_count", i32s(bs_kcount));
+        set(&mut raw, "bs_param_bindings.base_key", i32s(bs_base));
+        raw.counts[c::BS_KEYFORM_BINDINGS] = count(bs.kb.len())?;
+        let col = |k: usize| i32s(bs.kb.iter().map(|x| x[k]).collect());
         set(
             &mut raw,
-            "parameters.bs_binding_begin",
-            i32s(vec![0; n_params]),
+            "bs_keyform_bindings.param_binding",
+            i32s(bs.kb.iter().map(|x| bs_final[x[0] as usize]).collect()),
         );
+        set(&mut raw, "bs_keyform_bindings.keyform_begin", col(1));
+        set(&mut raw, "bs_keyform_bindings.keyform_count", col(2));
+        set(&mut raw, "bs_keyform_bindings.constraint_begin", col(3));
+        set(&mut raw, "bs_keyform_bindings.constraint_count", col(4));
+        let targets = |raw: &mut Moc3Raw,
+                       idx: usize,
+                       pre: [&'static str; 3],
+                       t: &[(i32, i32, i32)]|
+         -> Result<()> {
+            raw.counts[idx] = count(t.len())?;
+            raw.set(pre[0], i32s(t.iter().map(|x| x.0).collect()));
+            raw.set(pre[1], i32s(t.iter().map(|x| x.1).collect()));
+            raw.set(pre[2], i32s(t.iter().map(|x| x.2).collect()));
+            Ok(())
+        };
+        targets(
+            &mut raw,
+            c::BS_WARPS,
+            [
+                "bs_warps.target",
+                "bs_warps.binding_begin",
+                "bs_warps.binding_count",
+            ],
+            &bs_warps,
+        )?;
+        targets(
+            &mut raw,
+            c::BS_ART_MESHES,
+            [
+                "bs_art_meshes.target",
+                "bs_art_meshes.binding_begin",
+                "bs_art_meshes.binding_count",
+            ],
+            &bs_meshes,
+        )?;
+        raw.counts[c::BS_CONSTRAINT_INDICES] = count(bs.constraint_indices.len())?;
         set(
             &mut raw,
-            "parameters.bs_binding_count",
-            i32s(vec![0; n_params]),
+            "bs_constraint_indices",
+            i32s(bs.constraint_indices.clone()),
         );
+        raw.counts[c::BS_CONSTRAINTS] = count(bs.constraints.len())?;
+        let (mut cp, mut cb, mut cn, mut ck, mut cw) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (q, pts) in &bs.constraints {
+            cp.push(count(*q)?);
+            cb.push(count(ck.len())?);
+            cn.push(count(pts.len())?);
+            for (k, wt) in pts {
+                ck.push(*k);
+                cw.push(*wt);
+            }
+        }
+        raw.counts[c::BS_CONSTRAINT_VALUES] = count(ck.len())?;
+        set(&mut raw, "bs_constraints.parameter", i32s(cp));
+        set(&mut raw, "bs_constraints.value_begin", i32s(cb));
+        set(&mut raw, "bs_constraints.value_count", i32s(cn));
+        set(&mut raw, "bs_constraint_values.key", f32s(ck));
+        set(&mut raw, "bs_constraint_values.weight", f32s(cw));
     }
     if v >= 5 {
         let split = |v: &[(i32, i32)]| {
@@ -1114,18 +1444,70 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         set(&mut raw, "art_mesh_keyforms.screen_color", i32s(as_));
     }
     if v >= 6 {
-        if part_order.iter().any(|&p| m.parts[p].offscreen) {
-            // TODO: offscreen export (moc3.md §8.9).
-            rep.warnings
-                .push("offscreen rendering is not exported yet; parts render inline".into());
+        // Offscreen renderings (moc3.md §8.9): one per offscreen part.
+        let mut flags = Vec::new();
+        let mut blend = Vec::new();
+        let (mut cb, mut cn) = (Vec::new(), Vec::new());
+        let mut clips2: Vec<i32> = raw_clips.clone();
+        for &p in &off_parts {
+            let part = &m.parts[p];
+            // Parts are never culled: double-sided (4); inverted mask (8).
+            let mut f = 4u8;
+            if part.invert_clip {
+                f |= 8;
+            }
+            flags.push(f);
+            blend.push(
+                i32::from(part.color_composition.moc3_code())
+                    | (i32::from(part.alpha_composition.moc3_code()) << 8),
+            );
+            // TODO(Q-0036): where part clip lists go in the clip pool.
+            let list: Vec<i32> = part
+                .clip
+                .iter()
+                .filter_map(|c| mesh_index.get(c).copied())
+                .collect();
+            // An empty list starts at 0 (observed).
+            cb.push(if list.is_empty() {
+                0
+            } else {
+                count(clips2.len())?
+            });
+            cn.push(count(list.len())?);
+            clips2.extend(list);
         }
-        set(&mut raw, "parts.offscreen", i32s(vec![-1; n_parts]));
+        if clips2.len() != raw_clips.len() {
+            raw.counts[c::CLIP_MASKS] = count(clips2.len())?;
+            set(&mut raw, "clip_masks", i32s(clips2));
+        }
+        let n_off = off_owner.len();
+        raw.counts[c::OFFSCREENS] = count(n_off)?;
+        raw.counts[c::OFFSCREEN_KEYFORMS] = count(off_opacity.len())?;
+        set(&mut raw, "parts.offscreen", i32s(part_off));
         set(&mut raw, "art_meshes.blend_mode", i32s(a.blend_mode));
+        set(&mut raw, "offscreens.runtime", SectionData::Runtime(n_off));
+        set(&mut raw, "offscreens.owner", i32s(off_owner));
+        set(&mut raw, "offscreens.flags", SectionData::U8(flags));
+        set(&mut raw, "offscreens.blend_mode", i32s(blend));
+        set(&mut raw, "offscreens.clip_begin", i32s(cb));
+        set(&mut raw, "offscreens.clip_count", i32s(cn));
         set(
             &mut raw,
             "part_keyforms.offscreen_keyform",
-            i32s(vec![-1; n_part_kf]),
+            i32s(part_off_kf),
         );
+        set(&mut raw, "offscreen_keyforms.opacity", f32s(off_opacity));
+        set(
+            &mut raw,
+            "offscreen_keyforms.multiply_color",
+            i32s(off_colors.iter().map(|c| c.0).collect()),
+        );
+        set(
+            &mut raw,
+            "offscreen_keyforms.screen_color",
+            i32s(off_colors.iter().map(|c| c.1).collect()),
+        );
+        let _ = n_part_kf;
     }
     let _ = (n_warp, n_rot);
 
@@ -1238,6 +1620,7 @@ fn build_groups(
     part_order: &[PartIndex],
     _mesh_order: &[MeshIndex],
     mesh_draw_orders: &[Vec<f32>],
+    offscreen: bool,
 ) -> Groups {
     enum Item {
         Mesh(i32),
@@ -1305,7 +1688,10 @@ fn build_groups(
             .iter()
             .map(|it| match it {
                 Item::Mesh(_) => 1,
-                Item::Group(q) => totals[group_of[q]],
+                // An offscreen part counts once more (moc3.md §8.7).
+                Item::Group(q) => {
+                    totals[group_of[q]] + i32::from(offscreen && m.parts[*q].offscreen)
+                }
             })
             .sum();
     }
