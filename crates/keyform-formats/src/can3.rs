@@ -270,7 +270,8 @@ fn load(
     }
     let mut a = Animation {
         name: root.string("name")?.unwrap_or_default(),
-        smooth_legacy: root.bool("isSmoothCurveLegacyMode")?.unwrap_or(false),
+        // A missing flag reads as legacy mode (Q-0028).
+        smooth_legacy: root.bool("isSmoothCurveLegacyMode")?.unwrap_or(true),
         ..Default::default()
     };
     if let Some(rm) = root.field("resourceManager")? {

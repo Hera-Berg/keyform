@@ -274,6 +274,16 @@ pub fn clamp_handles(c: &mut Curve, lo: f64, hi: f64) {
 
 // -------------------------------------------------------------- key editing
 
+/// The clamp range of an attribute's curve: its own stored range,
+/// unbounded for repeat attributes (Q-0028).
+pub fn clamp_range(a: &keyform_model::animation::Attr) -> (f64, f64) {
+    if a.repeat.is_some() {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    } else {
+        (a.range.0.min(a.range.1), a.range.0.max(a.range.1))
+    }
+}
+
 /// After every edit (§3.2–3.3): anchors clamped to [lo, hi] (handles move
 /// with them) and rounded to 1/10000, SMOOTH handles recomputed, handles
 /// clamped to their segment and the range.

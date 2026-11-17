@@ -89,7 +89,7 @@ impl AnimState {
         let Some(a) = self.attr_mut() else {
             return false;
         };
-        let range = a.range;
+        let range = keyform_anim::scene::clamp_range(a);
         f(&mut a.curve, frame);
         keyform_anim::scene::refresh(&mut a.curve, range.0, range.1, legacy);
         if self.doc.animation == before {
@@ -672,7 +672,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
                 let legacy = st.doc.animation.smooth_legacy;
                 if let Some(at) = st.attr_mut() {
                     if move_key(&mut at.curve, k, f, v) {
-                        let range = at.range;
+                        let range = keyform_anim::scene::clamp_range(at);
                         keyform_anim::scene::refresh(&mut at.curve, range.0, range.1, legacy);
                         st.key = at.curve.keys.iter().position(|x| x.frame == f);
                     }

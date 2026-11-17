@@ -2178,8 +2178,19 @@ fn deform_paths_rebind() {
                             let q = cs[*curve].point(*ct);
                             let d = (q[0] - pos[0]).hypot(q[1] - pos[1]);
                             n += 1;
-                            worst = worst.max(d);
-                            if d > 0.5 {
+                            // Files last saved by a 4.2 editor store 2-point
+                            // segments as straight lines (Q-0026): a few px
+                            // of tolerance there.
+                            let cv = &p.curves[*curve];
+                            let seg = ct.floor() as usize;
+                            let corner = |k: usize| p.points[cv.points[k % cv.points.len()]].corner;
+                            let two_point =
+                                cv.points.len() == 2 || (corner(seg) && corner(seg + 1));
+                            let tol = if two_point { 3.0 } else { 0.5 };
+                            if !two_point {
+                                worst = worst.max(d);
+                            }
+                            if d > tol {
                                 bad += 1;
                                 if bad <= 5 {
                                     let c = &p.curves[*curve];
@@ -2834,7 +2845,11 @@ fn can3_motion_export() {
             // hiyori_free's runtime m07 was exported from another revision
             // of the scene (its ParamCheek key at frame 30 is 0 in the .can3,
             // 1 in the motion).
-            let known = path.ends_with("hiyori_free_t03.can3") && s.name == "hiyori_m07";
+            // hiyori_free m03 / m05: the reference didn't clamp two
+            // recomputed handles to their ±10 attribute range there, though
+            // it did in hiyori_pro (Q-0029).
+            let known = path.ends_with("hiyori_free_t03.can3")
+                && matches!(s.name.as_str(), "hiyori_m07" | "hiyori_m03" | "hiyori_m05");
             if !notes.is_empty() && !known {
                 differ += 1;
                 eprintln!("{}: {}", s.name, notes.join("; "));
@@ -2918,7 +2933,8 @@ fn can3_save_edits() {
                     }
                     c.types[0] = CurveType::Step;
                     delete_key(c, 2);
-                    refresh(c, a.range.0, a.range.1, legacy);
+                    let (lo, hi) = keyform_anim::scene::clamp_range(a);
+                    refresh(&mut a.curve, lo, hi, legacy);
                     edited += 1;
                 }
             }

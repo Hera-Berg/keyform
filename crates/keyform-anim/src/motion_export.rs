@@ -1,10 +1,12 @@
 //! motion3.json export from an animation scene.
-//! spec: 60-animation/motion3-json.md §2, animation-model.md §6
+//! spec: 60-animation/motion3-json.md §2, animation-model.md §3.2–3.3, §6
 
-use keyform_model::animation::{Attr, CurveType, IntCurve, Scene, Track, TrackKind};
+use keyform_model::animation::{
+    Attr, Curve as KeyCurve, CurveType, IntCurve, Scene, Track, TrackKind,
+};
 
 use crate::motion::{Curve, Motion, Segment, Target};
-use crate::scene::{eval_curve, eval_int, param_id, part_id, step_frame};
+use crate::scene::{eval_curve, eval_int, param_id, part_id, segment_points, step_frame};
 
 /// Which curves are written (export option).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,8 +26,8 @@ pub struct ExportOptions {
     pub filter: CurveFilter,
     pub exclude_shy: bool,
     pub exclude_frozen: bool,
-    /// The document's `isSmoothCurveLegacyMode`: recomputed SMOOTH handles
-    /// are clamped to the range (§3.3). TODO(Q-0028)
+    /// The document's `isSmoothCurveLegacyMode` (which keys get automatic
+    /// handles, animation-model.md §3.2 item 4).
     pub legacy_smooth: bool,
 }
 
@@ -36,7 +38,7 @@ impl Default for ExportOptions {
             filter: CurveFilter::WithKeys,
             exclude_shy: false,
             exclude_frozen: false,
-            legacy_smooth: false,
+            legacy_smooth: true,
         }
     }
 }
@@ -68,11 +70,6 @@ fn ms(v: i32) -> Option<f32> {
     (v >= 0).then(|| v as f32 / 1000.0)
 }
 
-/// The curve of attribute `a` over [s, e] from its keys: the first point
-/// at time 0, one segment per key segment (LINEAR → linear, BEZIER and
-/// SMOOTH → bezier through the handles, STEP → stepped, INVERSE_STEP →
-/// inverse stepped), held linearly to the end. `value` maps the curve
-/// value (clamping or effects). spec: motion3-json.md §1–2
 /// Rounds in f64 to `d` decimals the way the file is written (exact
 /// binary value, ties to even) before narrowing to the motion's f32, so
 /// the written text is the reference's.
@@ -80,97 +77,156 @@ fn dec(v: f64, d: usize) -> f32 {
     format!("{v:.d$}").parse::<f64>().unwrap_or(0.0) as f32
 }
 
-#[allow(clippy::too_many_arguments)]
+fn cubic(p: [f64; 4], t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
+}
+
+/// The curve parameter where the segment's frame cubic reaches `x`.
+fn param_at(fx: [f64; 4], x: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if cubic(fx, mid) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+type P = (f64, f64);
+
+/// The part of a cubic Bézier between parameters a < b (de Casteljau).
+fn sub_bezier(p: [P; 4], a: f64, b: f64) -> [P; 4] {
+    fn split(p: [P; 4], t: f64) -> ([P; 4], [P; 4]) {
+        let l = |a: P, b: P| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        let (ab, bc, cd) = (l(p[0], p[1]), l(p[1], p[2]), l(p[2], p[3]));
+        let (abc, bcd) = (l(ab, bc), l(bc, cd));
+        let m = l(abc, bcd);
+        ([p[0], ab, abc, m], [m, bcd, cd, p[3]])
+    }
+    let right = if a > 0.0 { split(p, a).1 } else { p };
+    if b >= 1.0 {
+        return right;
+    }
+    let t = if a < 1.0 { (b - a) / (1.0 - a) } else { 1.0 };
+    split(right, t).0
+}
+
+/// The curve as written: SMOOTH handles recomputed and clamped to the
+/// attribute's own range (unbounded for repeat attributes); key values
+/// as stored. spec: motion3-json.md §2, animation-model.md §3.2–3.3
+fn export_curve(a: &Attr, legacy: bool) -> KeyCurve {
+    let mut c = a.curve.clone();
+    if c.types.contains(&CurveType::Smooth) {
+        crate::scene::smooth_handles(&mut c, legacy);
+        let (lo, hi) = if a.repeat.is_some() {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        } else {
+            (a.range.0.min(a.range.1), a.range.0.max(a.range.1))
+        };
+        crate::scene::clamp_handles(&mut c, lo, hi);
+    }
+    c
+}
+
+/// The segments of curve `c` over [s, e] with `d` decimals and value
+/// map `value`. spec: motion3-json.md §2 "Segments of one curve"
 fn keyed_curve(
-    a: &Attr,
+    c: &KeyCurve,
     s: i32,
     e: i32,
     fps: f64,
     d: usize,
-    clamp: bool,
-    value: &dyn Fn(f64, f64) -> f64,
+    value: &dyn Fn(f64) -> f64,
 ) -> ([f32; 2], Vec<Segment>) {
-    let t = |f: f64| dec((f - f64::from(s)) / fps, d);
-    let value = |v: f64, f: f64| f64::from(dec(value(v, f), d));
-    // SMOOTH handles are recomputed (§3.2), as the reference's exports
-    // show (flat keys' handles are exactly their value, others match the
-    // recomputation to the last digit). TODO(Q-0028): the validity clamp.
-    let mut smooth = a.curve.clone();
-    if smooth.types.contains(&CurveType::Smooth) {
-        crate::scene::smooth_handles(&mut smooth, false);
-        if clamp {
-            crate::scene::clamp_handles(
-                &mut smooth,
-                a.range.0.min(a.range.1),
-                a.range.0.max(a.range.1),
-            );
-        }
+    let (sf, ef) = (f64::from(s), f64::from(e));
+    let t = |f: f64| dec((f - sf) / fps, d);
+    let v = |x: f64| dec(value(x), d);
+    let k = &c.keys;
+    let constant = |x: f64| ([0.0, v(x)], vec![Segment::Linear([t(ef), v(x)])]);
+    if k.is_empty() {
+        return constant(c.base);
     }
-    let c = &smooth;
-    let keys: Vec<usize> = (0..c.keys.len())
-        .filter(|&i| (s..=e).contains(&c.keys[i].frame))
-        .collect();
-    let at = |f: f64| value(eval_curve(c, f), f) as f32;
+    if k.len() == 1 {
+        return constant(k[0].value);
+    }
+    if k.iter().all(|x| f64::from(x.frame) <= sf) {
+        return constant(k[k.len() - 1].value);
+    }
+    if k.iter().all(|x| f64::from(x.frame) >= ef) {
+        return constant(k[0].value);
+    }
     let mut segs = Vec::new();
-    let start = [0.0, at(f64::from(s))];
-    // A single key: its value held over the whole range, wherever the key
-    // sits (observed).
-    if keys.len() <= 1 {
-        let v = keys.first().map_or(start[1], |&i| {
-            value(c.keys[i].value, f64::from(c.keys[i].frame)) as f32
-        });
-        return ([0.0, v], vec![Segment::Linear([t(f64::from(e)), v])]);
-    }
-    let mut cur = f64::from(s);
-    if let Some(&i0) = keys.first() {
-        let f0 = f64::from(c.keys[i0].frame);
-        if f0 > cur {
-            segs.push(Segment::Linear([t(f0), at(f0)]));
-            cur = f0;
+    let f0 = f64::from(k[0].frame);
+    let start = if f0 > sf {
+        // A flat lead-in to the first key.
+        segs.push(Segment::Linear([t(f0), v(k[0].value)]));
+        [0.0, v(k[0].value)]
+    } else {
+        [0.0, v(eval_curve(c, sf))]
+    };
+    for i in 0..k.len() - 1 {
+        let (fa, fb) = (f64::from(k[i].frame), f64::from(k[i + 1].frame));
+        if fb <= sf || fa >= ef {
+            continue;
         }
-    }
-    for w in keys.windows(2) {
-        let (i, j) = (w[0], w[1]);
-        let (ki, kj) = (&c.keys[i], &c.keys[j]);
-        let end = [
-            t(f64::from(kj.frame)),
-            value(kj.value, f64::from(kj.frame)) as f32,
-        ];
+        let (ca, cb) = (fa.max(sf), fb.min(ef));
+        let end_v = if cb < fb {
+            eval_curve(c, cb)
+        } else {
+            k[i + 1].value
+        };
+        let end = [t(cb), v(end_v)];
         let seg = match c.type_at(i) {
             CurveType::Linear => Segment::Linear(end),
             CurveType::Step => Segment::Stepped(end),
             CurveType::InverseStep => Segment::InverseStepped(end),
             CurveType::Bezier | CurveType::Smooth => {
-                let p = crate::scene::segment_points(c, i);
-                let fi = f64::from(ki.frame);
+                let p = segment_points(c, i);
+                let fx = [p[0].0, p[1].0, p[2].0, p[3].0];
+                let (ua, ub) = (
+                    if ca > fa { param_at(fx, ca) } else { 0.0 },
+                    if cb < fb { param_at(fx, cb) } else { 1.0 },
+                );
+                let q = if ua > 0.0 || ub < 1.0 {
+                    sub_bezier(p, ua, ub)
+                } else {
+                    p
+                };
                 Segment::Bezier {
-                    c1: [t(p[1].0), value(p[1].1, fi) as f32],
-                    c2: [t(p[2].0), value(p[2].1, fi) as f32],
+                    c1: [t(q[1].0), v(q[1].1)],
+                    c2: [t(q[2].0), v(q[2].1)],
                     end,
                 }
             }
         };
         segs.push(seg);
-        cur = f64::from(kj.frame);
     }
-    if cur < f64::from(e) || segs.is_empty() {
-        segs.push(Segment::Linear([
-            t(f64::from(e)),
-            at(f64::from(e).max(cur)),
-        ]));
+    let fl = f64::from(k[k.len() - 1].frame);
+    if fl < ef {
+        segs.push(Segment::Linear([t(ef), v(k[k.len() - 1].value)]));
     }
     (start, segs)
 }
 
 /// A curve sampled at every frame with stepped segments where the value
 /// changes (frame-step export, §2 "Frame step").
-fn sampled_curve(s: i32, e: i32, fps: f64, v: &dyn Fn(f64) -> f64) -> ([f32; 2], Vec<Segment>) {
-    let t = |f: i32| (f64::from(f - s) / fps) as f32;
-    let start = [0.0, v(f64::from(s)) as f32];
+fn sampled_curve(
+    s: i32,
+    e: i32,
+    fps: f64,
+    d: usize,
+    v: &dyn Fn(f64) -> f64,
+) -> ([f32; 2], Vec<Segment>) {
+    let t = |f: i32| dec(f64::from(f - s) / fps, d);
+    let start = [0.0, dec(v(f64::from(s)), d)];
     let mut segs = Vec::new();
     let mut last = start[1];
     for f in s + 1..=e {
-        let x = v(f64::from(f)) as f32;
+        let x = dec(v(f64::from(f)), d);
         if x != last || f == e {
             segs.push(Segment::Stepped([t(f), x]));
             last = x;
@@ -198,8 +254,23 @@ pub fn export_motion(
     };
     let (start, end) = export_range(s, o);
     let fps = s.fps;
-    let mut curves = Vec::new();
-    for (k, a) in m.params.iter().enumerate() {
+    let curve_of = |target: Target, id: String, a: &Attr, d: usize| -> Curve {
+        let c = export_curve(a, o.legacy_smooth);
+        let (p0, segs) = keyed_curve(&c, start, end, fps, d, &|v| v);
+        Curve {
+            target,
+            id,
+            fade_in: ms(a.fade_in_ms),
+            fade_out: ms(a.fade_out_ms),
+            start: p0,
+            segments: segs,
+        }
+    };
+    // Processing order (decides the digits left for Duration):
+    // Parameters → PartOpacity → Model/Opacity → EyeBlink → LipSync.
+    let mut last_digits = 3usize;
+    let mut params = Vec::new();
+    for a in &m.params {
         if !keep(a, o) {
             continue;
         }
@@ -212,79 +283,62 @@ pub fn export_motion(
         }
         let gs = group_step(a).or_else(|| track.frame_step.clone());
         let stepped = gs.as_ref().is_some_and(|c| !c.keys.is_empty());
-        // Eye blink and lip sync are exported as Model curves, so the
-        // parameter curve is the plain curve (§2 "Targets"). Key values
-        // are written as stored: the reference doesn't clamp them to the
-        // attribute's (possibly stale) range.
-        let (p0, segs) = if stepped {
+        let curve = if stepped {
             let c = &a.curve;
-            sampled_curve(start, end, fps, &|f| {
+            let (p0, segs) = sampled_curve(start, end, fps, 3, &|f| {
                 eval_curve(c, step_frame(f, gs.as_ref()))
-            })
+            });
+            Curve {
+                target: Target::Parameter,
+                id,
+                fade_in: ms(a.fade_in_ms),
+                fade_out: ms(a.fade_out_ms),
+                start: p0,
+                segments: segs,
+            }
         } else {
-            keyed_curve(a, start, end, fps, 3, o.legacy_smooth, &|v, _| v)
+            curve_of(Target::Parameter, id, a, 3)
         };
-        let _ = k;
-        curves.push(Curve {
-            target: Target::Parameter,
-            id,
-            fade_in: ms(a.fade_in_ms),
-            fade_out: ms(a.fade_out_ms),
-            start: p0,
-            segments: segs,
-        });
+        params.push(curve);
+        last_digits = 3;
     }
-    // Part curves come out sorted by part ID (observed on chitose, whose
-    // model and scene both list them in another order). TODO(Q-0028)
-    let mut parts: Vec<&Attr> = m.parts.iter().collect();
-    parts.sort_by(|a, b| part_id(&a.id).cmp(&part_id(&b.id)));
-    for a in parts {
-        if !keep(a, o) {
-            continue;
-        }
+    // Part curves sorted by part ID (observed).
+    let mut part_attrs: Vec<&Attr> = m.parts.iter().filter(|a| keep(a, o)).collect();
+    part_attrs.sort_by(|a, b| part_id(&a.id).cmp(&part_id(&b.id)));
+    let mut parts = Vec::new();
+    for a in part_attrs {
         let Some(id) = id_of(a).or_else(|| part_id(&a.id).map(str::to_owned)) else {
             continue;
         };
-        let (p0, segs) = keyed_curve(a, start, end, fps, 2, o.legacy_smooth, &|v, _| v);
-        curves.push(Curve {
-            target: Target::PartOpacity,
-            id,
-            fade_in: ms(a.fade_in_ms),
-            fade_out: ms(a.fade_out_ms),
-            start: p0,
-            segments: segs,
-        });
+        parts.push(curve_of(Target::PartOpacity, id, a, 2));
+        last_digits = 2;
     }
-    // Model curves: the track's visual opacity, the effects' drivers.
-    // TODO(Q-0028): which effect attributes become Model/EyeBlink and
-    // Model/LipSync.
-    let mut model_curve = |id: &str, a: &Attr, scale: f64| {
-        if !keep(a, o) {
-            return;
-        }
-        let d = if id == "Opacity" { 2 } else { 3 };
-        let (p0, segs) = keyed_curve(a, start, end, fps, d, o.legacy_smooth, &|v, _| v * scale);
-        curves.push(Curve {
-            target: Target::Model,
-            id: id.to_owned(),
-            fade_in: None,
-            fade_out: None,
-            start: p0,
-            segments: segs,
-        });
-    };
-    if let Some(op) = &track.opacity {
-        // The visual opacity is in percent when its range goes past 1.
-        model_curve("Opacity", op, if op.range.1 > 1.0 { 0.01 } else { 1.0 });
+    // Model curves: the visual opacity (0–1, as is), eyeOpen, soundLevel.
+    let mut model = Vec::new();
+    if let Some(op) = track.opacity.as_ref().filter(|a| keep(a, o)) {
+        model.push(curve_of(Target::Model, "Opacity".into(), op, 2));
+        last_digits = 2;
     }
-    if let Some(eb) = &m.eye_blink {
-        model_curve("EyeBlink", &eb.eye_open, 1.0);
+    if let Some(eb) = m.eye_blink.as_ref().filter(|e| keep(&e.eye_open, o)) {
+        model.push(curve_of(Target::Model, "EyeBlink".into(), &eb.eye_open, 3));
+        last_digits = 3;
     }
-    if let Some(ls) = &m.lip_sync {
-        model_curve("LipSync", &ls.sound_level, 1.0);
+    if let Some(ls) = m.lip_sync.as_ref().filter(|e| keep(&e.sound_level, o)) {
+        model.push(curve_of(
+            Target::Model,
+            "LipSync".into(),
+            &ls.sound_level,
+            3,
+        ));
+        last_digits = 3;
     }
+    // Output order: Model curves, Parameters, PartOpacity.
+    let mut curves = model;
+    curves.extend(params);
+    curves.extend(parts);
+    let d = last_digits;
     Some(Motion {
-        duration: (f64::from(end - start) / fps) as f32,
+        duration: dec(f64::from(end - start) / fps, d),
         fps: fps as f32,
         fade_in: ms(s.fade_in_ms),
         fade_out: ms(s.fade_out_ms),
@@ -295,7 +349,7 @@ pub fn export_motion(
             .user_data
             .iter()
             .filter(|u| (start..=end).contains(&u.0))
-            .map(|(f, v)| ((f64::from(f - start) / fps) as f32, v.clone()))
+            .map(|(f, v)| (dec(f64::from(f - start) / fps, d), v.clone()))
             .collect(),
     })
 }
@@ -303,4 +357,64 @@ pub fn export_motion(
 /// Integer curve value helper re-exported for callers.
 pub fn int_at(c: &IntCurve, x: f64) -> i32 {
     eval_int(c, x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keyform_model::animation::Key;
+
+    fn key(frame: i32, value: f64) -> Key {
+        Key {
+            frame,
+            value,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn segment_rules() {
+        let c = KeyCurve {
+            keys: vec![key(10, 1.0), key(20, 3.0), key(40, 5.0)],
+            types: vec![CurveType::Linear, CurveType::Smooth, CurveType::Smooth],
+            ..Default::default()
+        };
+        // First key after start: flat lead-in; last key before end: tail.
+        let (p0, s) = keyed_curve(&c, 0, 50, 10.0, 3, &|v| v);
+        assert_eq!(p0, [0.0, 1.0]);
+        assert_eq!(s[0], Segment::Linear([1.0, 1.0]));
+        assert_eq!(s[1], Segment::Linear([2.0, 3.0]));
+        assert!(matches!(
+            s[2],
+            Segment::Bezier {
+                end: [4.0, 5.0],
+                ..
+            }
+        ));
+        assert_eq!(s[3], Segment::Linear([5.0, 5.0]));
+        // Cut at both ends: the range starts inside the linear segment and
+        // ends inside the Bezier one.
+        let (p0, s) = keyed_curve(&c, 15, 30, 10.0, 3, &|v| v);
+        assert_eq!(p0, [0.0, 2.0]);
+        assert_eq!(s[0], Segment::Linear([0.5, 3.0]));
+        let Segment::Bezier { end, .. } = s[1] else {
+            panic!()
+        };
+        assert!((end[0] - 1.5).abs() < 1e-6);
+        assert!((f64::from(end[1]) - eval_curve(&c, 30.0)).abs() < 1e-3);
+        assert_eq!(s.len(), 2);
+        // All keys before the range: constant at the last key.
+        let (p0, s) = keyed_curve(&c, 45, 50, 10.0, 3, &|v| v);
+        assert_eq!((p0, s), ([0.0, 5.0], vec![Segment::Linear([0.5, 5.0])]));
+    }
+
+    #[test]
+    fn bezier_cut_matches_curve() {
+        let p = [(0.0, 0.0), (1.0, 2.0), (2.0, -1.0), (3.0, 1.0)];
+        let q = sub_bezier(p, 0.25, 0.75);
+        let fx = [p[0].0, p[1].0, p[2].0, p[3].0];
+        let fy = [p[0].1, p[1].1, p[2].1, p[3].1];
+        assert!((q[0].1 - cubic(fy, 0.25)).abs() < 1e-12);
+        assert!((q[3].0 - cubic(fx, 0.75)).abs() < 1e-12);
+    }
 }

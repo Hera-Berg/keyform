@@ -261,17 +261,9 @@ impl Curve {
                 seg_of_sub.push((g, si, l));
             }
             let sp: Vec<V2> = ids.iter().map(|&i| pts[i]).collect();
-            let (v, d) = if sp.len() == 2 {
-                // TODO(Q-0026): a 2-point sub-curve is a straight segment at
-                // uniform speed in the reference (observed on hiyori's
-                // closed curves with adjacent corners), not the smoothed
-                // Hermite of sns-spline.md §1.
-                let d = dist(sp[1], sp[0]);
-                let u = normalize(sub(sp[1], sp[0]));
-                (vec![u, u], vec![d])
-            } else {
-                open_velocities(&sp)
-            };
+            // 2-point sub-curves too follow sns-spline.md §1 (no special
+            // case, Q-0026).
+            let (v, d) = open_velocities(&sp);
             c.subs.push((sp, v, d));
         }
         c.segs = vec![(0, 0); nseg];

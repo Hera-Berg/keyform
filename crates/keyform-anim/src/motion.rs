@@ -175,6 +175,22 @@ impl Motion {
         })
     }
 
+    /// Decimal digits the shared formatter is left with after the curves:
+    /// those of the last curve in processing order.
+    pub fn meta_digits(&self) -> i32 {
+        let rank = |c: &Curve| match (c.target, c.id.as_str()) {
+            (Target::Parameter, _) => 0,
+            (Target::PartOpacity, _) => 1,
+            (Target::Model, "Opacity") => 2,
+            (Target::Model, "EyeBlink") => 3,
+            (Target::Model, _) => 4,
+        };
+        match self.curves.iter().max_by_key(|c| rank(c)).map(rank) {
+            Some(1) | Some(2) => 2,
+            _ => 3,
+        }
+    }
+
     /// Serializes in the reference layout (§1–2): 3 decimals, 2 for opacity curves.
     pub fn to_json(&self) -> Value {
         let mut segs_total = 0;
@@ -235,8 +251,11 @@ impl Motion {
             })
             .collect();
         let mut meta = Map::new();
-        // Duration: 2 decimals (observed in the reference's exports).
-        meta.insert("Duration".into(), num(f64::from(self.duration), 2));
+        // Duration (and UserData times) use the shared formatter's digits
+        // as left by the last curve processed (Parameters → PartOpacity →
+        // Model/Opacity → EyeBlink → LipSync). spec: motion3-json.md §2
+        let md = self.meta_digits();
+        meta.insert("Duration".into(), num(f64::from(self.duration), md));
         meta.insert("Fps".into(), json!(f64::from(self.fps)));
         if let Some(f) = self.fade_in {
             meta.insert("FadeInTime".into(), num(f64::from(f), 3));
@@ -267,7 +286,7 @@ impl Motion {
                 Value::Array(
                     self.user_data
                         .iter()
-                        .map(|(t, v)| json!({ "Time": num(f64::from(*t), 3), "Value": v }))
+                        .map(|(t, v)| json!({ "Time": num(f64::from(*t), md), "Value": v }))
                         .collect(),
                 ),
             );
