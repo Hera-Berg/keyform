@@ -88,8 +88,29 @@ pub fn render_frame(
     percent: f32,
     white: bool,
 ) -> Result<RgbaImage, String> {
-    let (sw, sh) = doc.stage_size();
-    let k = percent / 100.0;
+    let si = doc.anim.as_ref().ok_or("No animation is open.")?.scene;
+    render_scene(doc, si, frame, percent / 100.0, white, 0)
+}
+
+/// Scene `si` at `frame`, `k` pixels per scene pixel: its model track
+/// (offscreen, composited with its group opacity) and its image and nested
+/// scene tracks in drawing order. `depth` limits nesting.
+/// spec: animation-model.md §5.1
+pub fn render_scene(
+    doc: &Document,
+    si: usize,
+    frame: f64,
+    k: f32,
+    white: bool,
+    depth: u32,
+) -> Result<RgbaImage, String> {
+    let st = doc.anim.as_ref().ok_or("No animation is open.")?;
+    let s = st.doc.animation.scenes.get(si).ok_or("No such scene.")?;
+    let (sw, sh) = if s.canvas.0 > 0 && s.canvas.1 > 0 {
+        (s.canvas.0 as f32, s.canvas.1 as f32)
+    } else {
+        (s.width.max(1) as f32, s.height.max(1) as f32)
+    };
     let view = View {
         width: ((sw * k).floor() as u32).max(1),
         height: ((sh * k).floor() as u32).max(1),
@@ -98,24 +119,36 @@ pub fn render_frame(
         rotation: 0.0,
         mirror: false,
     };
-    let f = doc.anim_frame_at(frame).ok_or("No animation is open.")?;
-    // The track is drawn offscreen (transparent), then composited with its
-    // group opacity over the background. spec: animation-model.md §5.1
-    let mut img = CpuRenderer::new(&doc.model)
-        .render(
-            &f,
-            &RenderOptions {
-                view,
-                background: None,
-                supersample: 2,
-                msaa: true,
-            },
-        )
-        .map_err(|e| e.to_string())?;
-    keyform_render::composite_group(&mut img, doc.anim_group_opacity(frame), None);
-    // Image tracks behind and in front of the model track.
-    let layers = doc.image_layers(frame);
-    let mut out = keyform_formats::image::RgbaImage {
+    let opts = crate::animation::FrameOpts {
+        scene: Some(si),
+        ..Default::default()
+    };
+    // The model track is drawn offscreen (transparent), then composited
+    // with its group opacity. A scene without one has only its layers.
+    let img = match doc.anim_frame_opts(frame, &opts) {
+        Some(f) => {
+            let mut img = CpuRenderer::new(&doc.model)
+                .render(
+                    &f,
+                    &RenderOptions {
+                        view,
+                        background: None,
+                        supersample: 2,
+                        msaa: true,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            keyform_render::composite_group(&mut img, doc.anim_group_opacity_in(si, frame), None);
+            img
+        }
+        None => RgbaImage {
+            width: view.width,
+            height: view.height,
+            data: vec![0; (view.width * view.height * 4) as usize],
+        },
+    };
+    let layers = doc.image_layers_in(si, frame, k, depth);
+    let mut out = RgbaImage {
         width: img.width,
         height: img.height,
         data: vec![0; img.data.len()],

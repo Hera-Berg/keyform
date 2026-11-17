@@ -2503,3 +2503,103 @@ pub fn write_controllers(
     fix_markers(xml);
     Ok(())
 }
+
+/// Adds a scene track to scene `index` that nests scene `nested`: visual
+/// effect (centred, anchor at the nested canvas centre, 100 %), duration =
+/// the nested scene's, `startFrame` 0, whole length.
+/// spec: animation-model.md §5.1 "Scene tracks"
+pub fn add_scene_track_xml(xml: &mut XmlDocument, index: usize, nested: usize) -> Result<()> {
+    if index == nested {
+        return Err(FormatError::Unsupported("a scene can't nest itself".into()));
+    }
+    let num = |e: &Element, path: &[&str]| -> Option<f64> {
+        let mut cur = e;
+        for p in path {
+            cur = cur.child_field(p)?;
+        }
+        cur.text.trim().parse().ok()
+    };
+    let (sh, j) = scene_obj(xml, index)?;
+    let scene_el = &xml.root.children[sh].children[j];
+    let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
+    let root = field_ref(scene_el, "rootTrack")
+        .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
+    let size = (
+        num(scene_el, &["canvas", "pixelWidth"]).unwrap_or(640.0) as i32,
+        num(scene_el, &["canvas", "pixelHeight"]).unwrap_or(640.0) as i32,
+    );
+    let (_, nj) = scene_obj(xml, nested)?;
+    let ns = &xml.root.children[sh].children[nj];
+    let ns_guid = field_ref(ns, "guid")
+        .ok_or_else(|| FormatError::Invalid("nested scene without guid".into()))?;
+    let ns_name = ns
+        .child_field("name")
+        .map(|n| n.text.clone())
+        .unwrap_or_default();
+    let frames = num(ns, &["movieInfo", "duration"]).unwrap_or(60.0) as i32;
+    let own = (
+        num(ns, &["canvas", "pixelWidth"]).unwrap_or(640.0) as f32,
+        num(ns, &["canvas", "pixelHeight"]).unwrap_or(640.0) as f32,
+    );
+    let root_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(root.as_str()))
+        .ok_or_else(|| FormatError::Invalid("root track not found".into()))?;
+    let root_guid = field_ref(root_el.child_field("super").unwrap_or(root_el), "guid")
+        .ok_or_else(|| FormatError::Invalid("root track without guid".into()))?;
+    const T: &str = "CMvTrack_Scene_Source";
+    let mut g = Graph::on(xml)?;
+    let tg = g.guid("CTrackGuid", &format!("{ns_name} {T}"));
+    let track = g.reserve(T);
+    let c = common(&mut g);
+    let visual = visual_effect(&mut g, &c, T, &track, size, own);
+    let mut src = track_source(
+        &ns_name,
+        &tg,
+        frames,
+        T,
+        &track,
+        Some(&visual),
+        Some(&root_guid),
+        &scene_id,
+    );
+    if let Some(em) = src.children.get_mut(16) {
+        em.children = vec![typed_array(
+            "effectList",
+            "ICMvEffect",
+            vec![item("CMvEffect_VisualDefault", &visual)],
+        )];
+    }
+    g.fill(
+        &track,
+        vec![
+            src,
+            r("CSceneGuid", "resourceGuid", &ns_guid),
+            b("isWorkAreaReferenced", false),
+            i("startFrame", 0),
+        ],
+        &[],
+    );
+    let sh = shared(xml).expect("shared");
+    for e in xml.root.children[sh].children.iter_mut() {
+        let id = e.attr("xs.id").map(str::to_owned);
+        if id.as_deref() == Some(scene_id.as_str()) {
+            if let Some(l) = e
+                .child_field_mut("trackSourceSet")
+                .and_then(|t| t.child_field_mut("_sources"))
+            {
+                l.children.push(item(T, &track));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.as_deref() == Some(root.as_str()) {
+            if let Some(l) = e.child_field_mut("_childTrackGuids") {
+                l.children.push(item("CTrackGuid", &tg));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+    }
+    fix_markers(xml);
+    Ok(())
+}

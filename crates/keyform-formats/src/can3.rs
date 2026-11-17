@@ -334,6 +334,13 @@ impl Can3Document {
 
     /// Adds a sound track playing the WAV `path` to scene `index`, as the
     /// lip-sync source of the scene's model track.
+    /// Adds a scene track to scene `index` nesting scene `nested`.
+    pub fn add_scene_track(&mut self, index: usize, nested: usize) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::add_scene_track_xml(&mut self.xml, index, nested)?;
+        self.reload()
+    }
+
     /// Adds an image track for the image at `path` (`size` pixels).
     pub fn add_image_track(&mut self, index: usize, path: &str, size: (u32, u32)) -> Result<()> {
         self.sync()?;

@@ -851,6 +851,60 @@ mod tests {
     /// The track transform: shear is a raw factor applied after scaling and
     /// before rotation; rotation is clockwise on screen. spec: §5.1
     #[test]
+    fn nested_scene_frames() {
+        use keyform_model::animation::{SceneTrack, Track, TrackKind};
+        let nested = keyform_model::animation::Scene {
+            name: String::new(),
+            guid: String::new(),
+            width: 0,
+            height: 0,
+            canvas: (0, 0),
+            duration: 9,
+            fps: 30.0,
+            work_start: 2,
+            work_end: 5,
+            fade_in_ms: -1,
+            fade_out_ms: -1,
+            bezier_restricted: false,
+            loop_motion: false,
+            start_frame: 0,
+            export_motion: true,
+            default_param_curve: CurveType::Smooth,
+            default_part_curve: CurveType::Step,
+            target: String::new(),
+            tracks: Vec::new(),
+        };
+        let mut st = SceneTrack {
+            start_frame: 3,
+            ..Default::default()
+        };
+        let mut t = Track {
+            name: String::new(),
+            guid: String::new(),
+            parent: None,
+            start: 0,
+            offset: 0,
+            duration: 100,
+            visible: true,
+            mute: false,
+            guide: false,
+            repeat: false,
+            kind: TrackKind::Group,
+            opacity: None,
+            frame_step: None,
+            visual: None,
+            user_data: Vec::new(),
+        };
+        assert_eq!(nested_frame(&t, &st, &nested, 7.0), 4.0);
+        // Repeat wraps within the nested length (10 frames).
+        t.repeat = true;
+        assert_eq!(nested_frame(&t, &st, &nested, 15.0), 2.0);
+        // Work area: 4 frames from frame 2.
+        st.work_area = true;
+        assert_eq!(nested_frame(&t, &st, &nested, 8.0), 3.0);
+    }
+
+    #[test]
     fn transform_with_shear() {
         let back = Placement {
             xy: [3.0, 4.0],
@@ -998,5 +1052,43 @@ mod tests {
         assert_eq!(form_difference(&o, 0.0).unwrap(), vec![2.0, 0.0]);
         assert_eq!(form_difference(&o, 15.0).unwrap(), vec![3.0, 1.0]);
         assert_eq!(form_difference(&o, 30.0).unwrap(), vec![4.0, 2.0]);
+    }
+}
+
+/// The nested scene's frame shown by scene track `t` at its local frame
+/// `x`. spec: animation-model.md §5.1 "Scene tracks"
+pub fn nested_frame(
+    t: &keyform_model::animation::Track,
+    st: &keyform_model::animation::SceneTrack,
+    nested: &keyform_model::animation::Scene,
+    x: f64,
+) -> f64 {
+    let ws = if st.work_area {
+        f64::from(nested.work_start)
+    } else {
+        0.0
+    };
+    let len = if st.work_area {
+        f64::from(nested.work_end - nested.work_start + 1)
+    } else {
+        f64::from(nested.duration + 1)
+    };
+    let remap = st.frame_no.as_ref().filter(|a| !a.curve.keys.is_empty());
+    let mut x = x;
+    if t.repeat {
+        let (s0, n) = match remap {
+            Some(a) => (
+                f64::from(st.start_frame),
+                (a.range.1 - a.range.0).abs() + 1.0,
+            ),
+            None => (f64::from(st.start_frame), len),
+        };
+        if n >= 1.0 {
+            x = (x - s0).rem_euclid(n) + s0;
+        }
+    }
+    match remap {
+        Some(a) => eval_curve(&a.curve, x - f64::from(st.start_frame)),
+        None => x - f64::from(st.start_frame) + ws,
     }
 }

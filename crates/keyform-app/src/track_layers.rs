@@ -17,6 +17,8 @@ pub struct ImageLayer {
     pub placement: Placement,
     /// Drawn in front of the model track.
     pub front: bool,
+    /// Rendered per frame (a nested scene): its texture must be refreshed.
+    pub dynamic: bool,
 }
 
 impl Document {
@@ -24,34 +26,84 @@ impl Document {
     /// drawn depth-first in timeline order with the top track in front, so
     /// one listed above the model track is drawn in front of it.
     /// spec: animation-model.md §5.1 (drawing order)
-    pub fn image_layers(&self, frame: f64) -> Vec<ImageLayer> {
+    pub fn image_layers(&self, frame: f64, nested_k: f32) -> Vec<ImageLayer> {
+        self.anim.as_ref().map_or_else(Vec::new, |a| {
+            self.image_layers_in(a.scene, frame, nested_k, 0)
+        })
+    }
+
+    /// [`Self::image_layers`] for scene `si`; nested scenes are rendered at
+    /// `nested_k` pixels per nested-scene pixel (frame mapping §5.1), at
+    /// most 4 levels deep.
+    pub fn image_layers_in(
+        &self,
+        si: usize,
+        frame: f64,
+        nested_k: f32,
+        depth: u32,
+    ) -> Vec<ImageLayer> {
         let Some(st) = self.anim.as_ref() else {
             return Vec::new();
         };
-        let Some(s) = st.scene() else {
+        let Some(s) = st.doc.animation.scenes.get(si) else {
             return Vec::new();
         };
-        let model = st.model_track().map_or(usize::MAX, |(i, _)| i);
+        let model = st.model_track_in(si).map_or(usize::MAX, |(i, _)| i);
         let mut out = Vec::new();
         for (i, t) in s.tracks.iter().enumerate().rev() {
-            let TrackKind::Image(it) = &t.kind else {
-                continue;
-            };
             let in_time =
                 frame >= f64::from(t.start) && frame < f64::from(t.start + t.duration.max(1));
             if !t.visible || t.guide || !in_time {
                 continue;
             }
-            let Some(img) = it.resource.as_ref().and_then(|g| st.images.get(g)) else {
-                continue;
-            };
             let x = frame - f64::from(t.start) + f64::from(t.offset);
-            out.push(ImageLayer {
-                guid: t.guid.clone(),
-                image: img.clone(),
-                placement: keyform_anim::scene::placement(t, x),
-                front: i < model,
-            });
+            match &t.kind {
+                TrackKind::Image(it) => {
+                    let Some(img) = it.resource.as_ref().and_then(|g| st.images.get(g)) else {
+                        continue;
+                    };
+                    out.push(ImageLayer {
+                        guid: t.guid.clone(),
+                        image: img.clone(),
+                        placement: keyform_anim::scene::placement(t, x),
+                        front: i < model,
+                        dynamic: false,
+                    });
+                }
+                TrackKind::Scene(sc) => {
+                    if depth >= 4 {
+                        continue;
+                    }
+                    let Some(ni) = sc
+                        .scene
+                        .as_ref()
+                        .and_then(|g| st.doc.animation.scenes.iter().position(|n| &n.guid == g))
+                        .filter(|&ni| ni != si)
+                    else {
+                        continue;
+                    };
+                    let nf =
+                        keyform_anim::scene::nested_frame(t, sc, &st.doc.animation.scenes[ni], x);
+                    let Ok(img) =
+                        crate::export_media::render_scene(self, ni, nf, nested_k, false, depth + 1)
+                    else {
+                        continue;
+                    };
+                    // The image is the nested canvas at `nested_k`: scale the
+                    // placement back to nested-canvas pixels.
+                    let mut pl = keyform_anim::scene::placement(t, x);
+                    pl.anchor = [pl.anchor[0] * nested_k, pl.anchor[1] * nested_k];
+                    pl.scale = [pl.scale[0] / nested_k, pl.scale[1] / nested_k];
+                    out.push(ImageLayer {
+                        guid: t.guid.clone(),
+                        image: Arc::new(img),
+                        placement: pl,
+                        front: i < model,
+                        dynamic: true,
+                    });
+                }
+                _ => {}
+            }
         }
         out
     }
@@ -176,6 +228,7 @@ mod tests {
                 opacity: 0.5,
             },
             front: true,
+            dynamic: false,
         };
         let mut dst = RgbaImage {
             width: 20,
@@ -224,7 +277,7 @@ mod doc_tests {
         let s = a.scene().unwrap();
         let t = s.tracks.last().unwrap();
         assert!(matches!(t.kind, TrackKind::Image(_)));
-        let layers = doc.image_layers(0.0);
+        let layers = doc.image_layers(0.0, 1.0);
         assert_eq!(layers.len(), 1);
         assert!(!layers[0].front);
         assert_eq!(
@@ -236,12 +289,66 @@ mod doc_tests {
         let out = dir.join("img.can3");
         doc.save_animation_to(Some(&out)).unwrap();
         let back = Document::open_animation(&out, &mut log).unwrap();
-        assert_eq!(back.image_layers(0.0).len(), 1, "{:?}", log.entries);
+        assert_eq!(back.image_layers(0.0, 1.0).len(), 1, "{:?}", log.entries);
         assert_eq!(
             doc.anim.as_mut().unwrap().step(false).as_deref(),
             Some("Add Image Track")
         );
-        assert!(doc.image_layers(0.0).is_empty());
+        assert!(doc.image_layers(0.0, 1.0).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod scene_track_tests {
+    use crate::document::Document;
+    use crate::log::Log;
+    use keyform_model::animation::TrackKind;
+    use std::path::Path;
+
+    /// A scene track nesting a second scene: the nested duration, a layer
+    /// rendered at the nested canvas size, drawn in the export; saved and
+    /// reopened. spec: animation-model.md §5.1
+    #[test]
+    fn scene_track_nests_a_scene() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        doc.anim_structure("Add Scene", |d, m| {
+            d.add_scene("Inner", m, 40, 30.0).map(|_| ())
+        })
+        .unwrap();
+        doc.anim.as_mut().unwrap().scene = 0;
+        doc.anim_structure("Add Scene Track", |d, _| d.add_scene_track(0, 1))
+            .unwrap();
+        let a = doc.anim.as_ref().unwrap();
+        let s = &a.doc.animation.scenes[0];
+        let t = s.tracks.last().unwrap();
+        assert!(matches!(t.kind, TrackKind::Scene(_)));
+        assert_eq!(t.duration, a.doc.animation.scenes[1].duration);
+        let layers = doc.image_layers(0.0, 0.1);
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].dynamic && !layers[0].front);
+        let inner = &doc.anim.as_ref().unwrap().doc.animation.scenes[1];
+        assert_eq!(
+            layers[0].image.width,
+            (inner.canvas.0 as f32 * 0.1).floor() as u32
+        );
+        assert!(
+            layers[0].image.data.chunks_exact(4).any(|p| p[3] > 0),
+            "nested scene drawn"
+        );
+        crate::export_media::render_frame(&doc, 0.0, 10.0, true).unwrap();
+        let dir = std::env::temp_dir().join(format!("kf-nest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("nest.can3");
+        doc.save_animation_to(Some(&out)).unwrap();
+        let back = Document::open_animation(&out, &mut log).unwrap();
+        assert_eq!(back.image_layers(0.0, 0.1).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

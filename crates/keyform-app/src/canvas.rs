@@ -244,7 +244,7 @@ pub fn canvas_ui(
                 match r.render_to(&doc.model, frame, &opts, tex) {
                     Ok(()) => {
                         let layers = if doc.mode == crate::document::Mode::Animation {
-                            doc.image_layers(doc.anim.as_ref().map_or(0.0, |a| a.frame))
+                            doc.image_layers(doc.anim.as_ref().map_or(0.0, |a| a.frame), 0.25)
                         } else {
                             Vec::new()
                         };
@@ -359,14 +359,18 @@ fn paint_image_layer(
     to_screen: &dyn Fn([f32; 2]) -> Pos2,
 ) {
     let (w, h) = (l.image.width as usize, l.image.height as usize);
+    let img = || egui::ColorImage::from_rgba_unmultiplied([w, h], &l.image.data);
     let tex = cache.entry(l.guid.clone()).or_insert_with(|| {
-        let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &l.image.data);
         ctx.load_texture(
             format!("image-track-{}", l.guid),
-            img,
+            img(),
             egui::TextureOptions::LINEAR,
         )
     });
+    // A nested scene is rendered per frame.
+    if l.dynamic {
+        tex.set(img(), egui::TextureOptions::LINEAR);
+    }
     let a = (l.placement.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     let tint = Color32::from_rgba_premultiplied(a, a, a, a);
     let mut mesh = egui::Mesh::with_texture(tex.id());

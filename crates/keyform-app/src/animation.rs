@@ -85,6 +85,8 @@ pub struct FrameOpts {
     pub no_form: bool,
     /// Added to one art mesh's local form: (art mesh, offsets).
     pub extra_local: Option<(usize, Vec<f32>)>,
+    /// Another scene than the current one (nested scene tracks).
+    pub scene: Option<usize>,
 }
 
 /// One Animation-workspace undo step: the typed animation before a curve
@@ -390,6 +392,21 @@ impl AnimState {
             TrackKind::Model(m) => Some(&mut m.controllers),
             _ => None,
         }
+    }
+
+    /// The first model track of scene `si`.
+    pub fn model_track_in(&self, si: usize) -> Option<(usize, &ModelTrack)> {
+        self.doc
+            .animation
+            .scenes
+            .get(si)?
+            .tracks
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| match &t.kind {
+                TrackKind::Model(m) => Some((i, &**m)),
+                _ => None,
+            })
     }
 
     /// The first model track of the current scene.
@@ -757,9 +774,14 @@ impl Document {
     /// model parameter takes its attribute's value (frame-stepped by its
     /// group, else the track), with eye blink / lip sync. spec: §3.1a, §4, §5
     pub fn anim_values_at(&self, frame: f64) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
+        self.anim_values_in(self.anim.as_ref()?.scene, frame)
+    }
+
+    /// [`Self::anim_values_at`] for scene `si`.
+    pub fn anim_values_in(&self, si: usize, frame: f64) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
         let st = self.anim.as_ref()?;
-        let scene = st.scene()?;
-        let (ti, m) = st.model_track()?;
+        let scene = st.doc.animation.scenes.get(si)?;
+        let (ti, m) = st.model_track_in(si)?;
         let track = &scene.tracks[ti];
         let x = frame - f64::from(track.start) + f64::from(track.offset);
         let model = &self.model;
@@ -798,10 +820,18 @@ impl Document {
     /// The model track's group opacity at scene frame `frame`: the track is
     /// drawn offscreen and composited with it. spec: animation-model.md §5.1
     pub fn anim_group_opacity(&self, frame: f64) -> f32 {
+        self.anim
+            .as_ref()
+            .map_or(1.0, |a| self.anim_group_opacity_in(a.scene, frame))
+    }
+
+    /// [`Self::anim_group_opacity`] for scene `si`.
+    pub fn anim_group_opacity_in(&self, si: usize, frame: f64) -> f32 {
         let Some(st) = self.anim.as_ref() else {
             return 1.0;
         };
-        let (Some((ti, _)), Some(s)) = (st.model_track(), st.scene()) else {
+        let (Some((ti, _)), Some(s)) = (st.model_track_in(si), st.doc.animation.scenes.get(si))
+        else {
             return 1.0;
         };
         let track = &s.tracks[ti];
@@ -821,10 +851,11 @@ impl Document {
     /// before placement, without form animation, or with an extra local
     /// offset).
     pub fn anim_frame_opts(&self, frame: f64, o: &FrameOpts) -> Option<keyform_eval::Frame> {
-        let (values, parts) = self.anim_values_at(frame)?;
         let st = self.anim.as_ref()?;
-        let (ti, _) = st.model_track()?;
-        let track = &st.scene()?.tracks[ti];
+        let si = o.scene.unwrap_or(st.scene);
+        let (values, parts) = self.anim_values_in(si, frame)?;
+        let (ti, _) = st.model_track_in(si)?;
+        let track = &st.doc.animation.scenes.get(si)?.tracks[ti];
         let x = frame - f64::from(track.start) + f64::from(track.offset);
         let pl = keyform_anim::scene::placement(track, x);
         let mut ov = keyform_eval::Overrides {
@@ -1241,6 +1272,7 @@ enum SceneOp {
     AddTrack,
     AddSound(PathBuf),
     AddImage(PathBuf),
+    AddSceneTrack(usize),
     BakeLipSync(usize),
     ImportMotion(PathBuf),
     OpenPhysicsBake,
@@ -1356,6 +1388,25 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                         op = Some(SceneOp::AddSound(p));
                     }
                 }
+                let others: Vec<(usize, String)> = st
+                    .doc
+                    .animation
+                    .scenes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != st.scene)
+                    .map(|(i, s)| (i, s.name.clone()))
+                    .collect();
+                ui.add_enabled_ui(!others.is_empty(), |ui| {
+                    ui.menu_button("Add scene track", |ui| {
+                        for (i, name) in &others {
+                            if ui.button(name).clicked() {
+                                op = Some(SceneOp::AddSceneTrack(*i));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
                 if ui.button("Add image track…").clicked() {
                     ui.close();
                     if let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png"]).pick_file() {
@@ -1524,6 +1575,9 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     }),
                     Err(e) => Err(e),
                 }
+            }
+            SceneOp::AddSceneTrack(n) => {
+                doc.anim_structure("Add Scene Track", |d, _| d.add_scene_track(scene, n))
             }
             SceneOp::AddImage(p) => {
                 let abs = std::fs::canonicalize(&p).unwrap_or(p);
