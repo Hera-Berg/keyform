@@ -32,6 +32,10 @@ fn solve2(m: [[f32; 2]; 2], d: [f32; 2]) -> Option<[f32; 2]> {
 }
 
 impl Document {
+    fn form_track(&self, ti: usize) -> Option<&keyform_model::animation::Track> {
+        self.anim.as_ref()?.scene()?.tracks.get(ti)
+    }
+
     /// The model track's index and its frame-stepped frame at the playhead.
     fn form_frame(&self) -> Option<(usize, f64, i32)> {
         let st = self.anim.as_ref()?;
@@ -55,12 +59,9 @@ impl Document {
             return false;
         };
         let guid = am.info.guid.clone();
-        let local = {
-            let st = self.anim.as_ref().unwrap();
-            match &st.scene().unwrap().tracks[ti].kind {
-                TrackKind::Model(m) => m.form.local_mode,
-                _ => return false,
-            }
+        let local = match self.form_track(ti).map(|t| &t.kind) {
+            Some(TrackKind::Model(m)) => m.form.local_mode,
+            _ => return false,
         };
         let original: Vec<f32> = if local {
             let Some((values, _)) = self.anim_values_at(frame) else {
@@ -86,7 +87,9 @@ impl Document {
                 None => return false,
             }
         };
-        let st = self.anim.as_mut().unwrap();
+        let Some(st) = self.anim.as_mut() else {
+            return false;
+        };
         let s = st.scene;
         let TrackKind::Model(m) = &mut st.doc.animation.scenes[s].tracks[ti].kind else {
             return false;
@@ -141,8 +144,8 @@ impl Document {
             return;
         };
         let local = matches!(
-            &self.anim.as_ref().unwrap().scene().unwrap().tracks[ti].kind,
-            TrackKind::Model(m) if m.form.local_mode
+            self.form_track(ti).map(|t| &t.kind),
+            Some(TrackKind::Model(m)) if m.form.local_mode
         );
         // d(scene vertex) / d(key value), by finite differences.
         let h = if local { 1e-3 } else { 1.0 };
@@ -173,8 +176,9 @@ impl Document {
             })()
         } else {
             // The placement's linear part.
-            let st = self.anim.as_ref().unwrap();
-            let t = &st.scene().unwrap().tracks[ti];
+            let Some(t) = self.form_track(ti) else {
+                return;
+            };
             let x = frame - f64::from(t.start) + f64::from(t.offset);
             let pl = keyform_anim::scene::placement(t, x);
             let a = pl.anchor;
@@ -187,7 +191,9 @@ impl Document {
             return;
         };
         let guid = self.model.art_meshes[mi].info.guid.clone();
-        let st = self.anim.as_mut().unwrap();
+        let Some(st) = self.anim.as_mut() else {
+            return;
+        };
         let s = st.scene;
         let TrackKind::Model(m) = &mut st.doc.animation.scenes[s].tracks[ti].kind else {
             return;
@@ -217,7 +223,9 @@ impl Document {
             return;
         };
         let guid = self.model.art_meshes[mi].info.guid.clone();
-        let st = self.anim.as_mut().unwrap();
+        let Some(st) = self.anim.as_mut() else {
+            return;
+        };
         let before = st.doc.animation.clone();
         let s = st.scene;
         if let TrackKind::Model(m) = &mut st.doc.animation.scenes[s].tracks[ti].kind {
