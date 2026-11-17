@@ -31,6 +31,8 @@ pub struct Can3Document {
     pub sources: HashMap<AttrKey, String>,
     /// The animation as last loaded or saved.
     pub saved: Animation,
+    /// Scenes or tracks were added or removed since the last save.
+    structural: bool,
 }
 
 impl Can3Document {
@@ -52,16 +54,18 @@ impl Can3Document {
             animation,
             warnings,
             sources,
+            structural: false,
         })
     }
 
-    /// Writes the edited curves into the document and returns the file.
-    /// Changed attributes get a rebuilt `valueData`; the result must load
-    /// back as exactly the edited animation. spec: can3-schema.md
-    /// (CMutableSequence, CBezierPt), xml-object-graph.md
-    pub fn save_bytes(&mut self) -> Result<Vec<u8>> {
+    /// Writes the edited curves into the document (in place). The result
+    /// must load back as exactly the edited animation.
+    fn sync(&mut self) -> Result<()> {
         let mut xml = self.xml.clone();
         let changed = changed_attrs(&self.saved, &self.animation);
+        if changed.is_empty() {
+            return Ok(());
+        }
         for key in changed {
             let Some(id) = self.sources.get(&key) else {
                 return Err(FormatError::Unsupported(format!(
@@ -80,18 +84,139 @@ impl Can3Document {
                 "the rewritten animation does not reload as the edited one".into(),
             ));
         }
+        self.xml = xml;
+        self.sources = sources;
+        self.saved = self.animation.clone();
+        Ok(())
+    }
+
+    /// Re-reads the typed animation after a structural change of the XML.
+    fn reload(&mut self) -> Result<()> {
+        let mut warnings = Vec::new();
+        let mut sources = HashMap::new();
+        self.animation = load(&self.xml, &mut warnings, &mut sources)?;
+        self.sources = sources;
+        self.saved = self.animation.clone();
+        self.warnings.extend(warnings);
+        self.structural = true;
+        Ok(())
+    }
+
+    /// Writes the edited curves into the document and returns the file.
+    /// Changed attributes get a rebuilt `valueData`; after structural
+    /// changes, objects no longer reachable from the root are dropped.
+    /// spec: can3-schema.md (CMutableSequence, CBezierPt), xml-object-graph.md
+    pub fn save_bytes(&mut self) -> Result<Vec<u8>> {
+        self.sync()?;
+        if self.structural {
+            drop_unreachable(&mut self.xml);
+            self.reload()?;
+            self.structural = false;
+        }
+        // Rewritten curves may bring types the document didn't use yet.
+        crate::can3_build::fix_markers(&mut self.xml);
         let mut archive = self.archive.clone();
         match archive.entries.iter_mut().find(|e| e.tag == "main_xml") {
-            Some(e) => e.data = xml.write(),
+            Some(e) => e.data = self.xml.write(),
             None => return Err(FormatError::Invalid("archive has no main.xml".into())),
         }
         let bytes = archive.write()?;
-        self.xml = xml;
         self.archive = archive;
-        self.sources = sources;
-        self.saved = self.animation.clone();
         Ok(bytes)
     }
+
+    /// A new animation linking `model` (file `model_path`) with one scene.
+    /// spec: animation-model.md §1–2
+    pub fn new_animation(
+        name: &str,
+        file: &str,
+        model: &keyform_model::Model,
+        model_path: &str,
+        scene: &str,
+        frames: i32,
+        fps: f64,
+    ) -> Result<Self> {
+        let xml = crate::can3_build::new_animation_xml(
+            name, file, model, model_path, scene, frames, fps,
+        )?;
+        let mut archive = CaffArchive::new_document();
+        archive.entries.push(crate::caff::CaffEntry {
+            path: "main.xml".into(),
+            tag: "main_xml".into(),
+            obfuscated: true,
+            compression: crate::caff::Compression::Fast,
+            data: xml.write(),
+        });
+        let bytes = archive.write()?;
+        Self::read(&bytes)
+    }
+
+    /// Adds a scene (with a model track for `model`, the linked model).
+    pub fn add_scene(
+        &mut self,
+        name: &str,
+        model: &keyform_model::Model,
+        frames: i32,
+        fps: f64,
+    ) -> Result<usize> {
+        self.sync()?;
+        let size = self
+            .animation
+            .scenes
+            .first()
+            .map_or((1280, 720), |s| (s.width, s.height));
+        crate::can3_build::add_scene_xml(&mut self.xml, name, model, frames, fps, size)?;
+        self.reload()?;
+        Ok(self.animation.scenes.len() - 1)
+    }
+
+    pub fn delete_scene(&mut self, index: usize) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::delete_scene_xml(&mut self.xml, index)?;
+        self.reload()
+    }
+
+    pub fn rename_scene(&mut self, index: usize, name: &str) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::rename_scene_xml(&mut self.xml, index, name)?;
+        self.reload()
+    }
+}
+
+/// Removes shared objects nothing reachable from `<main>` refers to.
+fn drop_unreachable(xml: &mut XmlDocument) {
+    use std::collections::HashSet;
+    let Some(sh) = xml.root.children.iter().position(|c| c.name == "shared") else {
+        return;
+    };
+    let by_id: HashMap<String, usize> = xml.root.children[sh]
+        .children
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| c.attr("xs.id").map(|id| (id.to_owned(), k)))
+        .collect();
+    let mut live: HashSet<usize> = HashSet::new();
+    let mut work: Vec<&crate::xml::Element> = xml
+        .root
+        .children
+        .iter()
+        .filter(|c| c.name != "shared")
+        .collect();
+    let shared_children = &xml.root.children[sh].children;
+    while let Some(e) = work.pop() {
+        if let Some(k) = e.attr("xs.ref").and_then(|r| by_id.get(r)) {
+            if live.insert(*k) {
+                work.push(&shared_children[*k]);
+            }
+        }
+        work.extend(e.children.iter());
+    }
+    let mut k = 0;
+    xml.root.children[sh].children.retain(|_| {
+        let keep = live.contains(&k);
+        k += 1;
+        keep
+    });
 }
 
 fn attr_at(a: &Animation, (s, t, part, k): AttrKey) -> Option<&Attr> {

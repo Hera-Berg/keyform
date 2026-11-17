@@ -3138,3 +3138,127 @@ fn extended_blend_shapes_save() {
     assert_eq!(text.matches("<ExtendedKeyFormMorphTarget>").count(), 0);
     assert!(text.contains(r#"<ExtendedInterpolationType xs.n="type" v="LINEAR" />"#));
 }
+
+/// New animations, added / renamed / deleted scenes save and reload
+/// (animation-model.md §1–2).
+#[test]
+fn can3_structure() {
+    use keyform_formats::can3::Can3Document;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::animation::{CurveType, TrackKind};
+    let Some(cmo3) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_pro_t11.cmo3"))
+    else {
+        return;
+    };
+    let model = Cmo3Document::read(&std::fs::read(&cmo3).unwrap())
+        .unwrap()
+        .model;
+    // A new animation.
+    // The stored file path lets the reference resolve the model relative
+    // to the animation.
+    let out_dir = std::env::var_os("KEYFORM_CAN3_OUT").map(std::path::PathBuf::from);
+    let file = out_dir.as_ref().map_or_else(
+        || "test.can3".into(),
+        |d| {
+            d.join("new_animation_kf.can3")
+                .to_string_lossy()
+                .into_owned()
+        },
+    );
+    let mut doc = Can3Document::new_animation(
+        "Test",
+        &file,
+        &model,
+        &cmo3.to_string_lossy(),
+        "Scene1",
+        90,
+        30.0,
+    )
+    .unwrap();
+    assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
+    let a = &doc.animation;
+    assert_eq!(a.scenes.len(), 1);
+    assert_eq!(a.resources.len(), 1);
+    let s = &a.scenes[0];
+    assert_eq!(
+        (s.name.as_str(), s.duration, s.fps, s.work_end),
+        ("Scene1", 90, 30.0, 89)
+    );
+    let TrackKind::Model(m) = &s.tracks[1].kind else {
+        panic!("model track")
+    };
+    assert_eq!(s.tracks[1].parent, Some(0));
+    assert_eq!(m.params.len(), model.parameters.len());
+    assert_eq!(m.parts.len(), model.parts.len());
+    assert_eq!(m.groups.len(), model.parameter_groups.len());
+    assert_eq!(
+        m.eye_blink.as_ref().unwrap().targets.len(),
+        model.eye_blink_parameters.len()
+    );
+    assert!(m
+        .params
+        .iter()
+        .all(|p| p.guid.is_some() && p.curve.keys.is_empty()));
+    assert_eq!(s.tracks[1].opacity.as_ref().unwrap().curve.base, 100.0);
+    // Keys on the new scene save and reload.
+    if let TrackKind::Model(m) = &mut doc.animation.scenes[0].tracks[1].kind {
+        let c = &mut m.params[0].curve;
+        keyform_anim::scene::set_key(c, 0, 0.0, CurveType::Smooth);
+        keyform_anim::scene::set_key(c, 45, 10.0, CurveType::Smooth);
+        let a = &m.params[0];
+        let (lo, hi) = keyform_anim::scene::clamp_range(a);
+        keyform_anim::scene::refresh(&mut m.params[0].curve, lo, hi, false);
+    }
+    let edited = doc.animation.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Can3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.animation, edited);
+    if let Some(out) = std::env::var_os("KEYFORM_CAN3_OUT") {
+        std::fs::write(
+            std::path::Path::new(&out).join("new_animation_kf.can3"),
+            &bytes,
+        )
+        .unwrap();
+    }
+    // Scenes added to a sample, renamed, one deleted.
+    let Some(sample) = sample_files("can3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_pro_t04.can3"))
+    else {
+        return;
+    };
+    let mut doc = Can3Document::read(&std::fs::read(&sample).unwrap()).unwrap();
+    let n0 = doc.animation.scenes.len();
+    let before = doc.xml.write().len();
+    let k = doc.add_scene("Added", &model, 60, 30.0).unwrap();
+    assert_eq!(k, n0);
+    doc.rename_scene(0, "First").unwrap();
+    doc.delete_scene(1).unwrap();
+    let names: Vec<String> = doc
+        .animation
+        .scenes
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    assert_eq!(names.len(), n0);
+    assert_eq!(names[0], "First");
+    assert_eq!(names.last().unwrap(), "Added");
+    let edited = doc.animation.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Can3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.animation, edited);
+    // The deleted scene's objects went (one scene of ~140 removed, one
+    // smaller added).
+    eprintln!("xml {} → {} bytes", before, back.xml.write().len());
+    if let Some(out) = std::env::var_os("KEYFORM_CAN3_OUT") {
+        std::fs::write(
+            std::path::Path::new(&out).join("hiyori_scenes_kf.can3"),
+            &bytes,
+        )
+        .unwrap();
+    }
+}

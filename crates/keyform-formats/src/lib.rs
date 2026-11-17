@@ -6,6 +6,8 @@ pub mod atlas_edit;
 mod bytes;
 pub mod caff;
 pub mod can3;
+pub mod can3_build;
+mod can3_schema;
 pub mod cmo3;
 pub mod error;
 pub mod graph;
