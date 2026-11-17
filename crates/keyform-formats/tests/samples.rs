@@ -2639,3 +2639,65 @@ fn can3_load() {
         assert!(models > 0);
     }
 }
+
+/// Recomputing SMOOTH handles (animation-model.md §3.2) reproduces the
+/// handles the reference stored in the sample `.can3` files.
+#[test]
+fn can3_smooth_handles() {
+    use keyform_anim::scene::smooth_handles;
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::{CurveType, TrackKind};
+    for path in sample_files("can3") {
+        let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let (mut n, mut bad, mut worst) = (0, 0, 0.0f64);
+        for s in &doc.animation.scenes {
+            for t in &s.tracks {
+                let TrackKind::Model(m) = &t.kind else {
+                    continue;
+                };
+                for a in m.params.iter().chain(&m.parts) {
+                    let c = &a.curve;
+                    if c.keys.len() < 2 || c.types.iter().any(|t| *t != CurveType::Smooth) {
+                        continue;
+                    }
+                    let mut r = c.clone();
+                    smooth_handles(&mut r, doc.animation.smooth_legacy);
+                    // The validity clamp (§3.3) runs after edits, so a
+                    // stored handle is either one.
+                    let mut rc = r.clone();
+                    keyform_anim::scene::clamp_handles(&mut rc, a.range.0, a.range.1);
+                    for (i, ((k, q), qc)) in c.keys.iter().zip(&r.keys).zip(&rc.keys).enumerate() {
+                        let pairs = [
+                            (i > 0).then_some((k.prev, q.prev, qc.prev)),
+                            (i + 1 < c.keys.len()).then_some((k.next, q.next, qc.next)),
+                        ];
+                        for (x, y, yc) in pairs.into_iter().flatten() {
+                            let (Some(x), Some(y), Some(yc)) = (x, y, yc) else {
+                                continue;
+                            };
+                            n += 1;
+                            let dist = |y: keyform_model::animation::Handle| {
+                                (x.value - y.value)
+                                    .abs()
+                                    .max(f64::from((x.frame - y.frame).abs()))
+                            };
+                            let d = dist(y).min(dist(yc));
+                            worst = worst.max(d);
+                            if d > 1e-3 {
+                                bad += 1;
+                                if bad <= 8 {
+                                    eprintln!(
+                                        "  {} {:?} key {i} @{} v {}: stored {x:?} got {y:?}",
+                                        a.id, a.range, k.frame, k.value
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("{path:?}: {n} handles, {bad} off, worst {worst}");
+        assert_eq!(bad, 0, "{path:?}");
+    }
+}

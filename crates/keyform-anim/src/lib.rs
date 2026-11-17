@@ -10,6 +10,7 @@ pub mod motion;
 pub mod motionsync;
 pub mod player;
 pub mod pose;
+pub mod scene;
 pub mod tracking;
 
 pub use expression::{ExpBlend, ExpParam, Expression};
