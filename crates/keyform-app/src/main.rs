@@ -22,6 +22,7 @@ mod log;
 mod mesh_edit;
 mod new_model_dialog;
 mod palettes;
+mod param_ctrl_ui;
 mod param_dialog;
 mod parts_settings;
 mod path_tool;

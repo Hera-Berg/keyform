@@ -122,6 +122,13 @@ pub fn canvas_ui(
     } else if doc.mesh_edit.is_some() {
         mesh_tool(ui, &response, doc, gpu, rect, ppp);
     } else if doc.mode == crate::document::Mode::Animation
+        && doc
+            .anim
+            .as_ref()
+            .is_some_and(|a| a.ctrl_tool != crate::param_ctrl_ui::CtrlTool::Off)
+    {
+        crate::param_ctrl_ui::input(ui, &response, doc, rect, ppp);
+    } else if doc.mode == crate::document::Mode::Animation
         && doc.anim.as_ref().is_some_and(|a| a.form_tool)
     {
         crate::form_edit::input(ui, &response, doc, rect, ppp);
@@ -265,6 +272,9 @@ pub fn canvas_ui(
             && doc.anim.as_ref().is_some_and(|a| a.form_tool)
         {
             crate::form_edit::draw(&painter, doc, &to_screen, tokens.accent);
+        }
+        if doc.mode == crate::document::Mode::Animation {
+            crate::param_ctrl_ui::draw(&painter, doc, &to_screen);
         }
         if doc.glue_tool.is_some() {
             crate::glue_tool::draw(ui.ctx(), &painter, doc, rect, &to_screen, tokens);

@@ -11,6 +11,7 @@ pub mod motion;
 pub mod motion_export;
 pub mod motion_import;
 pub mod motionsync;
+pub mod param_ctrl;
 pub mod player;
 pub mod pose;
 pub mod scene;

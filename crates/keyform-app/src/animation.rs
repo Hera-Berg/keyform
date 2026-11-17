@@ -67,6 +67,11 @@ pub struct AnimState {
     pub form_drag: Option<crate::form_edit::FormDrag>,
     /// The art mesh last form-edited (its vertices are drawn).
     pub form_mesh: Option<usize>,
+    /// The model track's parameter controllers (kept in memory; exported
+    /// and imported as `*.paramctrl3.json`, Q-0034).
+    pub controllers: keyform_anim::param_ctrl::ControllerSet,
+    pub ctrl_tool: crate::param_ctrl_ui::CtrlTool,
+    pub ctrl_drag: Option<crate::param_ctrl_ui::CtrlDrag>,
     /// The text of a new event (Events ▸ Add).
     pub event_text: String,
 }
@@ -405,6 +410,9 @@ impl Document {
             form_tool: false,
             form_drag: None,
             form_mesh: None,
+            controllers: Default::default(),
+            ctrl_tool: Default::default(),
+            ctrl_drag: None,
             event_text: String::new(),
         });
         if let Some(a) = d.anim.as_mut() {
@@ -463,6 +471,9 @@ impl Document {
             form_tool: false,
             form_drag: None,
             form_mesh: None,
+            controllers: Default::default(),
+            ctrl_tool: Default::default(),
+            ctrl_drag: None,
             event_text: String::new(),
         });
         Ok(d)
@@ -1188,6 +1199,8 @@ fn physics_bake_dialog(ctx: &egui::Context, st: &mut AnimState) -> Option<SceneO
 
 pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::Tokens) {
     let mut op = None;
+    let mut ctrl_op = None;
+    let param_ids: Vec<String> = doc.model.parameters.iter().map(|p| p.id.clone()).collect();
     if let Some(st) = doc.anim.as_mut() {
         ui.horizontal(|ui| {
             ui.menu_button("Scene", |ui| {
@@ -1296,6 +1309,11 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     }
                 }
             }
+            ui.menu_button("Controllers", |ui| {
+                if let Some(o) = crate::param_ctrl_ui::menu(ui, st, &param_ids) {
+                    ctrl_op = Some(o);
+                }
+            });
             ui.menu_button("Events", |ui| {
                 let f = st.frame.round() as i32;
                 ui.horizontal(|ui| {
@@ -1333,6 +1351,11 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 }
             }
         });
+    }
+    if let Some(o) = ctrl_op {
+        if let Err(e) = crate::param_ctrl_ui::run_file_op(doc, o) {
+            doc.notice = Some(e);
+        }
     }
     if let Some(st) = doc.anim.as_mut() {
         settings_dialog(ui.ctx(), st);

@@ -1,0 +1,588 @@
+//! Parameter controllers in the Animation workspace: add single-point and
+//! direction controllers on art meshes, drag them to solve their
+//! parameters (keys at the playhead), export and import
+//! `*.paramctrl3.json`.
+//! spec: 60-animation/form-animation-and-controllers.md §2
+
+use eframe::egui::{self, Pos2, Rect};
+use keyform_anim::param_ctrl::{self as pc, Assessor, Controller, CtrlPoint, CtrlShape, Unknown};
+use keyform_model::animation::TrackKind;
+
+use crate::animation::UndoStep;
+use crate::document::Document;
+
+/// The controller tool on the canvas.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CtrlTool {
+    #[default]
+    Off,
+    /// Drag controller points (Select/Edit Controller).
+    Drag,
+    AddSingle,
+    /// Add Direction Controller; the start point once placed.
+    AddLine(Option<usize>),
+}
+
+/// A controller drag: (controller, which point: 0 = single/start, 1 = end).
+pub struct CtrlDrag {
+    pub ctrl: usize,
+}
+
+const PICK: f32 = 8.0;
+
+impl Document {
+    /// Scene pixels → model canvas pixels (inverse track placement).
+    fn scene_to_model(&self, q: [f32; 2]) -> [f32; 2] {
+        let Some(st) = self.anim.as_ref() else {
+            return q;
+        };
+        let (Some((ti, _)), Some(s)) = (st.model_track(), st.scene()) else {
+            return q;
+        };
+        let t = &s.tracks[ti];
+        let x = st.frame - f64::from(t.start) + f64::from(t.offset);
+        let pl = keyform_anim::scene::placement(t, x);
+        let a = pl.anchor;
+        let o = pl.apply(a);
+        let ex = pl.apply([a[0] + 1.0, a[1]]);
+        let ey = pl.apply([a[0], a[1] + 1.0]);
+        let (m00, m01, m10, m11) = (ex[0] - o[0], ey[0] - o[0], ex[1] - o[1], ey[1] - o[1]);
+        let det = m00 * m11 - m01 * m10;
+        if det.abs() < 1e-12 {
+            return q;
+        }
+        let d = [q[0] - o[0], q[1] - o[1]];
+        [
+            a[0] + (d[0] * m11 - d[1] * m01) / det,
+            a[1] + (m00 * d[1] - m10 * d[0]) / det,
+        ]
+    }
+
+    fn model_to_scene(&self, p: [f64; 2]) -> [f32; 2] {
+        let q = [p[0] as f32, p[1] as f32];
+        let Some(st) = self.anim.as_ref() else {
+            return q;
+        };
+        let (Some((ti, _)), Some(s)) = (st.model_track(), st.scene()) else {
+            return q;
+        };
+        let t = &s.tracks[ti];
+        let x = st.frame - f64::from(t.start) + f64::from(t.offset);
+        keyform_anim::scene::placement(t, x).apply(q)
+    }
+
+    /// Mesh positions (model canvas) at the playhead with `set` replacing
+    /// some parameter values.
+    fn ctrl_meshes(&self, set: &[(usize, f64)]) -> Option<Vec<Vec<f32>>> {
+        let (mut values, parts) = self.anim_values_at(self.anim.as_ref()?.frame)?;
+        for &(pi, v) in set {
+            values[pi] = v as f32;
+        }
+        let ov = keyform_eval::Overrides {
+            part_opacity: parts,
+            ..Default::default()
+        };
+        let f = keyform_eval::Evaluator::new(&self.model).evaluate_full(
+            &values,
+            keyform_eval::EvalOptions::default(),
+            &ov,
+        );
+        Some(f.meshes.into_iter().map(|m| m.positions).collect())
+    }
+
+    /// Pins a controller point at scene position `q` on the top-most drawn
+    /// art mesh there.
+    pub fn pin_ctrl_point(&mut self, q: [f32; 2]) -> Option<usize> {
+        let m = self.scene_to_model(q);
+        let at = [f64::from(m[0]), f64::from(m[1])];
+        let frame = self.frame.as_ref()?;
+        let meshes = self.ctrl_meshes(&[])?;
+        let order: Vec<usize> = frame.render_order.iter().rev().copied().collect();
+        for mi in order {
+            if !frame.meshes[mi].is_drawn() {
+                continue;
+            }
+            let am = &self.model.art_meshes[mi];
+            let Some(p) = CtrlPoint::pin(&am.info.name, mi, &meshes[mi], &am.indices, at) else {
+                continue;
+            };
+            // Only a mesh that contains the point.
+            if p.bary.iter().all(|w| *w >= -1e-9)
+                && (p.recovery[0] - at[0]).hypot(p.recovery[1] - at[1]) < 1e-3
+            {
+                let st = self.anim.as_mut()?;
+                st.controllers.points.push(p);
+                return Some(st.controllers.points.len() - 1);
+            }
+        }
+        None
+    }
+
+    /// Adds a controller over `shape` driving the default parameters (head
+    /// angles when the model has them).
+    pub fn add_controller(&mut self, shape: CtrlShape) {
+        let params: Vec<String> = ["ParamAngleX", "ParamAngleY"]
+            .iter()
+            .filter(|id| self.model.parameters.iter().any(|p| p.id == **id))
+            .map(|s| (*s).to_owned())
+            .collect();
+        let Some(st) = self.anim.as_mut() else {
+            return;
+        };
+        let n = st.controllers.controllers.len();
+        st.controllers.controllers.push(Controller {
+            name: format!("Controller{}", n + 1),
+            color: [0.9, 0.3, 0.2, 1.0],
+            shape,
+            params,
+            assessor: None,
+            target: None,
+        });
+    }
+
+    /// The scene position of a controller's handle (single point, or a
+    /// line's end).
+    fn ctrl_handle(&self, meshes: &[Vec<f32>], c: &Controller) -> Option<[f32; 2]> {
+        let st = self.anim.as_ref()?;
+        let pi = match c.shape {
+            CtrlShape::Single(p) | CtrlShape::Line(_, p) => p,
+        };
+        let p = st.controllers.points.get(pi)?;
+        Some(self.model_to_scene(p.position(meshes.get(p.mesh)?)?))
+    }
+
+    /// Solves controller `ci` towards scene position `q` and writes the
+    /// changed parameters as keys at the playhead (§2.2, §2.3).
+    pub fn drag_controller(&mut self, ci: usize, q: [f32; 2]) {
+        let m = self.scene_to_model(q);
+        let t = [f64::from(m[0]), f64::from(m[1])];
+        let Some(st) = self.anim.as_ref() else {
+            return;
+        };
+        let Some(c) = st.controllers.controllers.get(ci).cloned() else {
+            return;
+        };
+        let assessor = match c.shape {
+            CtrlShape::Single(_) => Assessor::Point(t),
+            CtrlShape::Line(..) => Assessor::Aim { t, post: false },
+        };
+        let Some((values, _)) = self.anim_values_at(st.frame) else {
+            return;
+        };
+        let pis: Vec<usize> = c
+            .params
+            .iter()
+            .filter_map(|id| self.model.parameters.iter().position(|p| &p.id == id))
+            .collect();
+        let unknowns: Vec<Unknown> = pis
+            .iter()
+            .map(|&pi| {
+                let p = &self.model.parameters[pi];
+                Unknown {
+                    value: f64::from(values[pi]),
+                    min: f64::from(p.min),
+                    max: f64::from(p.max),
+                    repeat: p.repeat,
+                }
+            })
+            .collect();
+        let points = st.controllers.points.clone();
+        let canvas = [
+            f64::from(self.model.canvas.width),
+            f64::from(self.model.canvas.height),
+        ];
+        let mut eval = |p: &[f64]| -> Vec<([f64; 2], [f64; 2])> {
+            let set: Vec<(usize, f64)> = pis.iter().copied().zip(p.iter().copied()).collect();
+            let Some(meshes) = self.ctrl_meshes(&set) else {
+                return Vec::new();
+            };
+            let pos = |i: usize| {
+                points
+                    .get(i)
+                    .and_then(|pt| pt.position(meshes.get(pt.mesh)?))
+            };
+            pc::effector_and_target(&c.shape, &assessor, &pos)
+                .into_iter()
+                .collect()
+        };
+        let solved = pc::solve(&unknowns, canvas, &mut eval);
+        // Write keys where the curve value differs by more than 0.001.
+        let Some(st) = self.anim.as_mut() else {
+            return;
+        };
+        let Some(scene) = st.scene().cloned() else {
+            return;
+        };
+        let Some((ti, _)) = st.model_track() else {
+            return;
+        };
+        let tr = &scene.tracks[ti];
+        let f = (st.frame - f64::from(tr.start) + f64::from(tr.offset)).round() as i32;
+        let kind = scene.default_param_curve;
+        let legacy = st.doc.animation.smooth_legacy;
+        let s = st.scene;
+        let TrackKind::Model(mt) = &mut st.doc.animation.scenes[s].tracks[ti].kind else {
+            return;
+        };
+        for (k, &pi) in pis.iter().enumerate() {
+            let id = format!("live2dParam_{}", self.model.parameters[pi].id);
+            let Some(a) = mt.params.iter_mut().find(|a| a.id == id) else {
+                continue;
+            };
+            let cur = keyform_anim::scene::eval_curve(&a.curve, f64::from(f));
+            if (cur - solved[k]).abs() > 0.001 {
+                let (lo, hi) = keyform_anim::scene::clamp_range(a);
+                a.curve.fixed = false;
+                keyform_anim::scene::set_key(&mut a.curve, f, solved[k], kind);
+                keyform_anim::scene::refresh(&mut a.curve, lo, hi, legacy);
+                st.dirty = true;
+            }
+        }
+        if let Some(cc) = st.controllers.controllers.get_mut(ci) {
+            cc.assessor = Some(assessor);
+        }
+    }
+}
+
+/// Canvas input for the controller tools.
+pub fn input(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect: Rect, ppp: f32) {
+    let view = crate::canvas::view_of(doc, rect, ppp);
+    let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
+    let primary = egui::PointerButton::Primary;
+    let Some(tool) = doc.anim.as_ref().map(|a| a.ctrl_tool) else {
+        return;
+    };
+    match tool {
+        CtrlTool::Off => {}
+        CtrlTool::AddSingle | CtrlTool::AddLine(_) => {
+            if !response.clicked_by(primary) {
+                return;
+            }
+            let Some(p) = response.interact_pointer_pos() else {
+                return;
+            };
+            let Some(pi) = doc.pin_ctrl_point(to_canvas(p)) else {
+                doc.notice = Some("Click on an art mesh to place the controller point.".into());
+                return;
+            };
+            match tool {
+                CtrlTool::AddSingle => doc.add_controller(CtrlShape::Single(pi)),
+                CtrlTool::AddLine(None) => {
+                    if let Some(a) = doc.anim.as_mut() {
+                        a.ctrl_tool = CtrlTool::AddLine(Some(pi));
+                    }
+                }
+                CtrlTool::AddLine(Some(s)) => {
+                    doc.add_controller(CtrlShape::Line(s, pi));
+                    if let Some(a) = doc.anim.as_mut() {
+                        a.ctrl_tool = CtrlTool::AddLine(None);
+                    }
+                }
+                _ => {}
+            }
+        }
+        CtrlTool::Drag => {
+            if response.drag_started_by(primary) {
+                let Some(press) = ui.input(|i| i.pointer.press_origin()) else {
+                    return;
+                };
+                let q = to_canvas(press);
+                let r = PICK / doc.view.zoom.max(1e-6);
+                let Some(meshes) = doc.ctrl_meshes(&[]) else {
+                    return;
+                };
+                let Some(st) = doc.anim.as_ref() else {
+                    return;
+                };
+                let hit = st
+                    .controllers
+                    .controllers
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, c)| {
+                        let h = doc.ctrl_handle(&meshes, c)?;
+                        ((h[0] - q[0]).hypot(h[1] - q[1]) <= r).then_some(i)
+                    });
+                if let (Some(ci), Some(st)) = (hit, doc.anim.as_mut()) {
+                    let before = st.doc.animation.clone();
+                    st.undo
+                        .push(("Parameter Controller".into(), UndoStep::Anim(before)));
+                    st.redo.clear();
+                    st.ctrl_drag = Some(CtrlDrag { ctrl: ci });
+                }
+            } else if response.dragged_by(primary) {
+                let (Some(p), Some(ci)) = (
+                    ui.input(|i| i.pointer.interact_pos()),
+                    doc.anim
+                        .as_ref()
+                        .and_then(|a| a.ctrl_drag.as_ref())
+                        .map(|d| d.ctrl),
+                ) else {
+                    return;
+                };
+                doc.drag_controller(ci, to_canvas(p));
+            } else if response.drag_stopped() {
+                if let Some(a) = doc.anim.as_mut() {
+                    a.ctrl_drag = None;
+                }
+            }
+        }
+    }
+}
+
+/// Draws the controllers: points, direction lines and handles.
+pub fn draw(painter: &egui::Painter, doc: &Document, to_screen: &dyn Fn([f32; 2]) -> Pos2) {
+    let Some(st) = doc.anim.as_ref() else {
+        return;
+    };
+    if st.controllers.controllers.is_empty() && st.controllers.points.is_empty() {
+        return;
+    }
+    let Some(meshes) = doc.ctrl_meshes(&[]) else {
+        return;
+    };
+    let at = |i: usize| -> Option<Pos2> {
+        let p = st.controllers.points.get(i)?;
+        Some(to_screen(
+            doc.model_to_scene(p.position(meshes.get(p.mesh)?)?),
+        ))
+    };
+    for c in &st.controllers.controllers {
+        let col = egui::Color32::from_rgba_unmultiplied(
+            (c.color[0] * 255.0) as u8,
+            (c.color[1] * 255.0) as u8,
+            (c.color[2] * 255.0) as u8,
+            255,
+        );
+        match c.shape {
+            CtrlShape::Single(p) => {
+                if let Some(q) = at(p) {
+                    painter.circle_filled(q, 5.0, col);
+                    painter.circle_stroke(q, 7.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                }
+            }
+            CtrlShape::Line(s, e) => {
+                if let (Some(a), Some(b)) = (at(s), at(e)) {
+                    painter.line_segment([a, b], egui::Stroke::new(2.0, col));
+                    painter.circle_filled(b, 5.0, col);
+                }
+            }
+        }
+    }
+    if let CtrlTool::AddLine(Some(s)) = st.ctrl_tool {
+        if let Some(a) = at(s) {
+            painter.circle_stroke(a, 6.0, egui::Stroke::new(1.5, egui::Color32::YELLOW));
+        }
+    }
+}
+
+/// A file operation chosen in the Controllers menu.
+pub enum CtrlFileOp {
+    Export(std::path::PathBuf),
+    Import(std::path::PathBuf),
+}
+
+/// The Controllers menu: tools, the controller list (parameters, delete),
+/// export and import of `*.paramctrl3.json`.
+pub fn menu(
+    ui: &mut egui::Ui,
+    st: &mut crate::animation::AnimState,
+    params: &[String],
+) -> Option<CtrlFileOp> {
+    let mut op = None;
+    let t = &mut st.ctrl_tool;
+    ui.selectable_value(t, CtrlTool::Drag, "Select/Edit Controller");
+    ui.selectable_value(t, CtrlTool::AddSingle, "Add Single Point Controller");
+    if ui
+        .selectable_label(
+            matches!(t, CtrlTool::AddLine(_)),
+            "Add Direction Controller",
+        )
+        .clicked()
+    {
+        *t = CtrlTool::AddLine(None);
+    }
+    ui.selectable_value(t, CtrlTool::Off, "No controller tool");
+    ui.separator();
+    let mut delete = None;
+    for (i, c) in st.controllers.controllers.iter_mut().enumerate() {
+        ui.menu_button(c.name.clone(), |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .show(ui, |ui| {
+                    for id in params {
+                        let mut on = c.params.contains(id);
+                        if ui.checkbox(&mut on, id.as_str()).changed() {
+                            if on {
+                                c.params.push(id.clone());
+                            } else {
+                                c.params.retain(|x| x != id);
+                            }
+                        }
+                    }
+                });
+            if ui.button("Delete Controller").clicked() {
+                delete = Some(i);
+                ui.close();
+            }
+        });
+    }
+    if let Some(i) = delete {
+        st.controllers.controllers.remove(i);
+    }
+    ui.separator();
+    if ui.button("Export Parameter Controller…").clicked() {
+        ui.close();
+        op = rfd::FileDialog::new()
+            .add_filter("Parameter controller", &["json"])
+            .set_file_name("controllers.paramctrl3.json")
+            .save_file()
+            .map(CtrlFileOp::Export);
+    }
+    if ui.button("Import Parameter Controller…").clicked() {
+        ui.close();
+        op = rfd::FileDialog::new()
+            .add_filter("Parameter controller", &["json"])
+            .pick_file()
+            .map(CtrlFileOp::Import);
+    }
+    op
+}
+
+/// Runs a Controllers menu file operation.
+pub fn run_file_op(doc: &mut Document, op: CtrlFileOp) -> Result<(), String> {
+    match op {
+        CtrlFileOp::Export(p) => {
+            let st = doc.anim.as_ref().ok_or("No animation is open.")?;
+            let ids: Vec<String> = doc
+                .model
+                .art_meshes
+                .iter()
+                .map(|m| m.info.id.clone())
+                .collect();
+            let text = pc::export_json(&st.controllers, &|mi| {
+                ids.get(mi).cloned().unwrap_or_default()
+            });
+            std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))
+        }
+        CtrlFileOp::Import(p) => doc.import_controllers(&p),
+    }
+}
+
+impl Document {
+    /// Imports `*.paramctrl3.json`: pins each point onto its art mesh at
+    /// its stored position, and adds everything to the track's controllers
+    /// (§2.4).
+    pub fn import_controllers(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let im = pc::import_json(&text).map_err(|e| e.to_string())?;
+        let meshes = self.ctrl_meshes(&[]).ok_or("No animation is open.")?;
+        let mut points = Vec::new();
+        for (obj, name, at) in &im.points {
+            let mi = self
+                .model
+                .art_meshes
+                .iter()
+                .position(|m| &m.info.id == obj)
+                .ok_or_else(|| format!("No art mesh {obj}."))?;
+            let am = &self.model.art_meshes[mi];
+            points.push(
+                CtrlPoint::pin(name, mi, &meshes[mi], &am.indices, *at)
+                    .ok_or_else(|| format!("Can't pin {name} on {obj}."))?,
+            );
+        }
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        let base = st.controllers.points.len();
+        let cbase = st.controllers.controllers.len();
+        st.controllers.points.extend(points);
+        for mut c in im.controllers {
+            c.shape = match c.shape {
+                CtrlShape::Single(p) => CtrlShape::Single(p + base),
+                CtrlShape::Line(a, b) => CtrlShape::Line(a + base, b + base),
+            };
+            c.target = c.target.map(|(t, e)| (t + cbase, e));
+            st.controllers.controllers.push(c);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::log::Log;
+    use keyform_anim::param_ctrl::CtrlShape;
+    use std::path::Path;
+
+    use super::*;
+
+    /// A single-point controller on the face, dragged to the right: the
+    /// solver turns the head (ParamAngleX keys at the playhead) so the
+    /// point follows; export and import keep it.
+    #[test]
+    fn drag_single_point_controller() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        doc.frame = doc.anim_frame_at(0.0);
+        // A point on the drawn mesh ParamAngleX moves most, in scene pixels.
+        let ax = doc
+            .model
+            .parameters
+            .iter()
+            .position(|p| p.id == "ParamAngleX")
+            .unwrap();
+        let (m0, m1) = (
+            doc.ctrl_meshes(&[]).unwrap(),
+            doc.ctrl_meshes(&[(ax, 20.0)]).unwrap(),
+        );
+        let fr = doc.frame.clone().unwrap();
+        let moved = |i: usize| (m1[i][0] - m0[i][0]).hypot(m1[i][1] - m0[i][1]);
+        let face = (0..m0.len())
+            .filter(|&i| fr.meshes[i].is_drawn() && !m0[i].is_empty())
+            .max_by(|&a, &b| moved(a).total_cmp(&moved(b)))
+            .unwrap();
+        let p = &fr.meshes[face].positions;
+        let c = [p[0], p[1]];
+        let pi = doc.pin_ctrl_point(c).expect("pinned");
+        doc.add_controller(CtrlShape::Single(pi));
+        let meshes = doc.ctrl_meshes(&[]).unwrap();
+        let st = doc.anim.as_ref().unwrap();
+        let h0 = doc
+            .ctrl_handle(&meshes, &st.controllers.controllers[0])
+            .unwrap();
+        let goal = [h0[0] + 15.0, h0[1]];
+        doc.drag_controller(0, goal);
+        let meshes = doc.ctrl_meshes(&[]).unwrap();
+        let st = doc.anim.as_ref().unwrap();
+        let h1 = doc
+            .ctrl_handle(&meshes, &st.controllers.controllers[0])
+            .unwrap();
+        assert!(h1[0] - h0[0] > 5.0, "{h0:?} → {h1:?}");
+        let (_, m) = st.model_track().unwrap();
+        let ax = m
+            .params
+            .iter()
+            .find(|a| a.id == "live2dParam_ParamAngleX")
+            .unwrap();
+        assert!(!ax.curve.keys.is_empty());
+        // Export → import adds an equal controller.
+        let mesh_ids: Vec<String> = doc
+            .model
+            .art_meshes
+            .iter()
+            .map(|m| m.info.id.clone())
+            .collect();
+        let text = pc::export_json(&st.controllers, &|mi| mesh_ids[mi].clone());
+        let f = std::env::temp_dir().join(format!("kf-{}.paramctrl3.json", std::process::id()));
+        std::fs::write(&f, text).unwrap();
+        doc.import_controllers(&f).unwrap();
+        let st = doc.anim.as_ref().unwrap();
+        assert_eq!(st.controllers.controllers.len(), 2);
+        assert_eq!(st.controllers.points[1].mesh, st.controllers.points[0].mesh);
+        let _ = std::fs::remove_file(f);
+    }
+}
