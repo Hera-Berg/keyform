@@ -114,6 +114,56 @@ impl Expression {
     }
 }
 
+/// An expression from a scene (Animator expression scenes): every keyed
+/// parameter of model track `ti` at the scene's first frame, as Add
+/// (stored value = target − default); fades from the scene when set.
+/// The reference's file has no `Version` member (see [`scene_exp3_json`]).
+/// Observed on chitose's expression scenes and their exported exp3 files.
+pub fn from_scene(
+    s: &keyform_model::animation::Scene,
+    ti: usize,
+    default_of: &dyn Fn(&str) -> Option<f32>,
+) -> Option<Expression> {
+    let keyform_model::animation::TrackKind::Model(m) = &s.tracks.get(ti)?.kind else {
+        return None;
+    };
+    let frame = f64::from(s.work_start.max(0));
+    let mut params = Vec::new();
+    for (k, a) in m.params.iter().enumerate() {
+        if a.curve.keys.is_empty() {
+            continue;
+        }
+        let Some(id) = crate::scene::param_id(&a.id) else {
+            continue;
+        };
+        let Some(d) = default_of(id) else {
+            continue;
+        };
+        let t = crate::scene::param_value(m, k, frame) as f32;
+        params.push(ExpParam {
+            id: id.to_owned(),
+            value: stored_from_target(ExpBlend::Add, t, d),
+            blend: ExpBlend::Add,
+        });
+    }
+    let secs = |ms: i32| (ms >= 0).then(|| ms as f32 / 1000.0);
+    Some(Expression {
+        fade_in: secs(s.fade_in_ms),
+        fade_out: secs(s.fade_out_ms),
+        params,
+    })
+}
+
+/// The exp3.json the Animator writes for an expression scene (no
+/// `Version` member).
+pub fn scene_exp3_json(e: &Expression) -> Value {
+    let mut v = e.to_json();
+    if let Some(o) = v.as_object_mut() {
+        o.remove("Version");
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

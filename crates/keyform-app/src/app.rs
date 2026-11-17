@@ -677,6 +677,16 @@ impl KeyformApp {
                     {
                         self.export_motions_active();
                     }
+                    if ui
+                        .add_enabled(
+                            anim,
+                            egui::Button::new("Export expression files (exp3.json)…"),
+                        )
+                        .on_disabled_hover_text("Needs an animation (.can3)")
+                        .clicked()
+                    {
+                        self.export_expressions_active();
+                    }
                 });
                 ui.separator();
                 if ui
@@ -1542,6 +1552,29 @@ impl KeyformApp {
         match d.export_motions(&dir) {
             Ok(files) => self.log.info(format!(
                 "Exported {} motion files to {}",
+                files.len(),
+                dir.display()
+            )),
+            Err(e) => self.log.error(e),
+        }
+    }
+
+    /// Exports every scene of the animation as an expression (exp3.json).
+    fn export_expressions_active(&mut self) {
+        let Some(d) = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc) else {
+            return;
+        };
+        let start = d
+            .anim
+            .as_ref()
+            .and_then(|a| a.path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() else {
+            return;
+        };
+        match d.export_expressions(&dir) {
+            Ok(files) => self.log.info(format!(
+                "Exported {} expression files to {}",
                 files.len(),
                 dir.display()
             )),

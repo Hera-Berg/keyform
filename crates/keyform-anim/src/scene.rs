@@ -800,6 +800,44 @@ pub fn same_anchors(a: &[Key], b: &[Key]) -> bool {
             .all(|(x, y)| x.frame == y.frame && x.value == y.value)
 }
 
+/// The nested scene's frame shown by scene track `t` at its local frame
+/// `x`. spec: animation-model.md §5.1 "Scene tracks"
+pub fn nested_frame(
+    t: &keyform_model::animation::Track,
+    st: &keyform_model::animation::SceneTrack,
+    nested: &keyform_model::animation::Scene,
+    x: f64,
+) -> f64 {
+    let ws = if st.work_area {
+        f64::from(nested.work_start)
+    } else {
+        0.0
+    };
+    let len = if st.work_area {
+        f64::from(nested.work_end - nested.work_start + 1)
+    } else {
+        f64::from(nested.duration + 1)
+    };
+    let remap = st.frame_no.as_ref().filter(|a| !a.curve.keys.is_empty());
+    let mut x = x;
+    if t.repeat {
+        let (s0, n) = match remap {
+            Some(a) => (
+                f64::from(st.start_frame),
+                (a.range.1 - a.range.0).abs() + 1.0,
+            ),
+            None => (f64::from(st.start_frame), len),
+        };
+        if n >= 1.0 {
+            x = (x - s0).rem_euclid(n) + s0;
+        }
+    }
+    match remap {
+        Some(a) => eval_curve(&a.curve, x - f64::from(st.start_frame)),
+        None => x - f64::from(st.start_frame) + ws,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// A 3-key xy curve against the reference (5.3.04 image sequence of a
@@ -1052,43 +1090,5 @@ mod tests {
         assert_eq!(form_difference(&o, 0.0).unwrap(), vec![2.0, 0.0]);
         assert_eq!(form_difference(&o, 15.0).unwrap(), vec![3.0, 1.0]);
         assert_eq!(form_difference(&o, 30.0).unwrap(), vec![4.0, 2.0]);
-    }
-}
-
-/// The nested scene's frame shown by scene track `t` at its local frame
-/// `x`. spec: animation-model.md §5.1 "Scene tracks"
-pub fn nested_frame(
-    t: &keyform_model::animation::Track,
-    st: &keyform_model::animation::SceneTrack,
-    nested: &keyform_model::animation::Scene,
-    x: f64,
-) -> f64 {
-    let ws = if st.work_area {
-        f64::from(nested.work_start)
-    } else {
-        0.0
-    };
-    let len = if st.work_area {
-        f64::from(nested.work_end - nested.work_start + 1)
-    } else {
-        f64::from(nested.duration + 1)
-    };
-    let remap = st.frame_no.as_ref().filter(|a| !a.curve.keys.is_empty());
-    let mut x = x;
-    if t.repeat {
-        let (s0, n) = match remap {
-            Some(a) => (
-                f64::from(st.start_frame),
-                (a.range.1 - a.range.0).abs() + 1.0,
-            ),
-            None => (f64::from(st.start_frame), len),
-        };
-        if n >= 1.0 {
-            x = (x - s0).rem_euclid(n) + s0;
-        }
-    }
-    match remap {
-        Some(a) => eval_curve(&a.curve, x - f64::from(st.start_frame)),
-        None => x - f64::from(st.start_frame) + ws,
     }
 }

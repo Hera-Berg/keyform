@@ -849,6 +849,7 @@ impl Document {
     /// its track's visual effect (positions in scene pixels; the track's
     /// opacity is applied when compositing, [`Self::anim_group_opacity`]).
     /// spec: animation-model.md §5
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn anim_frame_at(&self, frame: f64) -> Option<keyform_eval::Frame> {
         self.anim_frame_opts(frame, &FrameOpts::default())
     }
@@ -1046,6 +1047,38 @@ impl Document {
     }
 
     /// Exports the scenes marked for export as motion3.json into `dir`.
+    /// Writes each scene with a model track as `<scene>.exp3.json` (keyed
+    /// parameters at the first frame, Add). spec: viewer.md §1.1
+    pub fn export_expressions(&self, dir: &Path) -> Result<Vec<PathBuf>, String> {
+        let st = self.anim.as_ref().ok_or("No animation is open.")?;
+        let mut out = Vec::new();
+        for s in &st.doc.animation.scenes {
+            let Some(ti) = s
+                .tracks
+                .iter()
+                .position(|t| matches!(t.kind, TrackKind::Model(_)))
+            else {
+                continue;
+            };
+            let default_of = |id: &str| {
+                self.model
+                    .parameters
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| p.default)
+            };
+            let Some(e) = keyform_anim::expression::from_scene(s, ti, &default_of) else {
+                continue;
+            };
+            let path = dir.join(format!("{}.exp3.json", s.name));
+            let text =
+                keyform_anim::json::to_string(&keyform_anim::expression::scene_exp3_json(&e));
+            std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+            out.push(path);
+        }
+        Ok(out)
+    }
+
     pub fn export_motions(&self, dir: &Path) -> Result<Vec<PathBuf>, String> {
         use keyform_anim::motion_export::{export_motion, ExportOptions};
         let st = self.anim.as_ref().ok_or("No animation is open.")?;

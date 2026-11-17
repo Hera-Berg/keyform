@@ -3433,3 +3433,96 @@ fn can3_reference_round_trip() {
         }
     }
 }
+
+#[test]
+#[ignore]
+fn can3_dump_expression_scenes() {
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    let path = std::env::var("CAN3").unwrap();
+    let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    for s in &doc.animation.scenes {
+        let m = s.tracks.iter().find_map(|t| match &t.kind {
+            TrackKind::Model(m) => Some(m),
+            _ => None,
+        });
+        let Some(m) = m else { continue };
+        let keyed: Vec<String> = m
+            .params
+            .iter()
+            .filter(|a| !a.curve.keys.is_empty())
+            .map(|a| {
+                format!(
+                    "{}={:?}@{:?}",
+                    a.id.trim_start_matches("live2dParam_"),
+                    a.curve.keys.iter().map(|k| k.value).collect::<Vec<_>>(),
+                    a.curve.keys.iter().map(|k| k.frame).collect::<Vec<_>>()
+                )
+            })
+            .collect();
+        eprintln!(
+            "{} dur {} ws {} keyed {}: {}",
+            s.name,
+            s.duration,
+            s.work_start,
+            keyed.len(),
+            keyed.join(" ")
+        );
+        eprintln!(
+            "  fades {} {} export {}",
+            s.fade_in_ms, s.fade_out_ms, s.export_motion
+        );
+    }
+}
+
+/// Expression scenes → exp3.json, compared with the reference-exported
+/// runtime expressions (chitose: 7 scenes).
+#[test]
+fn can3_expression_export() {
+    use keyform_anim::expression::{from_scene, scene_exp3_json, Expression};
+    use keyform_formats::can3::Can3Document;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::animation::TrackKind;
+    let Some(can3) = sample_files("can3")
+        .into_iter()
+        .find(|p| p.ends_with("chitose_expressions_t01.can3"))
+    else {
+        return;
+    };
+    let Some(cmo3) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("chitose_t01.cmo3"))
+    else {
+        return;
+    };
+    let model = Cmo3Document::read(&std::fs::read(&cmo3).unwrap())
+        .unwrap()
+        .model;
+    let dir = can3.parent().unwrap().join("runtime/expressions");
+    let doc = Can3Document::read(&std::fs::read(&can3).unwrap()).unwrap();
+    let mut compared = 0;
+    for s in &doc.animation.scenes {
+        let Ok(text) = std::fs::read_to_string(dir.join(format!("{}.exp3.json", s.name))) else {
+            continue;
+        };
+        let reference = Expression::parse(&text).unwrap();
+        let ti = s
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Model(_)))
+            .unwrap();
+        let e = from_scene(s, ti, &|id| {
+            model
+                .parameters
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.default)
+        })
+        .unwrap();
+        let mine = Expression::parse(&scene_exp3_json(&e).to_string()).unwrap();
+        assert_eq!(mine, reference, "{}", s.name);
+        assert!(!scene_exp3_json(&e).to_string().contains("Version"));
+        compared += 1;
+    }
+    assert_eq!(compared, 7);
+}
