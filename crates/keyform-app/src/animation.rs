@@ -250,6 +250,19 @@ impl Document {
         st.frame = st.frame.clamp(lo, hi.max(lo));
     }
 
+    /// Saves the animation's `.can3` (edited curves in place), atomically.
+    pub fn save_animation(&mut self) -> Result<PathBuf, String> {
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        let bytes = st
+            .doc
+            .save_bytes()
+            .map_err(|e| format!("{}: {e}", st.path.display()))?;
+        keyform_formats::cmo3::write_atomic(&st.path, &bytes)
+            .map_err(|e| format!("{}: {e}", st.path.display()))?;
+        st.dirty = false;
+        Ok(st.path.clone())
+    }
+
     /// Exports the scenes marked for export as motion3.json into `dir`.
     pub fn export_motions(&self, dir: &Path) -> Result<Vec<PathBuf>, String> {
         use keyform_anim::motion_export::{export_motion, ExportOptions};

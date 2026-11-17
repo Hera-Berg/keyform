@@ -17,12 +17,20 @@ use crate::xml::XmlDocument;
 
 type O<'g, 'd> = Obj<'g, 'd>;
 
+/// A curve attribute's place: (scene, track, part attribute?, index in
+/// the model track's params / parts).
+pub type AttrKey = (usize, usize, bool, usize);
+
 /// A loaded `.can3`.
 pub struct Can3Document {
     pub archive: CaffArchive,
     pub xml: XmlDocument,
     pub animation: Animation,
     pub warnings: Vec<String>,
+    /// The shared element id of each model-track attribute.
+    pub sources: HashMap<AttrKey, String>,
+    /// The animation as last loaded or saved.
+    pub saved: Animation,
 }
 
 impl Can3Document {
@@ -35,18 +43,223 @@ impl Can3Document {
                 .data,
         )?;
         let mut warnings = Vec::new();
-        let animation = load_animation(&xml, &mut warnings)?;
+        let mut sources = HashMap::new();
+        let animation = load(&xml, &mut warnings, &mut sources)?;
         Ok(Self {
             archive,
             xml,
+            saved: animation.clone(),
             animation,
             warnings,
+            sources,
         })
     }
+
+    /// Writes the edited curves into the document and returns the file.
+    /// Changed attributes get a rebuilt `valueData`; the result must load
+    /// back as exactly the edited animation. spec: can3-schema.md
+    /// (CMutableSequence, CBezierPt), xml-object-graph.md
+    pub fn save_bytes(&mut self) -> Result<Vec<u8>> {
+        let mut xml = self.xml.clone();
+        let changed = changed_attrs(&self.saved, &self.animation);
+        for key in changed {
+            let Some(id) = self.sources.get(&key) else {
+                return Err(FormatError::Unsupported(format!(
+                    "attribute {key:?}: no stored element"
+                )));
+            };
+            let attr = attr_at(&self.animation, key)
+                .ok_or_else(|| FormatError::Invalid(format!("attribute {key:?} missing")))?;
+            write_curve(&mut xml, id, attr)?;
+        }
+        let mut warnings = Vec::new();
+        let mut sources = HashMap::new();
+        let back = load(&xml, &mut warnings, &mut sources)?;
+        if back != self.animation {
+            return Err(FormatError::Invalid(
+                "the rewritten animation does not reload as the edited one".into(),
+            ));
+        }
+        let mut archive = self.archive.clone();
+        match archive.entries.iter_mut().find(|e| e.tag == "main_xml") {
+            Some(e) => e.data = xml.write(),
+            None => return Err(FormatError::Invalid("archive has no main.xml".into())),
+        }
+        let bytes = archive.write()?;
+        self.xml = xml;
+        self.archive = archive;
+        self.sources = sources;
+        self.saved = self.animation.clone();
+        Ok(bytes)
+    }
+}
+
+fn attr_at(a: &Animation, (s, t, part, k): AttrKey) -> Option<&Attr> {
+    let TrackKind::Model(m) = &a.scenes.get(s)?.tracks.get(t)?.kind else {
+        return None;
+    };
+    if part {
+        m.parts.get(k)
+    } else {
+        m.params.get(k)
+    }
+}
+
+/// Model-track attributes whose curves differ between `a` and `b`.
+fn changed_attrs(a: &Animation, b: &Animation) -> Vec<AttrKey> {
+    let mut out = Vec::new();
+    for (si, s) in b.scenes.iter().enumerate() {
+        for (ti, t) in s.tracks.iter().enumerate() {
+            let TrackKind::Model(m) = &t.kind else {
+                continue;
+            };
+            for (part, list) in [(false, &m.params), (true, &m.parts)] {
+                for (k, at) in list.iter().enumerate() {
+                    if attr_at(a, (si, ti, part, k)).map(|x| &x.curve) != Some(&at.curve) {
+                        out.push((si, ti, part, k));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn scalar_el(tag: &str, name: &str, text: String) -> crate::xml::Element {
+    let mut e = crate::xml::Element::new(tag).with_attr("xs.n", name);
+    e.text = text;
+    e
+}
+
+/// Rebuilds the `valueData` of the shared attribute `id` from `a`'s curve.
+fn write_curve(xml: &mut XmlDocument, id: &str, a: &Attr) -> Result<()> {
+    use crate::graph::{format_f32, format_f64};
+    use crate::xml::Element;
+    let shared = xml
+        .root
+        .children
+        .iter_mut()
+        .find(|c| c.name == "shared")
+        .ok_or_else(|| FormatError::Invalid("document has no <shared>".into()))?;
+    let el = shared
+        .children
+        .iter_mut()
+        .find(|c| c.attr("xs.id") == Some(id))
+        .ok_or_else(|| FormatError::Invalid(format!("ref id {id}: not found")))?;
+    let attr_tag = el.name.clone();
+    let vd = el
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("valueData"))
+        .ok_or_else(|| FormatError::Invalid(format!("{id}: no valueData")))?;
+    if vd.name != "CMutableSequence" {
+        return Err(FormatError::Unsupported(format!(
+            "{}: keys on a fixed sequence",
+            a.id
+        )));
+    }
+    let c = &a.curve;
+    let d = |v: f64| format_f64(v);
+    let (cur_min, cur_max) = c
+        .keys
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), k| {
+            (lo.min(k.value), hi.max(k.value))
+        });
+    let first = c.keys.first();
+    let mut keypts = Element::new("int-array")
+        .with_attr("xs.n", "keyPts2")
+        .with_attr("count", c.keys.len().to_string());
+    keypts.text = c
+        .keys
+        .iter()
+        .map(|k| k.frame.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut sup = Element::new("ACValueSequence").with_attr("xs.n", "super");
+    sup.children = vec![
+        scalar_el(
+            "d",
+            "curMin",
+            d(if c.keys.is_empty() { 0.0 } else { cur_min }),
+        ),
+        scalar_el(
+            "d",
+            "curMax",
+            d(if c.keys.is_empty() { 0.0 } else { cur_max }),
+        ),
+        scalar_el("i", "posStart", "0".into()),
+        keypts,
+        scalar_el(
+            "i",
+            "keyMin",
+            first.map_or(i32::MAX, |k| k.frame).to_string(),
+        ),
+        scalar_el(
+            "i",
+            "keyMax",
+            c.keys.last().map_or(i32::MIN, |k| k.frame).to_string(),
+        ),
+        scalar_el("d", "lastValue", first.map_or("NaN".into(), |k| d(k.value))),
+        scalar_el("i", "lastPos", first.map_or(-1, |k| k.frame).to_string()),
+        Element::new(attr_tag.as_str())
+            .with_attr("xs.n", "attr")
+            .with_attr("xs.ref", id),
+        scalar_el("d", "baseValue", d(c.base)),
+    ];
+    let handle = |name: &str,
+                  h: Option<keyform_model::animation::Handle>,
+                  k: &keyform_model::animation::Key| {
+        let h = h.unwrap_or(keyform_model::animation::Handle {
+            frame: k.frame as f32,
+            value: k.value,
+        });
+        let mut e = Element::new("CBezierCtrlPt").with_attr("xs.n", name);
+        e.children = vec![
+            scalar_el("f", "posF", format_f32(h.frame)),
+            scalar_el("i", "pos", "0".into()),
+            scalar_el("d", "doubleValue", d(h.value)),
+            scalar_el("b", "isPosOptimized", "false".into()),
+        ];
+        e
+    };
+    let mut points = Element::new("array")
+        .with_attr("xs.n", "points")
+        .with_attr("count", c.keys.len().to_string())
+        .with_attr("type", "CBezierPt");
+    for k in &c.keys {
+        let mut an = Element::new("CSeqPt").with_attr("xs.n", "anchor");
+        an.children = vec![
+            scalar_el("b", "isCorner", k.corner.to_string()),
+            scalar_el("i", "pos", k.frame.to_string()),
+            scalar_el("d", "doubleValue", d(k.value)),
+        ];
+        let mut bp = Element::new("CBezierPt");
+        bp.children = vec![an, handle("next", k.next, k), handle("prev", k.prev, k)];
+        points.children.push(bp);
+    }
+    let mut types = Element::new("carray_list")
+        .with_attr("xs.n", "curveTypes")
+        .with_attr("count", c.keys.len().to_string());
+    for i in 0..c.keys.len() {
+        types
+            .children
+            .push(Element::new("CCurveType").with_attr("v", c.type_at(i).name()));
+    }
+    vd.children = vec![sup, points, types];
+    Ok(())
 }
 
 /// Reads the typed animation from a parsed `.can3` document.
 pub fn load_animation(xml: &XmlDocument, warnings: &mut Vec<String>) -> Result<Animation> {
+    load(xml, warnings, &mut HashMap::new())
+}
+
+fn load(
+    xml: &XmlDocument,
+    warnings: &mut Vec<String>,
+    sources: &mut HashMap<AttrKey, String>,
+) -> Result<Animation> {
     let g = ObjectGraph::new(xml)?;
     let root = g.main()?;
     if root.tag() != "CAnimation" {
@@ -73,8 +286,15 @@ pub fn load_animation(xml: &XmlDocument, warnings: &mut Vec<String>) -> Result<A
         }
     }
     for s in root.list("_scenes")? {
-        match scene(&s, warnings) {
-            Ok(sc) => a.scenes.push(sc),
+        let si = a.scenes.len();
+        let mut ids = Vec::new();
+        match scene(&s, warnings, &mut ids) {
+            Ok(sc) => {
+                a.scenes.push(sc);
+                for (t, part, k, id) in ids {
+                    sources.insert((si, t, part, k), id);
+                }
+            }
             Err(e) => warnings.push(format!("scene skipped: {e}")),
         }
     }
@@ -85,7 +305,10 @@ fn curve_type(o: Option<&str>) -> CurveType {
     o.and_then(CurveType::from_name).unwrap_or_default()
 }
 
-fn scene(s: &O, warnings: &mut Vec<String>) -> Result<Scene> {
+/// Attribute element ids found while reading: (track, part?, index, id).
+type AttrIds = Vec<(usize, bool, usize, String)>;
+
+fn scene(s: &O, warnings: &mut Vec<String>, ids: &mut AttrIds) -> Result<Scene> {
     let mi = s
         .field("movieInfo")?
         .ok_or_else(|| FormatError::Invalid("scene without movieInfo".into()))?;
@@ -120,8 +343,11 @@ fn scene(s: &O, warnings: &mut Vec<String>) -> Result<Scene> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut parents: Vec<Option<String>> = Vec::new();
     for t in &sources {
-        match track(t) {
+        let mut own = Vec::new();
+        match track(t, &mut own) {
             Ok((tr, parent)) => {
+                let ti = sc.tracks.len();
+                ids.extend(own.into_iter().map(|(p, k, id)| (ti, p, k, id)));
                 index.insert(tr.guid.clone(), sc.tracks.len());
                 parents.push(parent);
                 sc.tracks.push(tr);
@@ -135,7 +361,7 @@ fn scene(s: &O, warnings: &mut Vec<String>) -> Result<Scene> {
     Ok(sc)
 }
 
-fn track(t: &O) -> Result<(Track, Option<String>)> {
+fn track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<(Track, Option<String>)> {
     let src = source_of(t)?;
     let mut tr = Track {
         name: src.string("name")?.unwrap_or_default(),
@@ -176,7 +402,7 @@ fn track(t: &O) -> Result<(Track, Option<String>)> {
     }
     tr.kind = match t.tag() {
         "CMvTrack_Group_Source" => TrackKind::Group,
-        "CMvTrack_Live2DModel_Source" => TrackKind::Model(Box::new(model_track(t)?)),
+        "CMvTrack_Live2DModel_Source" => TrackKind::Model(Box::new(model_track(t, ids)?)),
         other => TrackKind::Other(other.to_owned()),
     };
     Ok((tr, parent))
@@ -299,14 +525,14 @@ fn int_curve(a: &O) -> Result<Option<IntCurve>> {
     Ok(Some(c))
 }
 
-fn ids(o: &O, name: &str) -> Result<Vec<String>> {
+fn id_list(o: &O, name: &str) -> Result<Vec<String>> {
     Ok(o.list(name)?
         .iter()
         .filter_map(|i| i.attr("idstr").map(str::to_owned))
         .collect())
 }
 
-fn model_track(t: &O) -> Result<ModelTrack> {
+fn model_track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<ModelTrack> {
     let mut m = ModelTrack {
         resource: t.guid("_resourceGuid")?.map(str::to_owned),
         ..Default::default()
@@ -314,6 +540,9 @@ fn model_track(t: &O) -> Result<ModelTrack> {
     if let Some(e) = t.field("keyParamEffect")? {
         for a in effect_attrs(&e)? {
             if a.tag() == "CMvAttrF" {
+                if let Some(id) = a.attr("xs.id") {
+                    ids.push((false, m.params.len(), id.to_owned()));
+                }
                 m.params.push(float_attr(&a)?);
             }
         }
@@ -337,6 +566,9 @@ fn model_track(t: &O) -> Result<ModelTrack> {
     if let Some(e) = t.field("partsVisibleEffect")? {
         for a in effect_attrs(&e)? {
             if a.tag() == "CMvAttrF" {
+                if let Some(id) = a.attr("xs.id") {
+                    ids.push((true, m.parts.len(), id.to_owned()));
+                }
                 m.parts.push(float_attr(&a)?);
             }
         }
@@ -344,7 +576,7 @@ fn model_track(t: &O) -> Result<ModelTrack> {
     if let Some(e) = t.field("eyeBlinkEffect")?.filter(|e| !e.is_null()) {
         let mut eb = EyeBlinkEffect {
             active: e.bool("isActive")?.unwrap_or(true),
-            targets: ids(&e, "effectParameterAttrIds")?,
+            targets: id_list(&e, "effectParameterAttrIds")?,
             invert: e.bool("invert")?.unwrap_or(false),
             relative: e.bool("relative")?.unwrap_or(false),
             ..Default::default()
@@ -362,7 +594,7 @@ fn model_track(t: &O) -> Result<ModelTrack> {
     if let Some(e) = t.field("lipSyncEffect")?.filter(|e| !e.is_null()) {
         let mut ls = LipSyncEffect {
             active: e.bool("isActive")?.unwrap_or(true),
-            targets: ids(&e, "effectParameterAttrIds")?,
+            targets: id_list(&e, "effectParameterAttrIds")?,
             sync_track: e.guid("syncTrackGuid")?.map(str::to_owned),
             invert: e.bool("isInvert")?.unwrap_or(false),
             relative: e.bool("isRelative")?.unwrap_or(false),

@@ -720,6 +720,7 @@ impl Document {
     /// Changed since opening or the last save (title asterisk).
     pub fn is_modified(&self) -> bool {
         self.history.revision() != self.saved_revision
+            || self.anim.as_ref().is_some_and(|a| a.dirty)
     }
 
     pub(crate) fn edit_state(&self) -> EditState {

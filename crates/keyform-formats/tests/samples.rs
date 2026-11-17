@@ -2876,3 +2876,74 @@ fn can3_debug_attr() {
         }
     }
 }
+
+/// Edited `.can3` curves save in place and reload equal; an unchanged
+/// save reloads equal too.
+#[test]
+fn can3_save_edits() {
+    use keyform_anim::scene::{delete_key, move_key, refresh, set_key};
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::{CurveType, TrackKind};
+    for path in sample_files("can3") {
+        let data = std::fs::read(&path).unwrap();
+        let mut doc = Can3Document::read(&data).unwrap();
+        let same = doc.save_bytes().unwrap();
+        assert_eq!(Can3Document::read(&same).unwrap().animation, doc.animation);
+        eprintln!(
+            "{path:?}: unchanged save {} bytes (was {}), identical: {}",
+            same.len(),
+            data.len(),
+            same == data
+        );
+        // Edit the first two keyed parameter curves of every scene.
+        let legacy = doc.animation.smooth_legacy;
+        let mut edited = 0;
+        for s in &mut doc.animation.scenes {
+            for t in &mut s.tracks {
+                let TrackKind::Model(m) = &mut t.kind else {
+                    continue;
+                };
+                for a in m
+                    .params
+                    .iter_mut()
+                    .filter(|a| a.curve.keys.len() >= 3)
+                    .take(2)
+                {
+                    let c = &mut a.curve;
+                    let last = c.keys.last().unwrap().frame;
+                    set_key(c, last + 3, 0.5, CurveType::Linear);
+                    let f1 = c.keys[1].frame;
+                    if c.keys.iter().all(|k| k.frame != f1 + 1) && f1 + 1 < c.keys[2].frame {
+                        assert!(move_key(c, 1, f1 + 1, c.keys[1].value + 0.25));
+                    }
+                    c.types[0] = CurveType::Step;
+                    delete_key(c, 2);
+                    refresh(c, a.range.0, a.range.1, legacy);
+                    edited += 1;
+                }
+            }
+        }
+        let edited_anim = doc.animation.clone();
+        let bytes = doc.save_bytes().unwrap();
+        let back = Can3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.animation, edited_anim);
+        // Saving again changes nothing.
+        let mut back = back;
+        assert_eq!(
+            Can3Document::read(&back.save_bytes().unwrap())
+                .unwrap()
+                .animation,
+            edited_anim
+        );
+        eprintln!("  {edited} curves edited, saved and reloaded");
+        if let Some(out) = std::env::var_os("KEYFORM_CAN3_OUT") {
+            let name = path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace(".can3", "_kf.can3");
+            std::fs::write(std::path::Path::new(&out).join(name), &bytes).unwrap();
+        }
+    }
+}

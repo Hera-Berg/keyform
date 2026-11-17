@@ -292,6 +292,16 @@ pub fn refresh(c: &mut Curve, lo: f64, hi: f64, legacy: bool) {
     c.types.resize(c.keys.len(), CurveType::Smooth);
     smooth_handles(c, legacy);
     clamp_handles(c, lo, hi);
+    // Every key carries both handles (the end keys' outer ones on the
+    // anchor), as stored by the reference.
+    for k in &mut c.keys {
+        let at = Handle {
+            frame: k.frame as f32,
+            value: k.value,
+        };
+        k.prev.get_or_insert(at);
+        k.next.get_or_insert(at);
+    }
 }
 
 /// Sets a key at `frame` to `value` (inserting one with curve type `t`

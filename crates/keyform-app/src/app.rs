@@ -1385,6 +1385,19 @@ impl KeyformApp {
         let Some(s) = self.slots.get_mut(i) else {
             return false;
         };
+        // An animation saves its .can3 (the model is saved from Modeling).
+        if s.doc.anim.as_ref().is_some_and(|a| a.dirty) {
+            match s.doc.save_animation() {
+                Ok(p) => self.log.info(format!("saved {}", p.display())),
+                Err(e) => {
+                    self.log.error(format!("save failed: {e}"));
+                    return false;
+                }
+            }
+            if !s.doc.is_modified() {
+                return true;
+            }
+        }
         if !s.doc.editable() {
             crate::viewer_settings::save(&mut s.doc, &mut self.log);
             return true;
