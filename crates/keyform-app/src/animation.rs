@@ -59,6 +59,8 @@ pub struct AnimState {
     audio_tried: bool,
     /// The Scene settings dialog's draft (the scene without its tracks).
     pub settings: Option<Scene>,
+    /// The physics baking dialog, while open.
+    pub physics_bake: Option<PhysicsBakeDraft>,
     /// The text of a new event (Events ▸ Add).
     pub event_text: String,
 }
@@ -382,6 +384,7 @@ impl Document {
             audio: None,
             audio_tried: false,
             settings: None,
+            physics_bake: None,
             event_text: String::new(),
         });
         if let Some(a) = d.anim.as_mut() {
@@ -436,6 +439,7 @@ impl Document {
             audio: None,
             audio_tried: false,
             settings: None,
+            physics_bake: None,
             event_text: String::new(),
         });
         Ok(d)
@@ -446,6 +450,101 @@ impl Document {
     /// (parameters and parts by ID, Model Opacity / EyeBlink / LipSync)
     /// and its events. Returns the curves that found no attribute.
     /// spec: motion3-json.md §4
+    /// The model parameters physics writes (each once, in rig order).
+    pub fn physics_outputs(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        for st in self.model.physics.settings.iter().filter(|s| s.enabled) {
+            for o in &st.outputs {
+                if !out.contains(&o.parameter) {
+                    out.push(o.parameter);
+                }
+            }
+        }
+        out
+    }
+
+    /// Bake Animation from Physics: simulates the scene twice at its frame
+    /// rate (the first pass resets the simulation unless the scene loops;
+    /// the second continues from it and its values are kept) and writes the
+    /// physics outputs `params` (model parameter indices) as keys on the
+    /// model track: every frame, or reduced to turning points ("optimal
+    /// curves"), with the scene's default parameter curve type. One undo
+    /// step; returns the number of keys written.
+    /// spec: 60-animation/timeline-editing.md §12
+    pub fn bake_physics(&mut self, params: &[usize], every_frame: bool) -> Result<usize, String> {
+        let st = self.anim.as_ref().ok_or("No animation is open.")?;
+        let scene = st.scene().ok_or("No scene.")?.clone();
+        let (ti, m) = st.model_track().ok_or("This scene has no model track.")?;
+        if self.model.physics.settings.is_empty() {
+            return Err("The model has no physics.".into());
+        }
+        let track = &scene.tracks[ti];
+        let shift = track.offset - track.start;
+        let attrs: Vec<(usize, usize)> = params
+            .iter()
+            .filter_map(|&pi| {
+                m.params
+                    .iter()
+                    .position(|a| param_index(&self.model, a) == Some(pi))
+                    .map(|k| (pi, k))
+            })
+            .collect();
+        if attrs.is_empty() {
+            return Err("None of the chosen parameters is on the model track.".into());
+        }
+        let dt = (1.0 / scene.fps) as f32;
+        let frames = 0..=scene.duration;
+        let mut sim = keyform_physics::PhysicsSim::new(&self.model.physics);
+        let mut series = vec![Vec::new(); attrs.len()];
+        for pass in 0..2 {
+            if pass == 0 && !scene.loop_motion {
+                sim.reset(&self.model.physics);
+            }
+            for f in frames.clone() {
+                let (mut values, _) = self.anim_values_at(f64::from(f)).ok_or("no values")?;
+                sim.step(&self.model.physics, &self.model.parameters, &mut values, dt);
+                if pass == 1 {
+                    for (j, &(pi, _)) in attrs.iter().enumerate() {
+                        series[j].push(f64::from(values[pi]));
+                    }
+                }
+            }
+        }
+        let kind = scene.default_param_curve;
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        let before = st.doc.animation.clone();
+        let legacy = before.smooth_legacy;
+        let TrackKind::Model(mt) = &mut st.doc.animation.scenes[st.scene].tracks[ti].kind else {
+            return Err("no model track".into());
+        };
+        let mut n = 0;
+        for (j, &(_, k)) in attrs.iter().enumerate() {
+            let a = &mut mt.params[k];
+            let (lo, hi) = keyform_anim::scene::clamp_range(a);
+            let v = &series[j];
+            let kept: Vec<usize> = if every_frame {
+                (0..v.len()).collect()
+            } else {
+                keyform_anim::lipsync_bake::turning_points(v)
+            };
+            let c = &mut a.curve;
+            c.fixed = false;
+            c.keys.clear();
+            c.types.clear();
+            for i in kept {
+                keyform_anim::scene::set_key(c, i as i32 + shift, v[i], kind);
+            }
+            c.types = vec![kind; c.keys.len()];
+            keyform_anim::scene::refresh(c, lo, hi, legacy);
+            n += c.keys.len();
+        }
+        st.undo
+            .push(("Bake Animation from Physics".into(), UndoStep::Anim(before)));
+        st.redo.clear();
+        st.dirty = true;
+        Ok(n)
+    }
+
     pub fn import_motion(&mut self, path: &Path) -> Result<Vec<String>, String> {
         use keyform_anim::motion::Target;
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -950,6 +1049,72 @@ enum SceneOp {
     AddSound(PathBuf),
     BakeLipSync(usize),
     ImportMotion(PathBuf),
+    OpenPhysicsBake,
+    BakePhysics(Vec<usize>, bool),
+}
+
+/// The "Settings of Baking Animation from Physics" dialog's draft:
+/// (parameter index, name, chosen) per physics output, and the key
+/// insertion method. spec: timeline-editing.md §12
+pub struct PhysicsBakeDraft {
+    pub params: Vec<(usize, String, bool)>,
+    pub every_frame: bool,
+}
+
+fn physics_bake_dialog(ctx: &egui::Context, st: &mut AnimState) -> Option<SceneOp> {
+    let d = st.physics_bake.as_mut()?;
+    let mut open = true;
+    let mut op = None;
+    let mut close = false;
+    egui::Window::new("Settings of Baking Animation from Physics")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label("Parameters to apply physics to:");
+            ui.horizontal(|ui| {
+                if ui.button("Select all").clicked() {
+                    d.params.iter_mut().for_each(|p| p.2 = true);
+                }
+                if ui.button("Unselect all").clicked() {
+                    d.params.iter_mut().for_each(|p| p.2 = false);
+                }
+            });
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for (_, name, on) in &mut d.params {
+                        ui.checkbox(on, name.as_str());
+                    }
+                });
+            ui.separator();
+            ui.label("Keyframe Insertion Method");
+            ui.radio_value(
+                &mut d.every_frame,
+                false,
+                "Automatically create optimal curves",
+            );
+            ui.radio_value(&mut d.every_frame, true, "Insert key to every frame");
+            ui.label("Frame rate used for baking: the scene frame rate.");
+            ui.separator();
+            ui.horizontal(|ui| {
+                let chosen: Vec<usize> = d.params.iter().filter(|p| p.2).map(|p| p.0).collect();
+                if ui
+                    .add_enabled(!chosen.is_empty(), egui::Button::new("OK"))
+                    .clicked()
+                {
+                    op = Some(SceneOp::BakePhysics(chosen, d.every_frame));
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close || !open {
+        st.physics_bake = None;
+    }
+    op
 }
 
 pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::Tokens) {
@@ -1012,6 +1177,10 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                             .collect()
                     })
                     .unwrap_or_default();
+                if ui.button("Bake Animation from Physics…").clicked() {
+                    op = Some(SceneOp::OpenPhysicsBake);
+                    ui.close();
+                }
                 ui.add_enabled_ui(!sound_tracks.is_empty(), |ui| {
                     ui.menu_button("Bake Lip-sync", |ui| {
                         for (i, name) in &sound_tracks {
@@ -1063,6 +1232,9 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
     }
     if let Some(st) = doc.anim.as_mut() {
         settings_dialog(ui.ctx(), st);
+        if let Some(o) = physics_bake_dialog(ui.ctx(), st) {
+            op = Some(o);
+        }
     }
     if let Some(op) = op {
         let scene = doc.anim.as_ref().map_or(0, |a| a.scene);
@@ -1116,6 +1288,36 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 .map_or(Err("No animation is open.".into()), |a| {
                     a.bake_lip_sync(i).map(|_| ())
                 }),
+            SceneOp::OpenPhysicsBake => {
+                let outs = doc.physics_outputs();
+                if outs.is_empty() {
+                    Err("The model has no physics.".into())
+                } else {
+                    let params = outs
+                        .into_iter()
+                        .map(|pi| {
+                            let p = &doc.model.parameters[pi];
+                            (
+                                pi,
+                                if p.name.is_empty() {
+                                    p.id.clone()
+                                } else {
+                                    p.name.clone()
+                                },
+                                true,
+                            )
+                        })
+                        .collect();
+                    if let Some(a) = doc.anim.as_mut() {
+                        a.physics_bake = Some(PhysicsBakeDraft {
+                            params,
+                            every_frame: false,
+                        });
+                    }
+                    Ok(())
+                }
+            }
+            SceneOp::BakePhysics(params, every) => doc.bake_physics(&params, every).map(|_| ()),
         };
         match r {
             Ok(()) => {
@@ -1792,6 +1994,60 @@ mod tests {
             n
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Physics baking: a head turn drives the physics outputs, which get
+    /// keys (every frame, or reduced to turning points) as one undo step.
+    #[test]
+    fn bake_physics_writes_outputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        let outs = doc.physics_outputs();
+        assert!(!outs.is_empty());
+        // Animate an input: ParamAngleX 0 → 30 → 0.
+        {
+            let a = doc.anim.as_mut().unwrap();
+            let (ti, _) = a.model_track().unwrap();
+            let s = a.scene;
+            let TrackKind::Model(m) = &mut a.doc.animation.scenes[s].tracks[ti].kind else {
+                panic!()
+            };
+            let at = m
+                .params
+                .iter_mut()
+                .find(|p| p.id == "live2dParam_ParamAngleX")
+                .unwrap();
+            for (f, v) in [(0, 0.0), (15, 30.0), (30, 0.0)] {
+                keyform_anim::scene::set_key(
+                    &mut at.curve,
+                    f,
+                    v,
+                    keyform_model::animation::CurveType::Smooth,
+                );
+            }
+            keyform_anim::scene::refresh(&mut at.curve, -30.0, 30.0, false);
+        }
+        let dur = doc.anim.as_ref().unwrap().scene().unwrap().duration;
+        let n_all = doc.bake_physics(&outs[..1], true).unwrap();
+        assert_eq!(n_all, (dur + 1) as usize);
+        assert_eq!(
+            doc.anim.as_mut().unwrap().step(false).as_deref(),
+            Some("Bake Animation from Physics")
+        );
+        let n = doc.bake_physics(&outs, false).unwrap();
+        assert!(n >= 2 * outs.len() && n < n_all * outs.len(), "{n}");
+        // The outputs now move with the head turn.
+        let pi = outs[0];
+        let (a, b) = (
+            doc.anim_values_at(0.0).unwrap().0[pi],
+            doc.anim_values_at(20.0).unwrap().0[pi],
+        );
+        assert!((a - b).abs() > 1e-3, "{a} {b}");
     }
 
     /// A global form key moves its art mesh by target − original in the

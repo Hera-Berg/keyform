@@ -240,7 +240,7 @@ pub fn bake(c: &mut Curve, table: &[u8], o: &BakeOptions) {
 
 /// Indices kept by the reduction: the first, the last, and the one before
 /// every change of direction (rising / falling / flat).
-fn turning_points(v: &[f64]) -> Vec<usize> {
+pub fn turning_points(v: &[f64]) -> Vec<usize> {
     let sign = |x: f64| {
         if x > 0.0 {
             1
