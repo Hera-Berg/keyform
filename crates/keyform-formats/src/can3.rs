@@ -126,6 +126,16 @@ impl Can3Document {
                 else {
                     continue;
                 };
+                if m.controllers != om.controllers {
+                    crate::can3_build::write_controllers(
+                        &mut xml,
+                        si,
+                        ti,
+                        &m.controllers,
+                        &t.guid,
+                    )?;
+                    other = true;
+                }
                 if m.form != om.form {
                     let info = self.form_info.as_ref().ok_or_else(|| {
                         FormatError::Unsupported(
@@ -1078,6 +1088,117 @@ fn form_map(m: Option<O>) -> Result<Vec<keyform_model::animation::FormObject>> {
     Ok(out)
 }
 
+/// A track's parameter controllers (`ParamCtrlGroupSet`).
+/// spec: form-animation-and-controllers.md §3.2
+fn controllers(set: &O) -> Result<keyform_model::animation::ControllerSet> {
+    use keyform_model::animation::{Controller, CtrlPoint, CtrlShape};
+    let mut out = keyform_model::animation::ControllerSet::default();
+    let mut point_index = HashMap::new();
+    for p in set.list("paramCtrlPointList")? {
+        let tri = p.field("triangle")?;
+        let (mut idx, mut w) = ([0usize; 3], [0.0f64; 3]);
+        if let Some(t) = tri {
+            for k in 0..3 {
+                idx[k] = t.i32(&format!("ptIndex{}", k + 1))?.unwrap_or(0).max(0) as usize;
+                w[k] = t.f64(&format!("weight{}", k + 1))?.unwrap_or(0.0);
+            }
+        }
+        let rec = match p.field("recoveryPoint")? {
+            Some(v) => [
+                f64::from(v.f32("x")?.unwrap_or(0.0)),
+                f64::from(v.f32("y")?.unwrap_or(0.0)),
+            ],
+            None => [0.0; 2],
+        };
+        let guid = p.guid("guid")?.unwrap_or_default().to_owned();
+        point_index.insert(guid.clone(), out.points.len());
+        out.points.push(CtrlPoint {
+            guid,
+            name: p.string("name")?.unwrap_or_default(),
+            mesh_id: p.id("ownerObjectId")?.unwrap_or_default().to_owned(),
+            tri: idx,
+            bary: w,
+            hash: p.i32("meshIndicesHash")?.unwrap_or(0),
+            recovery: rec,
+            recovery_mesh: p.guid("recoveryArtMeshGuid")?.map(str::to_owned),
+        });
+    }
+    let mut marker_index = HashMap::new();
+    let mut targets = Vec::new();
+    for mk in set.list("paramCtrlMarkerList")? {
+        let pt = |name: &str| -> Result<Option<usize>> {
+            Ok(mk.guid(name)?.and_then(|g| point_index.get(g).copied()))
+        };
+        let shape = match mk.tag() {
+            "SinglePointParamCtrlMarkerSource" => match pt("pointGuid")? {
+                Some(p) => CtrlShape::Single(p),
+                None => continue,
+            },
+            "LineParamCtrlMarkerSource" => match (pt("startPointGuid")?, pt("endPointGuid")?) {
+                (Some(a), Some(b)) => CtrlShape::Line(a, b),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let color = match mk.field("pointColor")? {
+            Some(c) => [
+                c.attr("red").and_then(|x| x.parse().ok()).unwrap_or(1.0),
+                c.attr("green").and_then(|x| x.parse().ok()).unwrap_or(1.0),
+                c.attr("blue").and_then(|x| x.parse().ok()).unwrap_or(1.0),
+                c.attr("alpha").and_then(|x| x.parse().ok()).unwrap_or(1.0),
+            ],
+            None => [1.0; 4],
+        };
+        let mut params = Vec::new();
+        if let Some(l) = mk.field("controlParamIds")? {
+            for it in l.items()? {
+                if let Some(id) = it.attr("idstr") {
+                    params.push(id.to_owned());
+                }
+            }
+        }
+        let target = match mk
+            .field("paramCtrlTargetAssessor")?
+            .filter(|a| !a.is_null())
+        {
+            Some(a) => a.guid("targetParamCtrlMarkerGuid")?.map(|g| {
+                let ext = match a.tag() {
+                    "AreaPositionParamCtrlTargetAssessor" => a
+                        .bool("enablePreStartContact")
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false),
+                    "AimParamCtrlTargetAssessor" => a
+                        .bool("enablePostEndContact")
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                (g.to_owned(), ext)
+            }),
+            None => None,
+        };
+        let guid = mk.guid("guid")?.unwrap_or_default().to_owned();
+        marker_index.insert(guid.clone(), out.controllers.len());
+        targets.push(target);
+        out.controllers.push(Controller {
+            guid,
+            name: mk.string("name")?.unwrap_or_default(),
+            color,
+            shape,
+            params,
+            target: None,
+            stand_alone: mk.bool("isStandAlone")?.unwrap_or(false),
+            select_lock: mk.bool("isSelectLock")?.unwrap_or(false),
+        });
+    }
+    for (c, t) in out.controllers.iter_mut().zip(targets) {
+        c.target = t.and_then(|(g, ext)| marker_index.get(&g).map(|&i| (i, ext)));
+    }
+    Ok(out)
+}
+
 fn model_track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<ModelTrack> {
     let mut m = ModelTrack {
         resource: t.guid("_resourceGuid")?.map(str::to_owned),
@@ -1108,6 +1229,9 @@ fn model_track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<ModelTrack> 
                 freeze: gr.bool("isFreezeMode")?.unwrap_or(false),
             });
         }
+    }
+    if let Some(set) = t.field("paramCtrlGroupSet")?.filter(|x| !x.is_null()) {
+        m.controllers = controllers(&set)?;
     }
     if let Some(fa) = t.field("formAnimationSet")? {
         m.form.global = form_map(fa.field("formMapOnGlobal")?)?;

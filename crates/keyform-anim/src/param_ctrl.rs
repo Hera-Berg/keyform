@@ -7,83 +7,80 @@ use serde_json::{json, Map, Value};
 
 use crate::AnimError;
 
-/// A point pinned to an art mesh by a triangle and barycentric weights.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CtrlPoint {
-    pub name: String,
-    /// Art mesh index.
-    pub mesh: usize,
-    /// The triangle's vertex indices.
-    pub tri: [usize; 3],
-    pub bary: [f64; 3],
-    /// Model-canvas position when last pinned (recovery position).
-    pub recovery: [f64; 2],
+pub use keyform_model::animation::{Controller, ControllerSet, CtrlPoint, CtrlShape};
+
+/// `meshIndicesHash`: h = 1; h = 31·h + i for every triangle index (32-bit
+/// wrap). spec: form-animation-and-controllers.md §3.2
+pub fn mesh_indices_hash(indices: &[u32]) -> i32 {
+    indices
+        .iter()
+        .fold(1i32, |h, &i| h.wrapping_mul(31).wrapping_add(i as i32))
 }
 
-impl CtrlPoint {
-    /// The point on the mesh's current positions (x, y pairs).
-    pub fn position(&self, positions: &[f32]) -> Option<[f64; 2]> {
-        let mut p = [0.0; 2];
-        for (k, &v) in self.tri.iter().enumerate() {
-            let q = positions.get(2 * v..2 * v + 2)?;
-            p[0] += self.bary[k] * f64::from(q[0]);
-            p[1] += self.bary[k] * f64::from(q[1]);
-        }
-        Some(p)
+/// The point on the mesh's current positions (x, y pairs).
+pub fn point_position(p: &CtrlPoint, positions: &[f32]) -> Option<[f64; 2]> {
+    let mut q = [0.0; 2];
+    for (k, &v) in p.tri.iter().enumerate() {
+        let r = positions.get(2 * v..2 * v + 2)?;
+        q[0] += p.bary[k] * f64::from(r[0]);
+        q[1] += p.bary[k] * f64::from(r[1]);
     }
+    Some(q)
+}
 
-    /// Pins a point at `at` onto the mesh (`positions`, triangle `indices`):
-    /// the containing triangle, else the nearest vertex's first triangle.
-    pub fn pin(
-        name: &str,
-        mesh: usize,
-        positions: &[f32],
-        indices: &[u32],
-        at: [f64; 2],
-    ) -> Option<Self> {
-        let v = |i: usize| -> [f64; 2] {
-            [f64::from(positions[2 * i]), f64::from(positions[2 * i + 1])]
-        };
-        let n = positions.len() / 2;
-        let mut best: Option<(f64, [usize; 3], [f64; 3])> = None;
-        for t in indices.chunks_exact(3) {
-            let tri = [t[0] as usize, t[1] as usize, t[2] as usize];
-            if tri.iter().any(|&i| i >= n) {
-                continue;
-            }
-            let (a, b, c) = (v(tri[0]), v(tri[1]), v(tri[2]));
-            let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
-            if det.abs() < 1e-12 {
-                continue;
-            }
-            let l0 = ((b[1] - c[1]) * (at[0] - c[0]) + (c[0] - b[0]) * (at[1] - c[1])) / det;
-            let l1 = ((c[1] - a[1]) * (at[0] - c[0]) + (a[0] - c[0]) * (at[1] - c[1])) / det;
-            let w = [l0, l1, 1.0 - l0 - l1];
-            // Distance outside the triangle (0 inside).
-            let out = w.iter().map(|x| (-x).max(0.0)).sum::<f64>();
-            if best.as_ref().is_none_or(|b| out < b.0) {
-                best = Some((out, tri, w));
-            }
+/// Pins a point at `at` onto a mesh (`positions`, triangle `indices`):
+/// the containing triangle, else the nearest one with clamped weights.
+pub fn pin(
+    name: &str,
+    mesh_id: &str,
+    positions: &[f32],
+    indices: &[u32],
+    at: [f64; 2],
+) -> Option<CtrlPoint> {
+    let v =
+        |i: usize| -> [f64; 2] { [f64::from(positions[2 * i]), f64::from(positions[2 * i + 1])] };
+    let n = positions.len() / 2;
+    let mut best: Option<(f64, [usize; 3], [f64; 3])> = None;
+    for t in indices.chunks_exact(3) {
+        let tri = [t[0] as usize, t[1] as usize, t[2] as usize];
+        if tri.iter().any(|&i| i >= n) {
+            continue;
         }
-        let (out, tri, mut w) = best?;
-        if out > 0.0 {
-            // Outside: clamp the weights onto the triangle.
-            for x in &mut w {
-                *x = x.max(0.0);
-            }
-            let s: f64 = w.iter().sum();
-            w.iter_mut().for_each(|x| *x /= s);
+        let (a, b, c) = (v(tri[0]), v(tri[1]), v(tri[2]));
+        let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+        if det.abs() < 1e-12 {
+            continue;
         }
-        let mut p = Self {
-            name: name.to_owned(),
-            mesh,
-            tri,
-            bary: w,
-            recovery: [0.0; 2],
-        };
-        p.recovery = p.position(positions)?;
-        Some(p)
+        let l0 = ((b[1] - c[1]) * (at[0] - c[0]) + (c[0] - b[0]) * (at[1] - c[1])) / det;
+        let l1 = ((c[1] - a[1]) * (at[0] - c[0]) + (a[0] - c[0]) * (at[1] - c[1])) / det;
+        let w = [l0, l1, 1.0 - l0 - l1];
+        let out = w.iter().map(|x| (-x).max(0.0)).sum::<f64>();
+        if best.as_ref().is_none_or(|b| out < b.0) {
+            best = Some((out, tri, w));
+        }
     }
+    let (out, tri, mut w) = best?;
+    if out > 0.0 {
+        for x in &mut w {
+            *x = x.max(0.0);
+        }
+        let s: f64 = w.iter().sum();
+        w.iter_mut().for_each(|x| *x /= s);
+    }
+    let mut p = CtrlPoint {
+        guid: keyform_model::new_guid(),
+        name: name.to_owned(),
+        mesh_id: mesh_id.to_owned(),
+        tri,
+        bary: w,
+        hash: mesh_indices_hash(indices),
+        recovery: [0.0; 2],
+        recovery_mesh: None,
+    };
+    // Stored as a float vector (`recoveryPoint`).
+    let r = point_position(&p, positions)?;
+    p.recovery = [f64::from(r[0] as f32), f64::from(r[1] as f32)];
+    Some(p)
 }
 
 /// What reaching the target means (§2.1).
@@ -102,35 +99,6 @@ pub enum Assessor {
     Direction([f64; 2]),
     /// Line → point T, with post-end contact.
     Aim { t: [f64; 2], post: bool },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum CtrlShape {
-    /// A single-point controller (its point index).
-    Single(usize),
-    /// A direction controller (start, end point indices).
-    Line(usize, usize),
-}
-
-/// A controller (marker) with its parameters and current goal.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Controller {
-    pub name: String,
-    /// RGBA 0–1.
-    pub color: [f32; 4],
-    pub shape: CtrlShape,
-    /// Model parameter IDs it drives.
-    pub params: Vec<String>,
-    pub assessor: Option<Assessor>,
-    /// The `Target` of the file: another controller's index and ExtendLine.
-    pub target: Option<(usize, bool)>,
-}
-
-/// One track's controllers.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ControllerSet {
-    pub points: Vec<CtrlPoint>,
-    pub controllers: Vec<Controller>,
 }
 
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -373,7 +341,7 @@ fn r3(x: f64) -> Value {
 }
 
 /// Writes `*.paramctrl3.json` (§2.4). `mesh_id` gives an art mesh's ID.
-pub fn export_json(set: &ControllerSet, mesh_id: &dyn Fn(usize) -> String) -> String {
+pub fn export_json(set: &ControllerSet) -> String {
     let drawables: Vec<Value> = set
         .points
         .iter()
@@ -382,7 +350,7 @@ pub fn export_json(set: &ControllerSet, mesh_id: &dyn Fn(usize) -> String) -> St
             json!({
                 "Id": format!("ControlPoint_{i}"),
                 "Name": p.name,
-                "ObjectId": mesh_id(p.mesh),
+                "ObjectId": p.mesh_id,
                 "Point": { "X": r3(p.recovery[0]), "Y": r3(p.recovery[1]) },
             })
         })
@@ -511,6 +479,7 @@ pub fn import_json(text: &str) -> Result<Imported, AnimError> {
                 )
             }));
             out.controllers.push(Controller {
+                guid: keyform_model::new_guid(),
                 name: s("Name"),
                 color: unhex(&s("Color")),
                 shape,
@@ -521,8 +490,9 @@ pub fn import_json(text: &str) -> Result<Imported, AnimError> {
                     .flatten()
                     .filter_map(|x| x.as_str().map(str::to_owned))
                     .collect(),
-                assessor: None,
                 target: None,
+                stand_alone: false,
+                select_lock: false,
             });
         }
     }
@@ -581,34 +551,38 @@ mod tests {
     #[test]
     fn pin_and_json_round_trip() {
         let pos = [0.0f32, 0.0, 10.0, 0.0, 0.0, 10.0];
-        let p = CtrlPoint::pin("nose", 3, &pos, &[0, 1, 2], [2.0, 3.0]).unwrap();
+        let p = pin("nose", "ArtMesh3", &pos, &[0, 1, 2], [2.0, 3.0]).unwrap();
         assert_eq!(
-            p.position(&pos)
-                .map(|q| [(q[0] * 1e6).round(), (q[1] * 1e6).round()]),
+            point_position(&p, &pos).map(|q| [(q[0] * 1e6).round(), (q[1] * 1e6).round()]),
             Some([2e6, 3e6])
         );
+        assert_eq!(p.hash, (31 * 31 + 1) * 31 + 2);
         let set = ControllerSet {
             points: vec![p.clone(), p.clone(), p],
             controllers: vec![
                 Controller {
+                    guid: "a".into(),
+                    stand_alone: false,
+                    select_lock: false,
                     name: "A".into(),
                     color: [1.0, 0.0, 0.0, 1.0],
                     shape: CtrlShape::Single(0),
                     params: vec!["ParamAngleX".into()],
-                    assessor: None,
                     target: Some((1, true)),
                 },
                 Controller {
+                    guid: "b".into(),
+                    stand_alone: false,
+                    select_lock: false,
                     name: "B".into(),
                     color: [0.0, 0.5, 1.0, 1.0],
                     shape: CtrlShape::Line(1, 2),
                     params: vec!["ParamAngleY".into()],
-                    assessor: None,
                     target: None,
                 },
             ],
         };
-        let text = export_json(&set, &|_| "ArtMesh3".into());
+        let text = export_json(&set);
         assert!(text.contains("\"Color\": \"FF0000FF\""), "{text}");
         let back = import_json(&text).unwrap();
         assert_eq!(back.version, 3);

@@ -342,7 +342,9 @@ mod tests {
     #[test]
     fn form_edit_both_modes() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let model = root.join("hiyori_pro_t11.cmo3");
+        let model = std::env::var_os("KEYFORM_BB_MODEL")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| root.join("hiyori_pro_t11.cmo3"));
         if !model.exists() {
             return;
         }
@@ -378,8 +380,10 @@ mod tests {
         assert_eq!((m.form.global.len(), m.form.local.len()), (1, 1));
         // Saved (§3.1) and read back equal.
         let form = m.form.clone();
-        let out = std::env::temp_dir().join(format!("kf-form-{}.can3", std::process::id()));
-        let model_copy = out.with_file_name("hiyori_pro_t11.cmo3");
+        let tmp = std::env::temp_dir().join(format!("kf-form-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = tmp.join("form.can3");
+        let model_copy = out.with_file_name(model.file_name().unwrap());
         let _ = std::fs::copy(&model, &model_copy);
         doc.save_animation_to(Some(&out)).unwrap();
         if let Ok(dir) = std::env::var("KEYFORM_BB_DIR") {

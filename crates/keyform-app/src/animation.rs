@@ -70,9 +70,6 @@ pub struct AnimState {
     pub form_drag: Option<crate::form_edit::FormDrag>,
     /// The art mesh last form-edited (its vertices are drawn).
     pub form_mesh: Option<usize>,
-    /// The model track's parameter controllers (kept in memory; exported
-    /// and imported as `*.paramctrl3.json`, Q-0034).
-    pub controllers: keyform_anim::param_ctrl::ControllerSet,
     pub ctrl_tool: crate::param_ctrl_ui::CtrlTool,
     pub ctrl_drag: Option<crate::param_ctrl_ui::CtrlDrag>,
     /// The text of a new event (Events ▸ Add).
@@ -368,6 +365,33 @@ impl AnimState {
         Some(name)
     }
 
+    /// The model track's parameter controllers (empty without one).
+    pub fn ctrls(&self) -> &keyform_model::animation::ControllerSet {
+        static EMPTY: keyform_model::animation::ControllerSet =
+            keyform_model::animation::ControllerSet {
+                points: Vec::new(),
+                controllers: Vec::new(),
+            };
+        self.model_track().map_or(&EMPTY, |(_, m)| &m.controllers)
+    }
+
+    pub fn ctrls_mut(&mut self) -> Option<&mut keyform_model::animation::ControllerSet> {
+        let (ti, _) = self.model_track()?;
+        let s = self.scene;
+        match &mut self
+            .doc
+            .animation
+            .scenes
+            .get_mut(s)?
+            .tracks
+            .get_mut(ti)?
+            .kind
+        {
+            TrackKind::Model(m) => Some(&mut m.controllers),
+            _ => None,
+        }
+    }
+
     /// The first model track of the current scene.
     pub fn model_track(&self) -> Option<(usize, &ModelTrack)> {
         self.scene()?
@@ -451,7 +475,6 @@ impl Document {
             form_tool: false,
             form_drag: None,
             form_mesh: None,
-            controllers: Default::default(),
             ctrl_tool: Default::default(),
             ctrl_drag: None,
             event_text: String::new(),
@@ -515,7 +538,6 @@ impl Document {
             form_tool: false,
             form_drag: None,
             form_mesh: None,
-            controllers: Default::default(),
             ctrl_tool: Default::default(),
             ctrl_drag: None,
             event_text: String::new(),
@@ -2570,6 +2592,34 @@ mod blackbox_files {
         .unwrap();
         doc.save_animation_to(Some(&dir.join("sound2_kf.can3")))
             .unwrap();
+        // An image track (listed below the model track: drawn behind it).
+        let png = dir.join("red.png");
+        let img = keyform_formats::image::RgbaImage {
+            width: 400,
+            height: 400,
+            data: [230u8, 20, 20, 255].repeat(400 * 400),
+        };
+        std::fs::write(&png, img.encode_png().unwrap()).unwrap();
+        let mut doc = Document::new_animation(model, &mut log).unwrap();
+        doc.anim_structure("Add Image Track", |d, _| {
+            d.add_image_track(0, &png.to_string_lossy(), (400, 400))
+        })
+        .unwrap();
+        {
+            let a = doc.anim.as_mut().unwrap();
+            let (ti, _) = a.model_track().unwrap();
+            let s = a.scene;
+            set_placement(
+                a.doc.animation.scenes[s].tracks[ti]
+                    .visual
+                    .as_mut()
+                    .unwrap(),
+            );
+        }
+        doc.save_animation_to(Some(&dir.join("image_kf.can3")))
+            .unwrap();
+        let img = crate::export_media::render_frame(&doc, 0.0, 50.0, true).unwrap();
+        std::fs::write(dir.join("image_kf_0.png"), img.encode_png().unwrap()).unwrap();
         eprintln!("{:?}", log.entries);
     }
 }

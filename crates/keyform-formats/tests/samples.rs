@@ -3393,3 +3393,43 @@ fn can3_scene_settings_and_events() {
     // (2 decimals: the last curve processed is a PartOpacity one.)
     assert!((m.user_data[0].0 - 10.0 / 60.0).abs() < 0.01 && m.user_data[0].1 == "wave");
 }
+
+/// Keyform-written form keys and controllers, saved again by the reference
+/// (`KEYFORM_BB_DIR` with form_kf / form_ref / ctrl_kf / ctrl_ref .can3):
+/// they read back equal. spec: form-animation-and-controllers.md §3
+#[test]
+fn can3_reference_round_trip() {
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    let Some(dir) = std::env::var_os("KEYFORM_BB_DIR") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    let model = |name: &str| {
+        let d = Can3Document::read(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+        assert!(d.warnings.is_empty(), "{name}: {:?}", d.warnings);
+        d.animation.scenes[0]
+            .tracks
+            .iter()
+            .find_map(|t| match &t.kind {
+                TrackKind::Model(m) => Some((**m).clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (a, b) = (model("form_kf.can3"), model("form_ref.can3"));
+    assert!(!a.form.global.is_empty() && !a.form.local.is_empty());
+    assert_eq!(a.form, b.form);
+    let (a, b) = (model("ctrl_kf.can3"), model("ctrl_ref.can3"));
+    assert!(!a.controllers.controllers.is_empty());
+    assert_eq!(a.controllers.controllers, b.controllers.controllers);
+    for (p, q) in a.controllers.points.iter().zip(&b.controllers.points) {
+        assert_eq!(
+            (&p.guid, &p.mesh_id, p.tri, p.hash),
+            (&q.guid, &q.mesh_id, q.tri, q.hash)
+        );
+        for k in 0..3 {
+            assert!((p.bary[k] - q.bary[k]).abs() < 1e-9);
+        }
+    }
+}

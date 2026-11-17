@@ -931,6 +931,15 @@ fn scene(
             list("array_list", "onionSkinMarker", Vec::new()),
             b("lockOnionSkinMarker", false),
             bookmarks,
+            {
+                // spec: form-animation-and-controllers.md §3.2
+                let mut pco = named(
+                    "ParamCtrlCalculationOrderSet",
+                    "paramCtrlCalculationOrderSet",
+                );
+                pco.children = vec![list("carray_list", "calcGroupInfoList", Vec::new())];
+                pco
+            },
         ],
         &[("exportMotionFile", "true".into())],
     );
@@ -1956,10 +1965,10 @@ pub fn write_form_animation(
                 },
             );
             // A full form element without `_source` (§3.1).
-            let form_el = |name: &str, pos: &[f32]| -> Element {
+            let form_el = |name: &str, pos: &[f32], fg: &str| -> Element {
                 let mut acf = named("ACForm", "super");
                 acf.children = vec![
-                    named("CFormGuid", "guid").with_attr("uuid", keyform_model::new_guid()),
+                    r("CFormGuid", "guid", fg),
                     null("name"),
                     s("notes", ""),
                     b("isAnimatedForm", true),
@@ -1991,11 +2000,13 @@ pub fn write_form_animation(
                 .keys
                 .iter()
                 .map(|k| {
+                    // Form GUIDs as shared GUID objects (uuid + note).
+                    let (gt, go) = (g.guid("CFormGuid", ""), g.guid("CFormGuid", ""));
                     let id = g.add(
                         "FramePosAndForm",
                         vec![
-                            form_el("targetForm", &k.target),
-                            form_el("originalForm", &k.original),
+                            form_el("targetForm", &k.target, &gt),
+                            form_el("originalForm", &k.original, &go),
                         ],
                         &[("framePos", k.frame.to_string())],
                     );
@@ -2137,6 +2148,357 @@ pub fn write_form_animation(
             set_text(e, "isApplyEditResult", form.apply.to_string());
             set_text(e, "isLocalFormAnimation", form.local_mode.to_string());
         }
+    }
+    fix_markers(xml);
+    Ok(())
+}
+
+/// Controller groups: each marker starts alone; markers sharing a
+/// controlled parameter merge (stand-alone markers never do), until
+/// stable. Returns groups of controller indices in order.
+/// spec: form-animation-and-controllers.md §3.2
+pub fn controller_groups(set: &keyform_model::animation::ControllerSet) -> Vec<Vec<usize>> {
+    let n = set.controllers.len();
+    let mut group: Vec<usize> = (0..n).collect();
+    loop {
+        let mut merged = false;
+        for a in 0..n {
+            for b in a + 1..n {
+                let (ca, cb) = (&set.controllers[a], &set.controllers[b]);
+                if group[a] == group[b] || ca.stand_alone || cb.stand_alone {
+                    continue;
+                }
+                if ca.params.iter().any(|p| cb.params.contains(p)) {
+                    let (from, to) = (group[b], group[a]);
+                    group
+                        .iter_mut()
+                        .filter(|g| **g == from)
+                        .for_each(|g| *g = to);
+                    merged = true;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+    }
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    for i in 0..n {
+        match seen.iter().position(|&g| g == group[i]) {
+            Some(k) => out[k].push(i),
+            None => {
+                seen.push(group[i]);
+                out.push(vec![i]);
+            }
+        }
+    }
+    out
+}
+
+/// Rewrites a model track's parameter controllers: `paramCtrlGroupSet`
+/// (groups, points, markers, version 1) and the `Effects:ParamCtrlGroups`
+/// effect with one blend attribute per marker.
+/// spec: form-animation-and-controllers.md §3.2
+pub fn write_controllers(
+    xml: &mut XmlDocument,
+    index: usize,
+    t: usize,
+    set: &keyform_model::animation::ControllerSet,
+    track_uuid: &str,
+) -> Result<()> {
+    use keyform_model::animation::CtrlShape;
+    const T: &str = "CMvTrack_Live2DModel_Source";
+    let track = track_id(xml, index, t)?;
+    let mut g = Graph::on(xml)?;
+    let tg = g.guid_of("CTrackGuid", track_uuid, "");
+    let point_ids: Vec<String> = set
+        .points
+        .iter()
+        .map(|p| g.guid_of("CParamCtrlPointGuid", &p.guid, &p.name))
+        .collect();
+    let marker_ids: Vec<String> = set
+        .controllers
+        .iter()
+        .map(|c| g.guid_of("ParamCtrlMarkerGuid", &c.guid, &c.name))
+        .collect();
+    let mesh_guid_ids: Vec<Option<String>> = set
+        .points
+        .iter()
+        .map(|p| {
+            p.recovery_mesh
+                .as_ref()
+                .map(|mg| g.guid_of("CDrawableGuid", mg, &p.mesh_id))
+        })
+        .collect();
+    let points: Vec<Element> = set
+        .points
+        .iter()
+        .zip(&point_ids)
+        .enumerate()
+        .map(|(k, (p, pid))| {
+            let mut sup = named("AObjectParamCtrlPoint", "super");
+            sup.children = vec![
+                r("CParamCtrlPointGuid", "guid", pid),
+                s("name", &p.name),
+                named("CDrawableId", "ownerObjectId").with_attr("idstr", p.mesh_id.clone()),
+            ];
+            let mut tri = named("PointInTriangleD", "triangle");
+            for k in 0..3 {
+                tri.children
+                    .push(i(&format!("ptIndex{}", k + 1), p.tri[k] as i64));
+                tri.children.push(d(&format!("weight{}", k + 1), p.bary[k]));
+            }
+            let mut e = Element::new("ArtMeshParamCtrlPoint");
+            e.children = vec![
+                sup,
+                tri,
+                i("meshIndicesHash", i64::from(p.hash)),
+                vec2("recoveryPoint", p.recovery[0] as f32, p.recovery[1] as f32),
+                match &p.recovery_mesh {
+                    Some(mg) => r(
+                        "CDrawableGuid",
+                        "recoveryArtMeshGuid",
+                        &mesh_guid_ids[k].clone().unwrap_or_else(|| mg.clone()),
+                    ),
+                    None => null("recoveryArtMeshGuid"),
+                },
+            ];
+            e
+        })
+        .collect();
+    let colour = |c: [f32; 4]| {
+        named("CFloatColor", "pointColor")
+            .with_attr("red", crate::graph::format_f32(c[0]))
+            .with_attr("green", crate::graph::format_f32(c[1]))
+            .with_attr("blue", crate::graph::format_f32(c[2]))
+            .with_attr("alpha", crate::graph::format_f32(c[3]))
+    };
+    let markers: Vec<Element> = set
+        .controllers
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            // Assessor kind from the shapes (as in the paramctrl3 import).
+            let assessor = match c.target {
+                Some((ti, ext)) if ti < set.controllers.len() => {
+                    let other = &set.controllers[ti].shape;
+                    let (tag, own) = match (&c.shape, other) {
+                        (CtrlShape::Single(_), CtrlShape::Single(_)) => {
+                            ("SinglePointPositionParamCtrlTargetAssessor", vec![])
+                        }
+                        (CtrlShape::Single(_), CtrlShape::Line(..)) => (
+                            "AreaPositionParamCtrlTargetAssessor",
+                            vec![
+                                b("enablePreStartContact", ext),
+                                b("enablePostEndContact", ext),
+                            ],
+                        ),
+                        (CtrlShape::Line(..), CtrlShape::Single(_)) => (
+                            "AimParamCtrlTargetAssessor",
+                            vec![
+                                b("enablePreStartContact", false),
+                                b("enablePostEndContact", ext),
+                            ],
+                        ),
+                        (CtrlShape::Line(..), CtrlShape::Line(..)) => {
+                            ("DirectionParamCtrlTargetAssessor", vec![])
+                        }
+                    };
+                    let mut sup = named("AParamCtrlTargetAssessor", "super");
+                    sup.children = vec![
+                        r("CTrackGuid", "trackGuid", &tg),
+                        r(
+                            "ParamCtrlMarkerGuid",
+                            "ownerParamCtrlMarkerGuid",
+                            &marker_ids[k],
+                        ),
+                        r(
+                            "ParamCtrlMarkerGuid",
+                            "targetParamCtrlMarkerGuid",
+                            &marker_ids[ti],
+                        ),
+                        r("CTrackGuid", "targetTrackGuid", &tg),
+                    ];
+                    let mut e = named(tag, "paramCtrlTargetAssessor");
+                    e.children = std::iter::once(sup).chain(own).collect();
+                    e
+                }
+                _ => null("paramCtrlTargetAssessor"),
+            };
+            let mut sup = named("AParamCtrlMarkerSource", "super");
+            sup.children = vec![
+                r("CTrackGuid", "trackGuid", &tg),
+                s("name", &c.name),
+                r("ParamCtrlMarkerGuid", "guid", &marker_ids[k]),
+                colour(c.color),
+                assessor,
+                b("isStandAlone", c.stand_alone),
+                b("isSelectLock", c.select_lock),
+                list(
+                    "carray_list",
+                    "controlParamIds",
+                    c.params
+                        .iter()
+                        .map(|p| Element::new("CParameterId").with_attr("idstr", p.clone()))
+                        .collect(),
+                ),
+            ];
+            match c.shape {
+                CtrlShape::Single(p) => {
+                    let mut e = Element::new("SinglePointParamCtrlMarkerSource");
+                    e.children = vec![sup, r("CParamCtrlPointGuid", "pointGuid", &point_ids[p])];
+                    e
+                }
+                CtrlShape::Line(a, bb) => {
+                    let mut e = Element::new("LineParamCtrlMarkerSource");
+                    e.children = vec![
+                        sup,
+                        r("CParamCtrlPointGuid", "startPointGuid", &point_ids[a]),
+                        r("CParamCtrlPointGuid", "endPointGuid", &point_ids[bb]),
+                    ];
+                    e
+                }
+            }
+        })
+        .collect();
+    let groups = controller_groups(set);
+    let group_els: Vec<Element> = groups
+        .iter()
+        .map(|gr| {
+            let mut e = Element::new("ParamCtrlGroup");
+            e.children = vec![list(
+                "carray_list",
+                "paramCtrlGuidList",
+                gr.iter()
+                    .map(|&k| item("ParamCtrlMarkerGuid", &marker_ids[k]))
+                    .collect(),
+            )];
+            e
+        })
+        .collect();
+    let mut gset = named("ParamCtrlGroupSet", "paramCtrlGroupSet");
+    gset.children = vec![
+        list("carray_list", "paramCtrlGroup", group_els),
+        list("carray_list", "paramCtrlPointList", points),
+        list("carray_list", "paramCtrlMarkerList", markers),
+        i("paramCtrlVersion", 1),
+    ];
+    // The effect: one blend attribute per marker.
+    let relative = g.add("AdaptType", vec![s("text", "Relative")], &[]);
+    let mut attrs = Vec::new();
+    for c in &set.controllers {
+        let id = format!("ParamCtrlGroup_Blend_{}", c.guid);
+        let a = float_attr(
+            &mut g,
+            FloatAttr {
+                id: &id,
+                name: &c.name,
+                guid: null("guid"),
+                adapt: &relative,
+                opts: vec![s("ParamCtrlGroupAttrType", "ParamCtrlGroupBlend")],
+                base: 1.0,
+                range: (0.0, 1.0),
+                repeat: false,
+                fixed: false,
+            },
+            T,
+            &track,
+        );
+        attrs.push(("CMvAttrF".to_owned(), a, id));
+    }
+    let eid = g.reserve("CEffectId");
+    {
+        let sh = shared(g.xml).expect("shared");
+        if let Some(e) = g.xml.root.children[sh]
+            .children
+            .iter_mut()
+            .find(|c| c.attr("xs.id") == Some(eid.as_str()))
+        {
+            e.attrs
+                .insert(0, ("idstr".into(), "Effects:ParamCtrlGroups".into()));
+        }
+    }
+    let group_list: Vec<Element> = groups
+        .iter()
+        .map(|gr| {
+            let mut comp = named("ParamCtrlCompositeGuid", "paramCtrlCompositeGuid");
+            comp.children = vec![
+                b("isRecovered", false),
+                list(
+                    "array_list",
+                    "markerGuidList",
+                    gr.iter()
+                        .map(|&k| item("ParamCtrlMarkerGuid", &marker_ids[k]))
+                        .collect(),
+                ),
+            ];
+            let mut e = Element::new("CMv_ParamCtrlGroup");
+            e.children = vec![
+                r(
+                    "ParamCtrlMarkerGuid",
+                    "headParamCtrlGuid",
+                    &marker_ids[gr[0]],
+                ),
+                comp,
+            ];
+            e
+        })
+        .collect();
+    let effect = g.add(
+        "CMvEffect_ParamCtrlGroups",
+        vec![
+            effect_super(&eid, false, &attrs, T, &track),
+            list("carray_list", "paramCtrlGroupList", group_list),
+        ],
+        &[],
+    );
+    let sh = shared(xml).expect("shared");
+    let Some(te) = xml.root.children[sh]
+        .children
+        .iter_mut()
+        .find(|c| c.attr("xs.id") == Some(track.as_str()))
+    else {
+        return Err(FormatError::Invalid("track not found".into()));
+    };
+    // The old effect leaves the effect list; the new one joins it.
+    let old_effect = te
+        .child_field("paramCtrlGroupEffect")
+        .and_then(|e| e.attr("xs.ref"))
+        .map(str::to_owned);
+    let eff = r("CMvEffect_ParamCtrlGroups", "paramCtrlGroupEffect", &effect);
+    let pos_of = |te: &Element, name: &str| {
+        te.children
+            .iter()
+            .position(|c| c.field_name() == Some(name))
+    };
+    match pos_of(te, "paramCtrlGroupEffect") {
+        Some(k) => te.children[k] = eff,
+        None => {
+            let at = pos_of(te, "parameterBookmarkLabelSet").map_or(te.children.len(), |k| k + 1);
+            te.children.insert(at, eff);
+        }
+    }
+    match pos_of(te, "paramCtrlGroupSet") {
+        Some(k) => te.children[k] = gset,
+        None => {
+            let at = pos_of(te, "paramCtrlGroupEffect").map_or(te.children.len(), |k| k + 1);
+            te.children.insert(at, gset);
+        }
+    }
+    let mut st: Vec<&mut Element> = vec![te];
+    while let Some(e) = st.pop() {
+        if e.name == "CMvEffectManager" {
+            if let Some(l) = e.child_field_mut("effectList") {
+                if let Some(o) = &old_effect {
+                    l.children.retain(|c| c.attr("xs.ref") != Some(o.as_str()));
+                }
+                l.children.push(item("CMvEffect_ParamCtrlGroups", &effect));
+                l.set_attr("count", l.children.len().to_string());
+            }
+            break;
+        }
+        st.extend(e.children.iter_mut());
     }
     fix_markers(xml);
     Ok(())

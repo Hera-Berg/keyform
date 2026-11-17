@@ -203,6 +203,58 @@ pub struct FormAnimation {
     pub local_mode: bool,
 }
 
+/// A parameter-controller point pinned to an art mesh by a triangle and
+/// barycentric weights (`ArtMeshParamCtrlPoint`).
+/// spec: form-animation-and-controllers.md §2, §3.2
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CtrlPoint {
+    pub guid: Guid,
+    pub name: String,
+    /// The art mesh's ID (`ownerObjectId`).
+    pub mesh_id: String,
+    /// The triangle's vertex indices and weights.
+    pub tri: [usize; 3],
+    pub bary: [f64; 3],
+    /// `meshIndicesHash` of the mesh's triangle indices when pinned.
+    pub hash: i32,
+    /// Model-canvas position when last pinned (`recoveryPoint`).
+    pub recovery: [f64; 2],
+    /// `recoveryArtMeshGuid`.
+    pub recovery_mesh: Option<Guid>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CtrlShape {
+    /// A single-point controller (its point index).
+    Single(usize),
+    /// A direction controller (start, end point indices).
+    Line(usize, usize),
+}
+
+/// A parameter controller (marker).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Controller {
+    pub guid: Guid,
+    pub name: String,
+    /// RGBA 0–1.
+    pub color: [f32; 4],
+    pub shape: CtrlShape,
+    /// Model parameter IDs it drives (`controlParamIds`).
+    pub params: Vec<String>,
+    /// Target: another controller's index and its ExtendLine flag (the
+    /// assessor's contact flag).
+    pub target: Option<(usize, bool)>,
+    pub stand_alone: bool,
+    pub select_lock: bool,
+}
+
+/// One model track's parameter controllers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ControllerSet {
+    pub points: Vec<CtrlPoint>,
+    pub controllers: Vec<Controller>,
+}
+
 /// A Live2D model track's effects.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelTrack {
@@ -216,6 +268,8 @@ pub struct ModelTrack {
     pub eye_blink: Option<EyeBlinkEffect>,
     pub lip_sync: Option<LipSyncEffect>,
     pub form: FormAnimation,
+    /// Parameter controllers (`paramCtrlGroupSet`).
+    pub controllers: ControllerSet,
 }
 
 /// A sound track (`CMvTrack_JavaSoundTrack_Source`, WAV).

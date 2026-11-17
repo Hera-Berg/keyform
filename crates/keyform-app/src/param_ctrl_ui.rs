@@ -30,6 +30,11 @@ pub struct CtrlDrag {
 
 const PICK: f32 = 8.0;
 
+/// The art mesh index a controller point is pinned to (by mesh ID).
+fn doc_mesh(m: &keyform_model::Model, p: &CtrlPoint) -> Option<usize> {
+    m.art_meshes.iter().position(|a| a.info.id == p.mesh_id)
+}
+
 impl Document {
     /// Scene pixels → model canvas pixels (inverse track placement).
     fn scene_to_model(&self, q: [f32; 2]) -> [f32; 2] {
@@ -103,16 +108,18 @@ impl Document {
                 continue;
             }
             let am = &self.model.art_meshes[mi];
-            let Some(p) = CtrlPoint::pin(&am.info.name, mi, &meshes[mi], &am.indices, at) else {
+            let Some(mut p) = pc::pin(&am.info.name, &am.info.id, &meshes[mi], &am.indices, at)
+            else {
                 continue;
             };
+            p.recovery_mesh = Some(am.info.guid.clone());
             // Only a mesh that contains the point.
             if p.bary.iter().all(|w| *w >= -1e-9)
                 && (p.recovery[0] - at[0]).hypot(p.recovery[1] - at[1]) < 1e-3
             {
-                let st = self.anim.as_mut()?;
-                st.controllers.points.push(p);
-                return Some(st.controllers.points.len() - 1);
+                let set = self.anim.as_mut()?.ctrls_mut()?;
+                set.points.push(p);
+                return Some(set.points.len() - 1);
             }
         }
         None
@@ -129,15 +136,25 @@ impl Document {
         let Some(st) = self.anim.as_mut() else {
             return;
         };
-        let n = st.controllers.controllers.len();
-        st.controllers.controllers.push(Controller {
+        let before = st.doc.animation.clone();
+        let Some(set) = st.ctrls_mut() else {
+            return;
+        };
+        let n = set.controllers.len();
+        set.controllers.push(Controller {
+            guid: keyform_model::new_guid(),
             name: format!("Controller{}", n + 1),
             color: [0.9, 0.3, 0.2, 1.0],
             shape,
             params,
-            assessor: None,
             target: None,
+            stand_alone: false,
+            select_lock: false,
         });
+        st.undo
+            .push(("Add Controller".into(), UndoStep::Anim(before)));
+        st.redo.clear();
+        st.dirty = true;
     }
 
     /// The scene position of a controller's handle (single point, or a
@@ -147,8 +164,11 @@ impl Document {
         let pi = match c.shape {
             CtrlShape::Single(p) | CtrlShape::Line(_, p) => p,
         };
-        let p = st.controllers.points.get(pi)?;
-        Some(self.model_to_scene(p.position(meshes.get(p.mesh)?)?))
+        let p = st.ctrls().points.get(pi)?;
+        Some(self.model_to_scene(pc::point_position(
+            p,
+            meshes.get(doc_mesh(&self.model, p)?)?,
+        )?))
     }
 
     /// Solves controller `ci` towards scene position `q` and writes the
@@ -159,7 +179,7 @@ impl Document {
         let Some(st) = self.anim.as_ref() else {
             return;
         };
-        let Some(c) = st.controllers.controllers.get(ci).cloned() else {
+        let Some(c) = st.ctrls().controllers.get(ci).cloned() else {
             return;
         };
         let assessor = match c.shape {
@@ -186,7 +206,8 @@ impl Document {
                 }
             })
             .collect();
-        let points = st.controllers.points.clone();
+        let points = st.ctrls().points.clone();
+        let mesh_of: Vec<Option<usize>> = points.iter().map(|p| doc_mesh(&self.model, p)).collect();
         let canvas = [
             f64::from(self.model.canvas.width),
             f64::from(self.model.canvas.height),
@@ -197,9 +218,8 @@ impl Document {
                 return Vec::new();
             };
             let pos = |i: usize| {
-                points
-                    .get(i)
-                    .and_then(|pt| pt.position(meshes.get(pt.mesh)?))
+                let pt = points.get(i)?;
+                pc::point_position(pt, meshes.get((*mesh_of.get(i)?)?)?)
             };
             pc::effector_and_target(&c.shape, &assessor, &pos)
                 .into_iter()
@@ -237,9 +257,6 @@ impl Document {
                 keyform_anim::scene::refresh(&mut a.curve, lo, hi, legacy);
                 st.dirty = true;
             }
-        }
-        if let Some(cc) = st.controllers.controllers.get_mut(ci) {
-            cc.assessor = Some(assessor);
         }
     }
 }
@@ -295,7 +312,7 @@ pub fn input(ui: &egui::Ui, response: &egui::Response, doc: &mut Document, rect:
                     return;
                 };
                 let hit = st
-                    .controllers
+                    .ctrls()
                     .controllers
                     .iter()
                     .enumerate()
@@ -335,19 +352,20 @@ pub fn draw(painter: &egui::Painter, doc: &Document, to_screen: &dyn Fn([f32; 2]
     let Some(st) = doc.anim.as_ref() else {
         return;
     };
-    if st.controllers.controllers.is_empty() && st.controllers.points.is_empty() {
+    if st.ctrls().controllers.is_empty() && st.ctrls().points.is_empty() {
         return;
     }
     let Some(meshes) = doc.ctrl_meshes(&[]) else {
         return;
     };
     let at = |i: usize| -> Option<Pos2> {
-        let p = st.controllers.points.get(i)?;
-        Some(to_screen(
-            doc.model_to_scene(p.position(meshes.get(p.mesh)?)?),
-        ))
+        let p = st.ctrls().points.get(i)?;
+        Some(to_screen(doc.model_to_scene(pc::point_position(
+            p,
+            meshes.get(doc_mesh(&doc.model, p)?)?,
+        )?)))
     };
-    for c in &st.controllers.controllers {
+    for c in &st.ctrls().controllers {
         let col = egui::Color32::from_rgba_unmultiplied(
             (c.color[0] * 255.0) as u8,
             (c.color[1] * 255.0) as u8,
@@ -405,7 +423,11 @@ pub fn menu(
     ui.selectable_value(t, CtrlTool::Off, "No controller tool");
     ui.separator();
     let mut delete = None;
-    for (i, c) in st.controllers.controllers.iter_mut().enumerate() {
+    let before = st.doc.animation.clone();
+    let mut changed = false;
+    let empty = &mut keyform_anim::param_ctrl::ControllerSet::default();
+    let set = st.ctrls_mut().unwrap_or(empty);
+    for (i, c) in set.controllers.iter_mut().enumerate() {
         ui.menu_button(c.name.clone(), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(300.0)
@@ -418,6 +440,7 @@ pub fn menu(
                             } else {
                                 c.params.retain(|x| x != id);
                             }
+                            changed = true;
                         }
                     }
                 });
@@ -428,7 +451,14 @@ pub fn menu(
         });
     }
     if let Some(i) = delete {
-        st.controllers.controllers.remove(i);
+        set.controllers.remove(i);
+        changed = true;
+    }
+    if changed {
+        st.undo
+            .push(("Edit Controller".into(), UndoStep::Anim(before)));
+        st.redo.clear();
+        st.dirty = true;
     }
     ui.separator();
     if ui.button("Export Parameter Controller…").clicked() {
@@ -454,15 +484,7 @@ pub fn run_file_op(doc: &mut Document, op: CtrlFileOp) -> Result<(), String> {
     match op {
         CtrlFileOp::Export(p) => {
             let st = doc.anim.as_ref().ok_or("No animation is open.")?;
-            let ids: Vec<String> = doc
-                .model
-                .art_meshes
-                .iter()
-                .map(|m| m.info.id.clone())
-                .collect();
-            let text = pc::export_json(&st.controllers, &|mi| {
-                ids.get(mi).cloned().unwrap_or_default()
-            });
+            let text = pc::export_json(st.ctrls());
             std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))
         }
         CtrlFileOp::Import(p) => doc.import_controllers(&p),
@@ -486,23 +508,29 @@ impl Document {
                 .position(|m| &m.info.id == obj)
                 .ok_or_else(|| format!("No art mesh {obj}."))?;
             let am = &self.model.art_meshes[mi];
-            points.push(
-                CtrlPoint::pin(name, mi, &meshes[mi], &am.indices, *at)
-                    .ok_or_else(|| format!("Can't pin {name} on {obj}."))?,
-            );
+            let mut p = pc::pin(name, obj, &meshes[mi], &am.indices, *at)
+                .ok_or_else(|| format!("Can't pin {name} on {obj}."))?;
+            p.recovery_mesh = Some(am.info.guid.clone());
+            points.push(p);
         }
         let st = self.anim.as_mut().ok_or("No animation is open.")?;
-        let base = st.controllers.points.len();
-        let cbase = st.controllers.controllers.len();
-        st.controllers.points.extend(points);
+        let before = st.doc.animation.clone();
+        let set = st.ctrls_mut().ok_or("This scene has no model track.")?;
+        let base = set.points.len();
+        let cbase = set.controllers.len();
+        set.points.extend(points);
         for mut c in im.controllers {
             c.shape = match c.shape {
                 CtrlShape::Single(p) => CtrlShape::Single(p + base),
                 CtrlShape::Line(a, b) => CtrlShape::Line(a + base, b + base),
             };
             c.target = c.target.map(|(t, e)| (t + cbase, e));
-            st.controllers.controllers.push(c);
+            set.controllers.push(c);
         }
+        st.undo
+            .push(("Import Parameter Controller".into(), UndoStep::Anim(before)));
+        st.redo.clear();
+        st.dirty = true;
         Ok(())
     }
 }
@@ -521,7 +549,9 @@ mod tests {
     #[test]
     fn drag_single_point_controller() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let model = root.join("hiyori_pro_t11.cmo3");
+        let model = std::env::var_os("KEYFORM_BB_MODEL")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| root.join("hiyori_pro_t11.cmo3"));
         if !model.exists() {
             return;
         }
@@ -552,14 +582,14 @@ mod tests {
         let meshes = doc.ctrl_meshes(&[]).unwrap();
         let st = doc.anim.as_ref().unwrap();
         let h0 = doc
-            .ctrl_handle(&meshes, &st.controllers.controllers[0])
+            .ctrl_handle(&meshes, &st.ctrls().controllers[0])
             .unwrap();
         let goal = [h0[0] + 15.0, h0[1]];
         doc.drag_controller(0, goal);
         let meshes = doc.ctrl_meshes(&[]).unwrap();
         let st = doc.anim.as_ref().unwrap();
         let h1 = doc
-            .ctrl_handle(&meshes, &st.controllers.controllers[0])
+            .ctrl_handle(&meshes, &st.ctrls().controllers[0])
             .unwrap();
         assert!(h1[0] - h0[0] > 5.0, "{h0:?} → {h1:?}");
         let (_, m) = st.model_track().unwrap();
@@ -570,19 +600,29 @@ mod tests {
             .unwrap();
         assert!(!ax.curve.keys.is_empty());
         // Export → import adds an equal controller.
-        let mesh_ids: Vec<String> = doc
-            .model
-            .art_meshes
-            .iter()
-            .map(|m| m.info.id.clone())
-            .collect();
-        let text = pc::export_json(&st.controllers, &|mi| mesh_ids[mi].clone());
+        let text = pc::export_json(st.ctrls());
         let f = std::env::temp_dir().join(format!("kf-{}.paramctrl3.json", std::process::id()));
         std::fs::write(&f, text).unwrap();
         doc.import_controllers(&f).unwrap();
         let st = doc.anim.as_ref().unwrap();
-        assert_eq!(st.controllers.controllers.len(), 2);
-        assert_eq!(st.controllers.points[1].mesh, st.controllers.points[0].mesh);
+        assert_eq!(st.ctrls().controllers.len(), 2);
+        assert_eq!(st.ctrls().points[1].mesh_id, st.ctrls().points[0].mesh_id);
+        // A target, then save and reopen: the controllers come back (§3.2).
+        doc.anim.as_mut().unwrap().ctrls_mut().unwrap().controllers[1].target = Some((0, false));
+        let set = doc.anim.as_ref().unwrap().ctrls().clone();
+        let tmp = std::env::temp_dir().join(format!("kf-ctrl-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = tmp.join("ctrl.can3");
+        let model_copy = out.with_file_name(model.file_name().unwrap());
+        let _ = std::fs::copy(&model, &model_copy);
+        doc.save_animation_to(Some(&out)).unwrap();
+        if let Ok(dir) = std::env::var("KEYFORM_BB_DIR") {
+            let _ = std::fs::copy(&out, Path::new(&dir).join("ctrl_kf.can3"));
+        }
+        let back = Document::open_animation(&out, &mut log).unwrap();
+        assert_eq!(back.anim.as_ref().unwrap().ctrls(), &set);
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&model_copy);
         let _ = std::fs::remove_file(f);
     }
 }
