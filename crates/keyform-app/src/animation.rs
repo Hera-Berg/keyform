@@ -415,6 +415,86 @@ impl Document {
         Ok(d)
     }
 
+    /// Imports a motion3.json as a new scene: its length, frame rate and
+    /// fades, the curves on the model track's matching attributes
+    /// (parameters and parts by ID, Model Opacity / EyeBlink / LipSync)
+    /// and its events. Returns the curves that found no attribute.
+    /// spec: motion3-json.md §4
+    pub fn import_motion(&mut self, path: &Path) -> Result<Vec<String>, String> {
+        use keyform_anim::motion::Target;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let motion =
+            keyform_anim::Motion::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let fps = f64::from(motion.fps.max(1.0));
+        let end = (f64::from(motion.duration) * fps).round() as i32;
+        let name = path.file_name().map_or_else(
+            || "Motion".into(),
+            |n| {
+                n.to_string_lossy()
+                    .trim_end_matches(".motion3.json")
+                    .to_owned()
+            },
+        );
+        self.anim_structure(|d, m| d.add_scene(&name, m, end + 1, fps).map(|_| ()))?;
+        let model = self.model.clone();
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        st.scene = st.doc.animation.scenes.len() - 1;
+        let (curves, events) = keyform_anim::motion_import::import_motion(&motion, fps);
+        let legacy = st.doc.animation.smooth_legacy;
+        let si = st.scene;
+        let ti = st
+            .model_track()
+            .map(|(i, _)| i)
+            .ok_or("The new scene has no model track.")?;
+        let scene = &mut st.doc.animation.scenes[si];
+        scene.fade_in_ms = motion.fade_in.map_or(-1, |s| (s * 1000.0).round() as i32);
+        scene.fade_out_ms = motion.fade_out.map_or(-1, |s| (s * 1000.0).round() as i32);
+        scene.bezier_restricted = motion.beziers_restricted;
+        let track = &mut scene.tracks[ti];
+        track.user_data = events;
+        let mut missing = Vec::new();
+        for c in curves {
+            let attr: Option<&mut Attr> = match (c.target, c.id.as_str()) {
+                (Target::Model, "Opacity") => track.opacity.as_mut(),
+                (Target::Model, id) => match &mut track.kind {
+                    TrackKind::Model(m) if id == "EyeBlink" => {
+                        m.eye_blink.as_mut().map(|e| &mut e.eye_open)
+                    }
+                    TrackKind::Model(m) if id == "LipSync" => {
+                        m.lip_sync.as_mut().map(|e| &mut e.sound_level)
+                    }
+                    _ => None,
+                },
+                (Target::Parameter, id) => match &mut track.kind {
+                    TrackKind::Model(m) => m.params.iter_mut().find(|a| {
+                        keyform_anim::scene::param_id(&a.id) == Some(id)
+                            || a.guid.as_deref().is_some_and(|g| {
+                                model.parameters.iter().any(|p| p.guid == g && p.id == id)
+                            })
+                    }),
+                    _ => None,
+                },
+                (Target::PartOpacity, id) => match &mut track.kind {
+                    TrackKind::Model(m) => m
+                        .parts
+                        .iter_mut()
+                        .find(|a| keyform_anim::scene::part_id(&a.id) == Some(id)),
+                    _ => None,
+                },
+            };
+            let Some(a) = attr else {
+                missing.push(c.id.clone());
+                continue;
+            };
+            let (lo, hi) = keyform_anim::scene::clamp_range(a);
+            a.curve.keys = c.curve.keys;
+            a.curve.types = c.curve.types;
+            keyform_anim::scene::refresh(&mut a.curve, lo, hi, legacy);
+        }
+        st.dirty = true;
+        Ok(missing)
+    }
+
     /// Runs a structural change (scenes, tracks) on the animation. These
     /// aren't undoable yet: the animation's undo steps are cleared.
     pub fn anim_structure(
@@ -822,6 +902,7 @@ enum SceneOp {
     AddTrack,
     AddSound(PathBuf),
     BakeLipSync,
+    ImportMotion(PathBuf),
 }
 
 pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::Tokens) {
@@ -864,6 +945,12 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     ui.close();
                     if let Some(p) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
                         op = Some(SceneOp::AddSound(p));
+                    }
+                }
+                if ui.button("Import motion3.json…").clicked() {
+                    ui.close();
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Motion", &["json"]).pick_file() {
+                        op = Some(SceneOp::ImportMotion(p));
                     }
                 }
                 ui.separator();
@@ -941,6 +1028,11 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 let abs = std::fs::canonicalize(&p).unwrap_or(p);
                 doc.anim_structure(|d, _| d.add_sound_track(scene, &abs.to_string_lossy()))
             }
+            SceneOp::ImportMotion(p) => doc.import_motion(&p).map(|missing| {
+                if !missing.is_empty() {
+                    doc.notice = Some(format!("No attribute for: {}", missing.join(", ")));
+                }
+            }),
             SceneOp::BakeLipSync => doc
                 .anim
                 .as_mut()
@@ -1644,5 +1736,54 @@ mod tests {
         let dx = p1[0] - p0[0];
         assert!(dx > 1.0 && (p1[1] - p0[1]).abs() < 1e-3, "{dx}");
         assert!(after.meshes[1].positions == before.meshes[1].positions);
+    }
+
+    /// Importing hiyori_m01.motion3.json into a new scene and exporting it
+    /// again gives the same motion. spec: motion3-json.md §2, §4
+    #[test]
+    fn motion_import_round_trip() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let model = root.join("hiyori_pro_t11.cmo3");
+        let motion =
+            home.join("Downloads/hiyori_en/hiyori_pro/runtime/motion/hiyori_m01.motion3.json");
+        if !model.exists() || !motion.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        let missing = doc.import_motion(&motion).unwrap();
+        assert!(missing.is_empty(), "{missing:?}");
+        let dir = std::env::temp_dir().join(format!("kf-mimport-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = doc.export_motions(&dir).unwrap();
+        let mine = files
+            .iter()
+            .find(|p| p.ends_with("hiyori_m01.motion3.json"))
+            .unwrap();
+        let parse =
+            |p: &Path| keyform_anim::Motion::parse(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let (a, b) = (parse(mine), parse(&motion));
+        assert_eq!(a.duration, b.duration);
+        assert_eq!(a.curves.len(), b.curves.len());
+        let mut worst = 0.0f32;
+        // The new scene lists parameters in model order: match by ID.
+        for y in &b.curves {
+            let x = a
+                .curves
+                .iter()
+                .find(|x| x.id == y.id && x.target == y.target)
+                .unwrap();
+            assert_eq!(x.segments.len(), y.segments.len(), "{}", x.id);
+            for t in 0..=140 {
+                let t = t as f32 / 30.0;
+                worst = worst.max((x.eval(t, false) - y.eval(t, false)).abs());
+            }
+        }
+        eprintln!("worst value difference after the round trip: {worst}");
+        assert!(worst < 0.01, "{worst}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
