@@ -800,6 +800,50 @@ pub fn same_anchors(a: &[Key], b: &[Key]) -> bool {
             .all(|(x, y)| x.frame == y.frame && x.value == y.value)
 }
 
+/// The scene's tracks in drawing order, front first: depth-first in
+/// timeline order from the root (a group's children right after it, in
+/// their `_childTrackGuids` order); tracks the walk doesn't reach follow in
+/// stored order. spec: animation-model.md §5.1 "Drawing order"
+pub fn drawing_order(s: &keyform_model::animation::Scene) -> Vec<usize> {
+    let by_guid: std::collections::HashMap<&str, usize> = s
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.guid.as_str(), i))
+        .collect();
+    let mut out = Vec::new();
+    let mut seen = vec![false; s.tracks.len()];
+    fn visit(
+        s: &keyform_model::animation::Scene,
+        i: usize,
+        by_guid: &std::collections::HashMap<&str, usize>,
+        seen: &mut [bool],
+        out: &mut Vec<usize>,
+    ) {
+        if seen[i] {
+            return;
+        }
+        seen[i] = true;
+        out.push(i);
+        for g in &s.tracks[i].children {
+            if let Some(&c) = by_guid.get(g.as_str()) {
+                visit(s, c, by_guid, seen, out);
+            }
+        }
+    }
+    for i in 0..s.tracks.len() {
+        if s.tracks[i].parent.is_none() {
+            visit(s, i, &by_guid, &mut seen, &mut out);
+        }
+    }
+    for i in 0..s.tracks.len() {
+        if !seen[i] {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// The nested scene's frame shown by scene track `t` at its local frame
 /// `x`. spec: animation-model.md §5.1 "Scene tracks"
 pub fn nested_frame(
@@ -932,6 +976,7 @@ mod tests {
             frame_step: None,
             visual: None,
             user_data: Vec::new(),
+            children: Vec::new(),
         };
         assert_eq!(nested_frame(&t, &st, &nested, 7.0), 4.0);
         // Repeat wraps within the nested length (10 frames).

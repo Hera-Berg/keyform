@@ -339,6 +339,8 @@ pub struct Track {
     pub visual: Option<Visual>,
     /// User data markers: (frame, text).
     pub user_data: Vec<(i32, String)>,
+    /// A group's child tracks in timeline order (`_childTrackGuids`).
+    pub children: Vec<Guid>,
 }
 
 /// A scene (`CSceneSource` with its `CMvMovieInfo`).

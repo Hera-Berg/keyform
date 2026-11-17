@@ -48,9 +48,16 @@ impl Document {
         let Some(s) = st.doc.animation.scenes.get(si) else {
             return Vec::new();
         };
-        let model = st.model_track_in(si).map_or(usize::MAX, |(i, _)| i);
+        // Drawing order (front first) → rank; the walk below goes back to front.
+        let order = keyform_anim::scene::drawing_order(s);
+        let mut rank = vec![usize::MAX; s.tracks.len()];
+        for (r, &i) in order.iter().enumerate() {
+            rank[i] = r;
+        }
+        let model = st.model_track_in(si).map_or(usize::MAX, |(i, _)| rank[i]);
         let mut out = Vec::new();
-        for (i, t) in s.tracks.iter().enumerate().rev() {
+        for &i in order.iter().rev() {
+            let t = &s.tracks[i];
             let in_time =
                 frame >= f64::from(t.start) && frame < f64::from(t.start + t.duration.max(1));
             if !t.visible || t.guide || !in_time {
@@ -66,7 +73,7 @@ impl Document {
                         guid: t.guid.clone(),
                         image: img.clone(),
                         placement: keyform_anim::scene::placement(t, x),
-                        front: i < model,
+                        front: rank[i] < model,
                         dynamic: false,
                     });
                 }
@@ -98,7 +105,7 @@ impl Document {
                         guid: t.guid.clone(),
                         image: Arc::new(img),
                         placement: pl,
-                        front: i < model,
+                        front: rank[i] < model,
                         dynamic: true,
                     });
                 }

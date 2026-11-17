@@ -815,8 +815,16 @@ fn track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<(Track, Option<Str
         frame_step: None,
         visual: None,
         user_data: Vec::new(),
+        children: Vec::new(),
     };
     let parent = src.guid("parentGuid")?.map(str::to_owned);
+    if let Some(l) = t.field("_childTrackGuids")? {
+        for c in l.items()? {
+            if let Some(u) = c.attr("uuid") {
+                tr.children.push(u.to_owned());
+            }
+        }
+    }
     if let Some(ud) = src.field("userData")? {
         for e in ud.items()? {
             // Entry form (integer keys): <entry><int key/><s value/></entry>.

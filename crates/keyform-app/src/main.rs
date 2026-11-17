@@ -27,6 +27,7 @@ mod param_dialog;
 mod parts_settings;
 mod path_tool;
 mod psd_dialog;
+mod reference_p5;
 mod soft_select;
 mod texture_atlas;
 mod theme;
