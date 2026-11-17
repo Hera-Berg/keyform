@@ -45,6 +45,9 @@ pub struct Can3Document {
     pub saved: Animation,
     /// Scenes or tracks were added or removed since the last save.
     structural: bool,
+    /// The linked model's form-key targets (set by the caller), needed to
+    /// save form animation.
+    pub form_info: Option<crate::can3_build::FormInfo>,
 }
 
 /// Everything a structural edit changes, for undo.
@@ -96,6 +99,7 @@ impl Can3Document {
             warnings,
             sources,
             structural: false,
+            form_info: None,
         })
     }
 
@@ -103,23 +107,6 @@ impl Can3Document {
     /// must load back as exactly the edited animation.
     fn sync(&mut self) -> Result<()> {
         let mut xml = self.xml.clone();
-        // Form animation keys can't be written yet: their FramePosAndForm
-        // encoding is unknown (Q-0033).
-        let forms = |a: &Animation| -> Vec<keyform_model::animation::FormAnimation> {
-            a.scenes
-                .iter()
-                .flat_map(|s| s.tracks.iter())
-                .filter_map(|t| match &t.kind {
-                    TrackKind::Model(m) => Some(m.form.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        if forms(&self.saved) != forms(&self.animation) {
-            return Err(FormatError::Unsupported(
-                "form animation edits can't be saved yet (the form key encoding is unknown, Q-0033)".into(),
-            ));
-        }
         let changed = changed_attrs(&self.saved, &self.animation);
         // Scene settings and track user data (events) changed in place.
         let mut other = false;
@@ -132,6 +119,23 @@ impl Can3Document {
             let Some(old) = self.saved.scenes.get(si) else {
                 continue;
             };
+            // Form animation (§3.1), per model track that changed.
+            for (ti, t) in s.tracks.iter().enumerate() {
+                let (TrackKind::Model(m), Some(TrackKind::Model(om))) =
+                    (&t.kind, old.tracks.get(ti).map(|o| &o.kind))
+                else {
+                    continue;
+                };
+                if m.form != om.form {
+                    let info = self.form_info.as_ref().ok_or_else(|| {
+                        FormatError::Unsupported(
+                            "form animation can't be saved without the model".into(),
+                        )
+                    })?;
+                    crate::can3_build::write_form_animation(&mut xml, si, ti, &m.form, info)?;
+                    other = true;
+                }
+            }
             if without_tracks(old) != without_tracks(s) {
                 crate::can3_build::write_scene_settings(&mut xml, si, s)?;
                 other = true;
@@ -1062,8 +1066,12 @@ fn form_map(m: Option<O>) -> Result<Vec<keyform_model::animation::FormObject>> {
             });
         }
         o.keys.sort_by_key(|k| k.frame);
+        // A keyless remap (as created with the entry, §3.1) is the identity.
         if let Some(a) = v.field("attrTimeRemapping")?.filter(|a| !a.is_null()) {
-            o.time_remap = Some(float_attr(&a)?);
+            let at = float_attr(&a)?;
+            if !at.curve.keys.is_empty() {
+                o.time_remap = Some(at);
+            }
         }
         out.push(o);
     }

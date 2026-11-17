@@ -376,10 +376,20 @@ mod tests {
         let a = doc.anim.as_ref().unwrap();
         let (_, m) = a.model_track().unwrap();
         assert_eq!((m.form.global.len(), m.form.local.len()), (1, 1));
-        let err = doc
-            .save_animation_to(Some(&std::env::temp_dir().join("kf-form.can3")))
-            .unwrap_err();
-        assert!(err.contains("Q-0033"), "{err}");
+        // Saved (§3.1) and read back equal.
+        let form = m.form.clone();
+        let out = std::env::temp_dir().join(format!("kf-form-{}.can3", std::process::id()));
+        let model_copy = out.with_file_name("hiyori_pro_t11.cmo3");
+        let _ = std::fs::copy(&model, &model_copy);
+        doc.save_animation_to(Some(&out)).unwrap();
+        if let Ok(dir) = std::env::var("KEYFORM_BB_DIR") {
+            let _ = std::fs::copy(&out, Path::new(&dir).join("form_kf.can3"));
+        }
+        let back = Document::open_animation(&out, &mut log).unwrap();
+        let (_, m2) = back.anim.as_ref().unwrap().model_track().unwrap();
+        assert_eq!(m2.form, form);
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&model_copy);
         doc.delete_form_edit(mi);
         let (_, m) = doc.anim.as_ref().unwrap().model_track().unwrap();
         assert!(m.form.global.is_empty() && m.form.local.is_empty());

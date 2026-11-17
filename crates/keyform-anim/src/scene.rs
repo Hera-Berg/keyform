@@ -501,8 +501,7 @@ fn point_tangents(c: &keyform_model::animation::PointCurve) -> (Vec<P2>, Vec<P2>
             }
             v[n - 1] = en(&v, n - 1);
             v[n - 2] = carry;
-            // TODO(Q-0032): §5.1 writes a = |Pᵢ − Pᵢ₋₁|²/dᵢ₋₁; the reference's
-            // exported frames match speeds (|ΔP|/d) instead.
+            // a, b: speeds |ΔP|/d (§5.1, Q-0032).
             for i in 1..n - 1 {
                 let a = p_len2(p_sub(p[i], p[i - 1])).sqrt() / d[i - 1];
                 let b = p_len2(p_sub(p[i + 1], p[i])).sqrt() / d[i];

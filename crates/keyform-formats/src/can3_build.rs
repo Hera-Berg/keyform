@@ -1605,10 +1605,8 @@ pub fn add_sound_track_xml(
 }
 
 /// Adds an image track showing the image at `path` (`size` pixels) to
-/// scene `index` for the scene's length, with a visual effect (centred,
+/// scene `index` for one second (fps frames), with a visual effect (centred,
 /// 100 %) and a linked image resource. spec: animation-model.md §2, §5.1
-// TODO(Q-0035): written like the sound track; not yet opened in the
-// reference.
 pub fn add_image_track_xml(
     xml: &mut XmlDocument,
     index: usize,
@@ -1620,11 +1618,13 @@ pub fn add_image_track_xml(
     let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
     let root = field_ref(scene_el, "rootTrack")
         .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
-    let frames: i32 = scene_el
+    // Duration: one second (fps frames). spec: animation-model.md §5.1
+    let fps: f64 = scene_el
         .child_field("movieInfo")
-        .and_then(|m| m.child_field("duration"))
+        .and_then(|m| m.child_field("fps"))
         .and_then(|d| d.text.trim().parse().ok())
-        .unwrap_or(60);
+        .unwrap_or(30.0);
+    let frames = (fps.round() as i32).max(1);
     let scene_size = scene_el
         .child_field("canvas")
         .map(|c| {
@@ -1839,4 +1839,305 @@ pub fn write_user_data(
         st.extend(e.children.iter_mut());
     }
     Err(FormatError::Invalid("track without source".into()))
+}
+
+/// What the form-key writer needs to know about a model object (built from
+/// the model by the caller). spec: form-animation-and-controllers.md §3.1
+#[derive(Clone, Debug)]
+pub struct FormTarget {
+    pub id: String,
+    pub name: String,
+    pub kind: FormTargetKind,
+    /// The target deformer: (GUID, class simple name, e.g.
+    /// `CWarpDeformerSource`); `None` directly under the root.
+    pub parent: Option<(String, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FormTargetKind {
+    ArtMesh { indices: Vec<u32>, draw_order: i32 },
+    Warp { col: u32, row: u32 },
+}
+
+/// Form-key targets by object GUID.
+pub type FormInfo = std::collections::HashMap<String, FormTarget>;
+
+fn float_array(name: &str, v: &[f32]) -> Element {
+    let mut e = named("float-array", name).with_attr("count", v.len().to_string());
+    e.text = v
+        .iter()
+        .map(|x| crate::graph::format_f32(*x))
+        .collect::<Vec<_>>()
+        .join(" ");
+    e
+}
+
+fn int_array(name: &str, v: &[u32]) -> Element {
+    let mut e = named("int-array", name).with_attr("count", v.len().to_string());
+    e.text = v.iter().map(u32::to_string).collect::<Vec<_>>().join(" ");
+    e
+}
+
+/// The `ICMvTrack_Source`-owning track element id of track `t` in scene
+/// `index`.
+fn track_id(xml: &XmlDocument, index: usize, t: usize) -> Result<String> {
+    let (sh, j) = scene_obj(xml, index)?;
+    xml.root.children[sh].children[j]
+        .child_field("trackSourceSet")
+        .and_then(|x| x.child_field("_sources"))
+        .and_then(|l| l.children.get(t))
+        .and_then(|c| c.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid(format!("no track {t}")))
+}
+
+/// Rewrites a model track's form animation: both maps
+/// (`formMapOnGlobal`, `formMapOnLocal`) and the form-edit effect's flags.
+/// spec: form-animation-and-controllers.md §3.1
+pub fn write_form_animation(
+    xml: &mut XmlDocument,
+    index: usize,
+    t: usize,
+    form: &keyform_model::animation::FormAnimation,
+    info: &FormInfo,
+) -> Result<()> {
+    const T: &str = "CMvTrack_Live2DModel_Source";
+    let track = track_id(xml, index, t)?;
+    let mut g = Graph::on(xml)?;
+    let relative = g.add("AdaptType", vec![s("text", "Relative")], &[]);
+    let coord = |g: &mut Graph, name: &str| -> String {
+        let sh = shared(g.xml).expect("shared");
+        if let Some(id) = g.xml.root.children[sh]
+            .children
+            .iter()
+            .find(|c| {
+                c.name == "CoordType" && c.child_field("coordName").is_some_and(|n| n.text == name)
+            })
+            .and_then(|c| c.attr("xs.id"))
+        {
+            return id.to_owned();
+        }
+        g.add("CoordType", vec![s("coordName", name)], &[])
+    };
+    let colour = |name: &str, c: [f32; 4]| {
+        named("CFloatColor", name)
+            .with_attr("red", crate::graph::format_f32(c[0]))
+            .with_attr("green", crate::graph::format_f32(c[1]))
+            .with_attr("blue", crate::graph::format_f32(c[2]))
+            .with_attr("alpha", crate::graph::format_f32(c[3]))
+    };
+    let mut maps = Vec::new();
+    for (local, objs) in [(false, &form.global), (true, &form.local)] {
+        let mut entries = Vec::new();
+        for o in objs {
+            let ti = info.get(&o.guid).ok_or_else(|| {
+                FormatError::Unsupported(format!(
+                    "form keys on {}: only art meshes and warp deformers can have them",
+                    o.guid
+                ))
+            })?;
+            let (gtag, ftag, etag) = match ti.kind {
+                FormTargetKind::ArtMesh { .. } => {
+                    ("CDrawableGuid", "CArtMeshForm", "KeyFormsForArtMesh")
+                }
+                FormTargetKind::Warp { .. } => (
+                    "CDeformerGuid",
+                    "CWarpDeformerForm",
+                    "KeyFormsForWarpDeformer",
+                ),
+            };
+            let gid = g.guid_of(gtag, &o.guid, &ti.id);
+            let cid = coord(
+                &mut g,
+                if local && ti.parent.is_some() {
+                    "DeformerLocal"
+                } else {
+                    "Canvas"
+                },
+            );
+            // A full form element without `_source` (§3.1).
+            let form_el = |name: &str, pos: &[f32]| -> Element {
+                let mut acf = named("ACForm", "super");
+                acf.children = vec![
+                    named("CFormGuid", "guid").with_attr("uuid", keyform_model::new_guid()),
+                    null("name"),
+                    s("notes", ""),
+                    b("isAnimatedForm", true),
+                    b("isLocalAnimatedForm", local),
+                ];
+                let mut mid = match ti.kind {
+                    FormTargetKind::ArtMesh { draw_order, .. } => {
+                        let mut e = named("ACDrawableForm", "super");
+                        e.children = vec![acf, i("drawOrder", i64::from(draw_order))];
+                        e
+                    }
+                    FormTargetKind::Warp { .. } => {
+                        let mut e = named("ACDeformerForm", "super");
+                        e.children = vec![acf];
+                        e
+                    }
+                };
+                mid.children.extend([
+                    f("opacity", 1.0),
+                    colour("multiplyColor", [1.0, 1.0, 1.0, 1.0]),
+                    colour("screenColor", [0.0, 0.0, 0.0, 1.0]),
+                    r("CoordType", "coordType", &cid),
+                ]);
+                let mut e = named(ftag, name);
+                e.children = vec![mid, float_array("positions", pos)];
+                e
+            };
+            let keys: Vec<(i32, String)> = o
+                .keys
+                .iter()
+                .map(|k| {
+                    let id = g.add(
+                        "FramePosAndForm",
+                        vec![
+                            form_el("targetForm", &k.target),
+                            form_el("originalForm", &k.original),
+                        ],
+                        &[("framePos", k.frame.to_string())],
+                    );
+                    (k.frame, id)
+                })
+                .collect();
+            let remap = float_attr(
+                &mut g,
+                FloatAttr {
+                    id: &format!("live2DFormEdit_{}", o.guid),
+                    name: "Time Remapping",
+                    guid: null("guid"),
+                    adapt: &relative,
+                    opts: Vec::new(),
+                    base: 0.0,
+                    range: (0.0, 0.0),
+                    repeat: false,
+                    fixed: false,
+                },
+                T,
+                &track,
+            );
+            let mut sup = named("KeyFormsForObject", "super");
+            sup.children = vec![
+                r(gtag, "guid", &gid),
+                s(
+                    "nameForDebug",
+                    if ti.name.is_empty() { &ti.id } else { &ti.name },
+                ),
+                list(
+                    "array_list",
+                    "framePosKeyformList",
+                    keys.iter()
+                        .map(|(_, id)| item("FramePosAndForm", id))
+                        .collect(),
+                ),
+                entry_map(
+                    "cached_framePosKeyformMap",
+                    keys.iter()
+                        .map(|(f, id)| (i("key", i64::from(*f)), r("FramePosAndForm", "value", id)))
+                        .collect(),
+                ),
+                r("CMvAttrF", "attrTimeRemapping", &remap),
+                match &ti.parent {
+                    Some((pg, _)) => {
+                        let id = g.guid_of("CDeformerGuid", pg, "");
+                        r("CDeformerGuid", "parentDeformerGuid", &id)
+                    }
+                    None => null("parentDeformerGuid"),
+                },
+                s(
+                    "parentDeformerTypeName",
+                    ti.parent
+                        .as_ref()
+                        .map_or("FA_ROOT_DEFORMER", |(_, n)| n.as_str()),
+                ),
+            ];
+            let mut children = vec![sup];
+            match &ti.kind {
+                FormTargetKind::ArtMesh { indices, .. } => {
+                    children.push(int_array("indices", indices))
+                }
+                FormTargetKind::Warp { col, row } => {
+                    children.push(i("col", i64::from(*col)));
+                    children.push(i("row", i64::from(*row)));
+                }
+            }
+            let entry = g.add(etag, children, &[]);
+            entries.push((r(gtag, "key", &gid), r(etag, "value", &entry)));
+        }
+        maps.push(entries);
+    }
+    let local_map = maps.pop().unwrap_or_default();
+    let global_map = maps.pop().unwrap_or_default();
+    // The form-edit effect (made when the track has none).
+    let sh = shared(g.xml).expect("shared");
+    let has_effect = g.xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(track.as_str()))
+        .and_then(|e| e.child_field("formEditEffect"))
+        .is_some_and(|e| e.name != "null");
+    let effect = if has_effect {
+        None
+    } else {
+        let eid = g.reserve("CEffectId");
+        let sh = shared(g.xml).expect("shared");
+        if let Some(e) = g.xml.root.children[sh]
+            .children
+            .iter_mut()
+            .find(|c| c.attr("xs.id") == Some(eid.as_str()))
+        {
+            e.attrs
+                .insert(0, ("idstr".into(), "live2DFormEdit_".into()));
+        }
+        Some(g.add(
+            "CMvEffect_FormEdit",
+            vec![
+                effect_super(&eid, false, &[], T, &track),
+                b("isApplyEditResult", form.apply),
+                b("isLocalFormAnimation", form.local_mode),
+                b("isFlattenView", false),
+                list("carray_list", "partList", Vec::new()),
+            ],
+            &[],
+        ))
+    };
+    let sh = shared(xml).expect("shared");
+    let mut effect_ref = None;
+    for e in xml.root.children[sh].children.iter_mut() {
+        if e.attr("xs.id") != Some(track.as_str()) {
+            continue;
+        }
+        if let Some(fas) = e.child_field_mut("formAnimationSet") {
+            for c in fas.children.iter_mut() {
+                match c.field_name() {
+                    Some("formMapOnGlobal") => {
+                        *c = entry_map("formMapOnGlobal", global_map.clone())
+                    }
+                    Some("formMapOnLocal") => *c = entry_map("formMapOnLocal", local_map.clone()),
+                    _ => {}
+                }
+            }
+        }
+        if let Some(fe) = e.child_field_mut("formEditEffect") {
+            match &effect {
+                Some(id) => *fe = r("CMvEffect_FormEdit", "formEditEffect", id),
+                None => effect_ref = fe.attr("xs.ref").map(str::to_owned),
+            }
+        }
+    }
+    // Flags on an existing effect.
+    if let Some(id) = effect_ref {
+        if let Some(e) = xml.root.children[sh]
+            .children
+            .iter_mut()
+            .find(|c| c.attr("xs.id") == Some(id.as_str()))
+        {
+            set_text(e, "isApplyEditResult", form.apply.to_string());
+            set_text(e, "isLocalFormAnimation", form.local_mode.to_string());
+        }
+    }
+    fix_markers(xml);
+    Ok(())
 }

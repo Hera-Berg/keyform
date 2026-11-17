@@ -20,9 +20,10 @@ pub struct ImageLayer {
 }
 
 impl Document {
-    /// The image tracks visible at scene `frame`, back to front. A track
-    /// listed above the model track is drawn in front of it.
-    // TODO(Q-0035): the reference's drawing order of tracks.
+    /// The image tracks visible at scene `frame`, back to front: tracks are
+    /// drawn depth-first in timeline order with the top track in front, so
+    /// one listed above the model track is drawn in front of it.
+    /// spec: animation-model.md §5.1 (drawing order)
     pub fn image_layers(&self, frame: f64) -> Vec<ImageLayer> {
         let Some(st) = self.anim.as_ref() else {
             return Vec::new();

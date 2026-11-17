@@ -422,6 +422,8 @@ impl Document {
             .scenes
             .first()
             .map_or(0.0, |s| f64::from(s.work_start));
+        let mut doc = doc;
+        doc.form_info = Some(form_info(&d.model));
         d.anim = Some(AnimState {
             doc,
             path: path.to_path_buf(),
@@ -484,6 +486,8 @@ impl Document {
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         d.mode = Mode::Animation;
+        let mut doc = doc;
+        doc.form_info = Some(form_info(&d.model));
         d.anim = Some(AnimState {
             doc,
             path,
@@ -1024,6 +1028,54 @@ impl Document {
 }
 
 /// The model parameter an attribute animates: by GUID, else by ID.
+/// The model objects form keys can be saved for (art meshes and warp
+/// deformers), by GUID. spec: form-animation-and-controllers.md §3.1
+pub fn form_info(m: &keyform_model::Model) -> keyform_formats::can3_build::FormInfo {
+    use keyform_formats::can3_build::{FormTarget, FormTargetKind};
+    use keyform_model::DeformerKind;
+    let parent = |t: Option<usize>| {
+        t.and_then(|di| m.deformers.get(di)).map(|d| {
+            let class = match d.kind {
+                DeformerKind::Warp(_) => "CWarpDeformerSource",
+                DeformerKind::Rotation(_) => "CRotationDeformerSource",
+            };
+            (d.info.guid.clone(), class.to_owned())
+        })
+    };
+    let mut out = keyform_formats::can3_build::FormInfo::new();
+    for a in &m.art_meshes {
+        out.insert(
+            a.info.guid.clone(),
+            FormTarget {
+                id: a.info.id.clone(),
+                name: a.info.name.clone(),
+                kind: FormTargetKind::ArtMesh {
+                    indices: a.indices.clone(),
+                    draw_order: 500,
+                },
+                parent: parent(a.target),
+            },
+        );
+    }
+    for d in &m.deformers {
+        if let DeformerKind::Warp(w) = &d.kind {
+            out.insert(
+                d.info.guid.clone(),
+                FormTarget {
+                    id: d.info.id.clone(),
+                    name: d.info.name.clone(),
+                    kind: FormTargetKind::Warp {
+                        col: w.cols,
+                        row: w.rows,
+                    },
+                    parent: parent(d.target),
+                },
+            );
+        }
+    }
+    out
+}
+
 fn param_index(m: &keyform_model::Model, a: &Attr) -> Option<usize> {
     if let Some(g) = a.guid.as_deref() {
         if let Some(i) = m.parameters.iter().position(|p| p.guid == g) {
