@@ -52,9 +52,7 @@ fn main() -> ExitCode {
         ["set", input, output, edits @ ..] => {
             edit::set_cmd(Path::new(input), Path::new(output), edits)
         }
-        ["xml", input, output] => {
-            load(Path::new(input)).and_then(|d| Ok(std::fs::write(output, d.xml.write())?))
-        }
+        ["xml", input, output] => xml_dump(Path::new(input), Path::new(output)),
         ["moc3info", path] => load_any(Path::new(path)).map(|m| print_summary(&m)),
         ["export", input, output] => export(Path::new(input), Path::new(output), None),
         ["export", input, output, v] => match v.parse() {
@@ -328,5 +326,15 @@ fn diffmoc(a: &Path, b: &Path) -> R {
         );
     }
     println!("{same} sections identical");
+    Ok(())
+}
+
+/// Writes the main XML of any CAFF document (`.cmo3`, `.can3`).
+fn xml_dump(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let data = std::fs::read(input)?;
+    let archive = keyform_formats::caff::CaffArchive::read(&data)?;
+    let entry = archive.main_xml().ok_or("no main_xml entry")?;
+    let doc = keyform_formats::xml::XmlDocument::parse(&entry.data)?;
+    std::fs::write(output, doc.write())?;
     Ok(())
 }

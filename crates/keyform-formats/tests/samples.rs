@@ -2599,3 +2599,43 @@ fn paste_pairing() {
         );
     }
 }
+
+/// `.can3` documents load: scenes, tracks, model-track attributes and
+/// curves (animation-model.md §1–3).
+#[test]
+fn can3_load() {
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    for path in sample_files("can3") {
+        let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let a = &doc.animation;
+        assert!(doc.warnings.is_empty(), "{path:?}: {:?}", doc.warnings);
+        assert!(!a.scenes.is_empty());
+        let (mut models, mut attrs, mut keys) = (0, 0, 0);
+        for s in &a.scenes {
+            assert!(s.fps > 0.0);
+            for t in &s.tracks {
+                if let TrackKind::Model(m) = &t.kind {
+                    models += 1;
+                    assert!(m.resource.is_some());
+                    for at in m.params.iter().chain(&m.parts) {
+                        attrs += 1;
+                        keys += at.curve.keys.len();
+                        assert!(
+                            at.curve.keys.windows(2).all(|w| w[0].frame < w[1].frame),
+                            "{}",
+                            at.id
+                        );
+                        assert!(at.curve.fixed || at.curve.types.len() == at.curve.keys.len());
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{path:?}: {} scenes, {models} model tracks, {attrs} attributes, {keys} keys, resources {:?}",
+            a.scenes.len(),
+            a.resources.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
+        assert!(models > 0);
+    }
+}

@@ -10,6 +10,7 @@ pub mod forms;
 pub mod grid;
 pub mod physics;
 
+pub mod animation;
 pub use deform_path::*;
 pub use forms::*;
 pub use grid::*;
