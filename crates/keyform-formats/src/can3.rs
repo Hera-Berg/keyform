@@ -47,7 +47,36 @@ pub struct Can3Document {
     structural: bool,
 }
 
+/// Everything a structural edit changes, for undo.
+#[derive(Clone)]
+pub struct Can3Snapshot {
+    xml: XmlDocument,
+    animation: Animation,
+    sources: HashMap<AttrKey, String>,
+    saved: Animation,
+}
+
 impl Can3Document {
+    /// The document's state (for undoing a structural edit).
+    pub fn snapshot(&self) -> Can3Snapshot {
+        Can3Snapshot {
+            xml: self.xml.clone(),
+            animation: self.animation.clone(),
+            sources: self.sources.clone(),
+            saved: self.saved.clone(),
+        }
+    }
+
+    /// Puts back a state taken by [`Self::snapshot`].
+    pub fn restore(&mut self, s: Can3Snapshot) {
+        self.xml = s.xml;
+        self.animation = s.animation;
+        self.sources = s.sources;
+        self.saved = s.saved;
+        // The XML now differs from what was last written either way.
+        self.structural = true;
+    }
+
     pub fn read(data: &[u8]) -> Result<Self> {
         let archive = CaffArchive::read(data)?;
         let xml = XmlDocument::parse(

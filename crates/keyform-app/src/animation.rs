@@ -39,8 +39,8 @@ pub struct AnimState {
     pub key: Option<usize>,
     /// Animation snapshots for undo / redo (the Animation workspace's own
     /// steps).
-    pub undo: Vec<(String, keyform_model::animation::Animation)>,
-    pub redo: Vec<(String, keyform_model::animation::Animation)>,
+    pub undo: Vec<(String, UndoStep)>,
+    pub redo: Vec<(String, UndoStep)>,
     /// A key drag: the animation before it.
     drag: Option<keyform_model::animation::Animation>,
     /// Changed since opening or the last save.
@@ -61,6 +61,14 @@ pub struct AnimState {
     pub settings: Option<Scene>,
     /// The text of a new event (Events ▸ Add).
     pub event_text: String,
+}
+
+/// One Animation-workspace undo step: the typed animation before a curve
+/// or settings edit, or the whole document before a structural edit
+/// (scenes, tracks).
+pub enum UndoStep {
+    Anim(keyform_model::animation::Animation),
+    Doc(Box<keyform_formats::can3::Can3Snapshot>),
 }
 
 impl AnimState {
@@ -174,7 +182,8 @@ impl AnimState {
         keyform_anim::lipsync_bake::bake(c, &table, &o);
         keyform_anim::scene::refresh(c, lo, hi, legacy);
         let n = c.keys.len();
-        self.undo.push(("Bake Lip-sync".into(), before));
+        self.undo
+            .push(("Bake Lip-sync".into(), UndoStep::Anim(before)));
         self.redo.clear();
         self.dirty = true;
         Ok(n)
@@ -193,7 +202,8 @@ impl AnimState {
             ..s.clone()
         };
         if self.doc.animation != before {
-            self.undo.push(("Scene settings".into(), before));
+            self.undo
+                .push(("Scene settings".into(), UndoStep::Anim(before)));
             self.redo.clear();
             self.dirty = true;
         }
@@ -214,7 +224,7 @@ impl AnimState {
             ud.sort_by_key(|e| e.0);
         }
         if self.doc.animation != before {
-            self.undo.push(("Event".into(), before));
+            self.undo.push(("Event".into(), UndoStep::Anim(before)));
             self.redo.clear();
             self.dirty = true;
         }
@@ -263,7 +273,7 @@ impl AnimState {
         if self.doc.animation == before {
             return false;
         }
-        self.undo.push((name.to_owned(), before));
+        self.undo.push((name.to_owned(), UndoStep::Anim(before)));
         self.redo.clear();
         self.dirty = true;
         true
@@ -271,14 +281,26 @@ impl AnimState {
 
     /// Undo (`redo` = false) or redo; returns the step's name.
     pub fn step(&mut self, redo: bool) -> Option<String> {
-        let (from, to) = if redo {
-            (&mut self.redo, &mut self.undo)
+        let (name, step) = if redo {
+            self.redo.pop()?
         } else {
-            (&mut self.undo, &mut self.redo)
+            self.undo.pop()?
         };
-        let (name, a) = from.pop()?;
-        let cur = std::mem::replace(&mut self.doc.animation, a);
-        to.push((name.clone(), cur));
+        let back = match step {
+            UndoStep::Anim(a) => UndoStep::Anim(std::mem::replace(&mut self.doc.animation, a)),
+            UndoStep::Doc(s) => {
+                let cur = self.doc.snapshot();
+                self.doc.restore(*s);
+                self.selected = None;
+                self.scene = self
+                    .scene
+                    .min(self.doc.animation.scenes.len().saturating_sub(1));
+                self.load_sounds(&mut Log::default());
+                UndoStep::Doc(Box::new(cur))
+            }
+        };
+        let to = if redo { &mut self.undo } else { &mut self.redo };
+        to.push((name.clone(), back));
         self.dirty = true;
         self.key = None;
         Some(name)
@@ -439,7 +461,9 @@ impl Document {
                     .to_owned()
             },
         );
-        self.anim_structure(|d, m| d.add_scene(&name, m, end + 1, fps).map(|_| ()))?;
+        self.anim_structure("Import Motion", |d, m| {
+            d.add_scene(&name, m, end + 1, fps).map(|_| ())
+        })?;
         let model = self.model.clone();
         let st = self.anim.as_mut().ok_or("No animation is open.")?;
         st.scene = st.doc.animation.scenes.len() - 1;
@@ -503,12 +527,18 @@ impl Document {
     /// aren't undoable yet: the animation's undo steps are cleared.
     pub fn anim_structure(
         &mut self,
+        name: &str,
         f: impl FnOnce(&mut Can3Document, &keyform_model::Model) -> keyform_formats::Result<()>,
     ) -> Result<(), String> {
         let model = self.model.clone();
         let st = self.anim.as_mut().ok_or("No animation is open.")?;
-        f(&mut st.doc, &model).map_err(|e| e.to_string())?;
-        st.undo.clear();
+        let before = st.doc.snapshot();
+        if let Err(e) = f(&mut st.doc, &model) {
+            st.doc.restore(before);
+            return Err(e.to_string());
+        }
+        st.undo
+            .push((name.to_owned(), UndoStep::Doc(Box::new(before))));
         st.redo.clear();
         st.dirty = true;
         st.selected = None;
@@ -1051,13 +1081,17 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             .as_ref()
             .map_or(0, |a| a.doc.animation.scenes.len());
         let r = match op {
-            SceneOp::Add => doc.anim_structure(|d, m| {
+            SceneOp::Add => doc.anim_structure("Add Scene", |d, m| {
                 d.add_scene(&format!("Scene{}", n + 1), m, frames, fps)
                     .map(|_| ())
             }),
-            SceneOp::Rename(name) => doc.anim_structure(|d, _| d.rename_scene(scene, &name)),
-            SceneOp::Delete => doc.anim_structure(|d, _| d.delete_scene(scene)),
-            SceneOp::AddTrack => doc.anim_structure(|d, m| d.add_model_track(scene, m, &m.name)),
+            SceneOp::Rename(name) => {
+                doc.anim_structure("Rename Scene", |d, _| d.rename_scene(scene, &name))
+            }
+            SceneOp::Delete => doc.anim_structure("Delete Scene", |d, _| d.delete_scene(scene)),
+            SceneOp::AddTrack => {
+                doc.anim_structure("Add Track", |d, m| d.add_model_track(scene, m, &m.name))
+            }
             SceneOp::AddSound(p) => {
                 let abs = std::fs::canonicalize(&p).unwrap_or(p);
                 match std::fs::read(&abs)
@@ -1065,7 +1099,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     .and_then(|b| {
                         keyform_anim::lipsync_bake::RawWav::parse(&b).map_err(|e| e.to_string())
                     }) {
-                    Ok(w) => doc.anim_structure(|d, _| {
+                    Ok(w) => doc.anim_structure("Add Sound Track", |d, _| {
                         d.add_sound_track(scene, &abs.to_string_lossy(), w.duration())
                     }),
                     Err(e) => Err(e),
@@ -1482,7 +1516,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
     if resp.drag_stopped() {
         if let Some(base) = st.drag.take() {
             if base != st.doc.animation {
-                st.undo.push(("Move key".into(), base));
+                st.undo.push(("Move key".into(), UndoStep::Anim(base)));
                 st.redo.clear();
                 st.dirty = true;
             }
@@ -1619,8 +1653,19 @@ mod tests {
         let a = doc.anim.as_ref().unwrap();
         assert!(a.untitled);
         assert_eq!(a.doc.animation.scenes.len(), 1);
-        doc.anim_structure(|d, m| d.add_scene("Two", m, 60, 30.0).map(|_| ()))
-            .unwrap();
+        doc.anim_structure("Add Scene", |d, m| {
+            d.add_scene("Two", m, 60, 30.0).map(|_| ())
+        })
+        .unwrap();
+        // Structural edits undo and redo like any other step.
+        {
+            let a = doc.anim.as_mut().unwrap();
+            assert_eq!(a.step(false).as_deref(), Some("Add Scene"));
+            assert_eq!(a.doc.animation.scenes.len(), 1);
+            assert_eq!(a.step(true).as_deref(), Some("Add Scene"));
+            assert_eq!(a.doc.animation.scenes.len(), 2);
+            a.undo.clear();
+        }
         // Scene settings and an event, as undoable steps.
         {
             let a = doc.anim.as_mut().unwrap();
@@ -1705,8 +1750,10 @@ mod tests {
         write_wav(&wav, &samples, rate);
         let mut log = Log::default();
         let mut doc = Document::new_animation(&model, &mut log).unwrap();
-        doc.anim_structure(|d, _| d.add_sound_track(0, &wav.to_string_lossy(), 2.0))
-            .unwrap();
+        doc.anim_structure("Add Sound Track", |d, _| {
+            d.add_sound_track(0, &wav.to_string_lossy(), 2.0)
+        })
+        .unwrap();
         let a = doc.anim.as_ref().unwrap();
         assert_eq!(a.sounds.len(), 1, "{:?}", log.entries);
         let (_, m) = a.model_track().unwrap();
@@ -2009,15 +2056,19 @@ mod blackbox_files {
         let wav = dir.join("burst.wav");
         std::fs::write(&wav, wav_bytes(&burst_samples(), 44100)).unwrap();
         let mut doc = Document::new_animation(model, &mut log).unwrap();
-        doc.anim_structure(|d, _| d.add_sound_track(0, &wav.to_string_lossy(), 1.2))
-            .unwrap();
+        doc.anim_structure("Add Sound Track", |d, _| {
+            d.add_sound_track(0, &wav.to_string_lossy(), 1.2)
+        })
+        .unwrap();
         doc.save_animation_to(Some(&dir.join("sound_kf.can3")))
             .unwrap();
         let wav = dir.join("alt.wav");
         std::fs::write(&wav, wav_bytes(&alternating_samples(), 44100)).unwrap();
         let mut doc = Document::new_animation(model, &mut log).unwrap();
-        doc.anim_structure(|d, _| d.add_sound_track(0, &wav.to_string_lossy(), 2.4))
-            .unwrap();
+        doc.anim_structure("Add Sound Track", |d, _| {
+            d.add_sound_track(0, &wav.to_string_lossy(), 2.4)
+        })
+        .unwrap();
         doc.save_animation_to(Some(&dir.join("sound2_kf.can3")))
             .unwrap();
         eprintln!("{:?}", log.entries);
