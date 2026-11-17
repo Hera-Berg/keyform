@@ -2045,16 +2045,19 @@ impl Document {
         if self.mode == Mode::Animation {
             // The scene at the playhead (animation-model.md §5).
             self.anim_tick(dt);
-            let (values, parts) = self
-                .anim_values()
-                .unwrap_or_else(|| (self.values.clone(), vec![None; self.model.parts.len()]));
-            self.live = values;
-            let ov = Overrides {
-                part_opacity: parts,
-                model_opacity: 1.0,
-            };
-            let ev = Evaluator::new(&self.model);
-            self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
+            let at = self.anim.as_ref().map_or(0.0, |a| a.frame);
+            if let Some((values, _)) = self.anim_values_at(at) {
+                self.live = values;
+            }
+            // Placed in the scene by the track's visual effect.
+            let f = self.anim_frame_at(at).unwrap_or_else(|| {
+                let ov = Overrides {
+                    part_opacity: vec![None; self.model.parts.len()],
+                    model_opacity: 1.0,
+                };
+                Evaluator::new(&self.model).evaluate_full(&self.live, EvalOptions::default(), &ov)
+            });
+            self.frame = Some(f);
             return;
         }
         if self.mode == Mode::Modeling {

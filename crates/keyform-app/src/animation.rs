@@ -263,11 +263,6 @@ impl Document {
     /// Parameter values and part opacities of the current frame: each
     /// model parameter takes its attribute's value (frame-stepped by its
     /// group, else the track), with eye blink / lip sync. spec: §3.1a, §4, §5
-    pub fn anim_values(&self) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
-        self.anim_values_at(self.anim.as_ref()?.frame)
-    }
-
-    /// [`Document::anim_values`] at scene frame `frame`.
     pub fn anim_values_at(&self, frame: f64) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
         let st = self.anim.as_ref()?;
         let scene = st.scene()?;
@@ -304,6 +299,60 @@ impl Document {
             }
         }
         Some((values, parts))
+    }
+
+    /// The evaluated model at scene frame `frame`, placed in the scene by
+    /// its track's visual effect (positions in scene pixels, opacity
+    /// multiplied). spec: animation-model.md §5
+    pub fn anim_frame_at(&self, frame: f64) -> Option<keyform_eval::Frame> {
+        let (values, parts) = self.anim_values_at(frame)?;
+        let st = self.anim.as_ref()?;
+        let (ti, _) = st.model_track()?;
+        let track = &st.scene()?.tracks[ti];
+        let x = frame - f64::from(track.start) + f64::from(track.offset);
+        let pl = keyform_anim::scene::placement(track, x);
+        let ov = keyform_eval::Overrides {
+            part_opacity: parts,
+            model_opacity: 1.0,
+        };
+        let mut f = keyform_eval::Evaluator::new(&self.model).evaluate_full(
+            &values,
+            keyform_eval::EvalOptions::default(),
+            &ov,
+        );
+        if pl != keyform_anim::scene::Placement::IDENTITY {
+            let place = |pos: &mut Vec<f32>| {
+                for q in pos.chunks_exact_mut(2) {
+                    let p = pl.apply([q[0], q[1]]);
+                    q[0] = p[0];
+                    q[1] = p[1];
+                }
+            };
+            for m in &mut f.meshes {
+                place(&mut m.positions);
+                m.opacity *= pl.opacity;
+            }
+            for p in f.pre_glue.values_mut() {
+                place(p);
+            }
+        }
+        Some(f)
+    }
+
+    /// The canvas the view frames: the scene canvas in the Animation
+    /// workspace, else the model canvas.
+    pub fn stage_size(&self) -> (f32, f32) {
+        if self.mode == Mode::Animation {
+            if let Some(s) = self.anim.as_ref().and_then(|a| a.scene()) {
+                if s.canvas.0 > 0 && s.canvas.1 > 0 {
+                    return (s.canvas.0 as f32, s.canvas.1 as f32);
+                }
+            }
+        }
+        (
+            self.model.canvas.width as f32,
+            self.model.canvas.height as f32,
+        )
     }
 
     /// Advances the playhead while playing (work area, looping).

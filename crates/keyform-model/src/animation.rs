@@ -85,6 +85,30 @@ pub struct IntCurve {
     pub keys: Vec<(i32, i32)>,
 }
 
+/// A 2-D point attribute's curve (`CXY_TNSSequence`): (frame, point)
+/// keys.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PointCurve {
+    pub base: [f32; 2],
+    pub keys: Vec<(i32, [f32; 2])>,
+}
+
+/// A track's visual effect (`CMvEffect_VisualDefault`): where and how the
+/// track is placed in the scene.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Visual {
+    /// Position in the scene (scene pixels).
+    pub xy: PointCurve,
+    /// The point of the track that sits at `xy` (track pixels).
+    pub anchor: PointCurve,
+    /// Scale in percent.
+    pub scale_x: Attr,
+    pub scale_y: Attr,
+    /// Rotation in degrees.
+    pub rotate: Attr,
+    pub shear: Attr,
+}
+
 /// A float attribute (`CMvAttrF`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attr {
@@ -185,6 +209,8 @@ pub struct Track {
     pub opacity: Option<Attr>,
     /// The visual effect's frame step (`frameStep`).
     pub frame_step: Option<IntCurve>,
+    /// The visual effect's placement attributes.
+    pub visual: Option<Visual>,
     /// User data markers: (frame, text).
     pub user_data: Vec<(i32, String)>,
 }
@@ -194,8 +220,11 @@ pub struct Track {
 pub struct Scene {
     pub name: String,
     pub guid: Guid,
+    /// Output (movie) size.
     pub width: i32,
     pub height: i32,
+    /// The scene canvas (`CImageCanvas`), the space tracks are placed in.
+    pub canvas: (i32, i32),
     /// Index of the last frame (frame count = duration + 1).
     pub duration: i32,
     pub fps: f64,

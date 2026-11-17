@@ -60,12 +60,8 @@ pub fn view_of(doc: &Document, rect: Rect, ppp: f32) -> View {
 }
 
 pub fn fit(doc: &mut Document, rect: Rect) {
-    let [x0, y0, x1, y1] = doc.view.fit_box.take().unwrap_or([
-        0.0,
-        0.0,
-        doc.model.canvas.width as f32,
-        doc.model.canvas.height as f32,
-    ]);
+    let (sw, sh) = doc.stage_size();
+    let [x0, y0, x1, y1] = doc.view.fit_box.take().unwrap_or([0.0, 0.0, sw, sh]);
     let (cw, ch) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
     doc.view.zoom = (rect.width() / cw).min(rect.height() / ch) * 0.92;
     doc.view.center = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
@@ -154,10 +150,7 @@ pub fn canvas_ui(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, tokens.canvas_viewport);
     // Canvas area (white), drawn as a quad so it follows rotation.
-    let (cw, ch) = (
-        doc.model.canvas.width as f32,
-        doc.model.canvas.height as f32,
-    );
+    let (cw, ch) = doc.stage_size();
     let corners = [[0.0, 0.0], [cw, 0.0], [cw, ch], [0.0, ch]].map(to_screen);
     painter.add(egui::Shape::convex_polygon(
         corners.to_vec(),

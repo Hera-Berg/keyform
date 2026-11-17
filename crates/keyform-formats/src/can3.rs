@@ -499,6 +499,13 @@ fn scene(s: &O, warnings: &mut Vec<String>, ids: &mut AttrIds) -> Result<Scene> 
         guid: s.guid("guid")?.unwrap_or_default().to_owned(),
         width: mi.i32("width")?.unwrap_or(0),
         height: mi.i32("height")?.unwrap_or(0),
+        canvas: match s.field("canvas")? {
+            Some(c) => (
+                c.i32("pixelWidth")?.unwrap_or(0),
+                c.i32("pixelHeight")?.unwrap_or(0),
+            ),
+            None => (0, 0),
+        },
         duration: mi.i32("duration")?.unwrap_or(0),
         fps: mi.f64("fps")?.unwrap_or(30.0),
         work_start: mi.i32("workspaceStart")?.unwrap_or(0),
@@ -559,6 +566,7 @@ fn track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<(Track, Option<S
         kind: TrackKind::Other(t.tag().to_owned()),
         opacity: None,
         frame_step: None,
+        visual: None,
         user_data: Vec::new(),
     };
     let parent = src.guid("parentGuid")?.map(str::to_owned);
@@ -573,14 +581,22 @@ fn track(t: &O, ids: &mut Vec<(bool, usize, String)>) -> Result<(Track, Option<S
         }
         tr.user_data.sort_by_key(|u| u.0);
     }
-    if let Some(v) = src.field("visualEffect")? {
+    if let Some(v) = src.field("visualEffect")?.filter(|v| !v.is_null()) {
+        let mut vis = keyform_model::animation::Visual::default();
         for at in effect_attrs(&v)? {
             match attr_id(&at)?.as_str() {
                 "opacity" => tr.opacity = Some(float_attr(&at)?),
                 "frameStep" => tr.frame_step = int_curve(&at)?,
+                "scalex" => vis.scale_x = float_attr(&at)?,
+                "scaley" => vis.scale_y = float_attr(&at)?,
+                "rotate" => vis.rotate = float_attr(&at)?,
+                "shear" => vis.shear = float_attr(&at)?,
+                "xy" => vis.xy = point_curve(&at)?,
+                "anchor" => vis.anchor = point_curve(&at)?,
                 _ => {}
             }
         }
+        tr.visual = Some(vis);
     }
     tr.kind = match t.tag() {
         "CMvTrack_Group_Source" => TrackKind::Group,
@@ -688,6 +704,27 @@ fn curve(v: &O) -> Result<Curve> {
             Ok(c)
         }
     }
+}
+
+/// A `CMvAttrPt`'s `CXY_TNSSequence`: (pos, value) points.
+fn point_curve(a: &O) -> Result<keyform_model::animation::PointCurve> {
+    let mut c = keyform_model::animation::PointCurve::default();
+    let Some(v) = a.field("valueDataXY")? else {
+        return Ok(c);
+    };
+    let xy = |o: Option<O>| -> Result<[f32; 2]> {
+        Ok(match o {
+            Some(p) => [p.f32("x")?.unwrap_or(0.0), p.f32("y")?.unwrap_or(0.0)],
+            None => [0.0, 0.0],
+        })
+    };
+    c.base = xy(v.field("basePt")?)?;
+    for p in v.list("points")? {
+        c.keys
+            .push((p.i32("pos")?.unwrap_or(0), xy(p.field("value")?)?));
+    }
+    c.keys.sort_by_key(|k| k.0);
+    Ok(c)
 }
 
 fn int_curve(a: &O) -> Result<Option<IntCurve>> {

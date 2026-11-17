@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use keyform_eval::{EvalOptions, Evaluator, Overrides};
 use keyform_render::{CpuRenderer, RenderOptions, RgbaImage, View};
 
 use crate::document::Document;
@@ -33,7 +32,7 @@ pub struct MediaState {
     pub open: bool,
     pub kind: MediaKind,
     pub range: FrameRange,
-    /// Scale in percent of the model canvas.
+    /// Scale in percent of the scene canvas.
     pub percent: f32,
     /// Output frame rate (GIF, video); 0 = the scene's.
     pub fps: f64,
@@ -81,20 +80,25 @@ pub fn frames(doc: &Document, range: FrameRange, fps: f64) -> Vec<f64> {
     out
 }
 
-/// One scene frame rendered with the export camera.
+/// One scene frame rendered over the scene canvas (the model placed by
+/// its track's visual effect), `percent` of the canvas size.
 pub fn render_frame(
     doc: &Document,
     frame: f64,
     percent: f32,
     white: bool,
 ) -> Result<RgbaImage, String> {
-    let view = View::for_export(&doc.model, percent / 100.0).ok_or("The image size is 0.")?;
-    let (values, parts) = doc.anim_values_at(frame).ok_or("No animation is open.")?;
-    let ov = Overrides {
-        part_opacity: parts,
-        model_opacity: 1.0,
+    let (sw, sh) = doc.stage_size();
+    let k = percent / 100.0;
+    let view = View {
+        width: ((sw * k).floor() as u32).max(1),
+        height: ((sh * k).floor() as u32).max(1),
+        origin: [0.0, 0.0],
+        scale: k,
+        rotation: 0.0,
+        mirror: false,
     };
-    let f = Evaluator::new(&doc.model).evaluate_full(&values, EvalOptions::default(), &ov);
+    let f = doc.anim_frame_at(frame).ok_or("No animation is open.")?;
     CpuRenderer::new(&doc.model)
         .render(
             &f,

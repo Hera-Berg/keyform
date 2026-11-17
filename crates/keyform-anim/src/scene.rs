@@ -376,6 +376,100 @@ pub fn delete_key(c: &mut Curve, i: usize) {
     }
 }
 
+// --------------------------------------------------------------- placement
+
+/// A point curve at frame x: linear between its keys (held before the
+/// first and after the last), else its base point.
+// TODO(Q-0030): the TNS (tension / continuity / bias) interpolation.
+pub fn eval_point(c: &keyform_model::animation::PointCurve, x: f64) -> [f32; 2] {
+    let k = &c.keys;
+    match k.len() {
+        0 => return c.base,
+        1 => return k[0].1,
+        _ => {}
+    }
+    if x <= f64::from(k[0].0) {
+        return k[0].1;
+    }
+    if x >= f64::from(k[k.len() - 1].0) {
+        return k[k.len() - 1].1;
+    }
+    let i = k.partition_point(|p| f64::from(p.0) <= x) - 1;
+    let (a, b) = (k[i], k[i + 1]);
+    let t = ((x - f64::from(a.0)) / f64::from(b.0 - a.0)) as f32;
+    [
+        a.1[0] + (b.1[0] - a.1[0]) * t,
+        a.1[1] + (b.1[1] - a.1[1]) * t,
+    ]
+}
+
+/// Where a track sits in the scene at one frame (its visual effect).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub xy: [f32; 2],
+    pub anchor: [f32; 2],
+    /// Scale factors (1 = 100 %).
+    pub scale: [f32; 2],
+    /// Degrees, clockwise on screen.
+    pub rotate: f32,
+    pub shear: f32,
+    /// 0–1.
+    pub opacity: f32,
+}
+
+impl Placement {
+    pub const IDENTITY: Placement = Placement {
+        xy: [0.0, 0.0],
+        anchor: [0.0, 0.0],
+        scale: [1.0, 1.0],
+        rotate: 0.0,
+        shear: 0.0,
+        opacity: 1.0,
+    };
+
+    /// Track point → scene point: xy + R(rotate)·Shear·S(scale)·(p − anchor).
+    // TODO(Q-0030): the order and the shear's meaning are provisional.
+    pub fn apply(&self, p: [f32; 2]) -> [f32; 2] {
+        let mut q = [
+            (p[0] - self.anchor[0]) * self.scale[0],
+            (p[1] - self.anchor[1]) * self.scale[1],
+        ];
+        if self.shear != 0.0 {
+            q[0] += self.shear.to_radians().tan() * q[1];
+        }
+        if self.rotate != 0.0 {
+            let (s, c) = self.rotate.to_radians().sin_cos();
+            q = [c * q[0] - s * q[1], s * q[0] + c * q[1]];
+        }
+        [self.xy[0] + q[0], self.xy[1] + q[1]]
+    }
+}
+
+/// The track's placement at frame x; identity without a visual effect.
+/// spec: animation-model.md §2, §5 step 5
+pub fn placement(t: &keyform_model::animation::Track, x: f64) -> Placement {
+    let Some(v) = t.visual.as_ref() else {
+        return Placement::IDENTITY;
+    };
+    let pct = |a: &Attr| eval_curve(&a.curve, x) as f32 / 100.0;
+    let opacity = t.opacity.as_ref().map_or(1.0, |o| {
+        let v = eval_attr(o, x) as f32;
+        if o.range.1 > 1.0 {
+            v / 100.0
+        } else {
+            v
+        }
+    });
+    Placement {
+        xy: eval_point(&v.xy, x),
+        anchor: eval_point(&v.anchor, x),
+        scale: [pct(&v.scale_x), pct(&v.scale_y)],
+        rotate: eval_curve(&v.rotate.curve, x) as f32,
+        shear: eval_curve(&v.shear.curve, x) as f32,
+        opacity: opacity.clamp(0.0, 1.0),
+    }
+}
+
 // ------------------------------------------------------------------ effects
 
 /// Eye blink result for parameter value v in [lo, hi] at frame x. §4
@@ -522,5 +616,25 @@ mod tests {
         refresh(&mut c, -10.0, 10.0, false);
         // Handles within their segments.
         assert!(c.keys[0].next.unwrap().frame <= 20.0);
+    }
+
+    #[test]
+    fn placement_maps_anchor_to_position() {
+        let p = Placement {
+            xy: [100.0, 50.0],
+            anchor: [10.0, 20.0],
+            scale: [0.5, 0.5],
+            rotate: 90.0,
+            shear: 0.0,
+            opacity: 1.0,
+        };
+        assert_eq!(p.apply([10.0, 20.0]), [100.0, 50.0]);
+        // (12, 20): 2 px right of the anchor → 1 px, turned 90° clockwise
+        // (down on screen).
+        let q = p.apply([12.0, 20.0]);
+        assert!(
+            (q[0] - 100.0).abs() < 1e-5 && (q[1] - 51.0).abs() < 1e-5,
+            "{q:?}"
+        );
     }
 }
