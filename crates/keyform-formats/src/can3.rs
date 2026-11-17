@@ -103,6 +103,23 @@ impl Can3Document {
     /// must load back as exactly the edited animation.
     fn sync(&mut self) -> Result<()> {
         let mut xml = self.xml.clone();
+        // Form animation keys can't be written yet: their FramePosAndForm
+        // encoding is unknown (Q-0033).
+        let forms = |a: &Animation| -> Vec<keyform_model::animation::FormAnimation> {
+            a.scenes
+                .iter()
+                .flat_map(|s| s.tracks.iter())
+                .filter_map(|t| match &t.kind {
+                    TrackKind::Model(m) => Some(m.form.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        if forms(&self.saved) != forms(&self.animation) {
+            return Err(FormatError::Unsupported(
+                "form animation edits can't be saved yet (the form key encoding is unknown, Q-0033)".into(),
+            ));
+        }
         let changed = changed_attrs(&self.saved, &self.animation);
         // Scene settings and track user data (events) changed in place.
         let mut other = false;

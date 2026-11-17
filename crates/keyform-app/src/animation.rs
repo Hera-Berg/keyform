@@ -61,8 +61,25 @@ pub struct AnimState {
     pub settings: Option<Scene>,
     /// The physics baking dialog, while open.
     pub physics_bake: Option<PhysicsBakeDraft>,
+    /// The Form Edit tool is active on the canvas.
+    pub form_tool: bool,
+    /// A Form Edit vertex drag in progress.
+    pub form_drag: Option<crate::form_edit::FormDrag>,
+    /// The art mesh last form-edited (its vertices are drawn).
+    pub form_mesh: Option<usize>,
     /// The text of a new event (Events ▸ Add).
     pub event_text: String,
+}
+
+/// Options of [`Document::anim_frame_opts`].
+#[derive(Default)]
+pub struct FrameOpts {
+    /// Model canvas space (no track placement).
+    pub unplaced: bool,
+    /// Without form animation.
+    pub no_form: bool,
+    /// Added to one art mesh's local form: (art mesh, offsets).
+    pub extra_local: Option<(usize, Vec<f32>)>,
 }
 
 /// One Animation-workspace undo step: the typed animation before a curve
@@ -385,6 +402,9 @@ impl Document {
             audio_tried: false,
             settings: None,
             physics_bake: None,
+            form_tool: false,
+            form_drag: None,
+            form_mesh: None,
             event_text: String::new(),
         });
         if let Some(a) = d.anim.as_mut() {
@@ -440,6 +460,9 @@ impl Document {
             audio_tried: false,
             settings: None,
             physics_bake: None,
+            form_tool: false,
+            form_drag: None,
+            form_mesh: None,
             event_text: String::new(),
         });
         Ok(d)
@@ -714,16 +737,63 @@ impl Document {
     /// opacity is applied when compositing, [`Self::anim_group_opacity`]).
     /// spec: animation-model.md §5
     pub fn anim_frame_at(&self, frame: f64) -> Option<keyform_eval::Frame> {
+        self.anim_frame_opts(frame, &FrameOpts::default())
+    }
+
+    /// [`Self::anim_frame_at`] with options (form edit needs the frame
+    /// before placement, without form animation, or with an extra local
+    /// offset).
+    pub fn anim_frame_opts(&self, frame: f64, o: &FrameOpts) -> Option<keyform_eval::Frame> {
         let (values, parts) = self.anim_values_at(frame)?;
         let st = self.anim.as_ref()?;
         let (ti, _) = st.model_track()?;
         let track = &st.scene()?.tracks[ti];
         let x = frame - f64::from(track.start) + f64::from(track.offset);
         let pl = keyform_anim::scene::placement(track, x);
-        let ov = keyform_eval::Overrides {
+        let mut ov = keyform_eval::Overrides {
             part_opacity: parts,
             model_opacity: 1.0,
+            ..Default::default()
         };
+        // Form animation, Adjustment Mode 2: D added to the object's local
+        // (interpolated) form, before its deformer.
+        // spec: form-animation-and-controllers.md §1 step 3
+        if let TrackKind::Model(m) = &track.kind {
+            if m.form.apply && !o.no_form {
+                let fx = step_frame(x, track.frame_step.as_ref());
+                for o in &m.form.local {
+                    let Some(d) = keyform_anim::scene::form_difference(o, fx) else {
+                        continue;
+                    };
+                    if let Some(mi) = self
+                        .model
+                        .art_meshes
+                        .iter()
+                        .position(|a| a.info.guid == o.guid)
+                    {
+                        ov.local_mesh.insert(mi, d);
+                    } else if let Some(di) = self
+                        .model
+                        .deformers
+                        .iter()
+                        .position(|w| w.info.guid == o.guid)
+                    {
+                        ov.local_warp.insert(di, d);
+                    }
+                }
+            }
+        }
+        if let Some((mi, d)) = &o.extra_local {
+            let e = ov
+                .local_mesh
+                .entry(*mi)
+                .or_insert_with(|| vec![0.0; d.len()]);
+            if e.len() == d.len() {
+                for (a, b) in e.iter_mut().zip(d) {
+                    *a += b;
+                }
+            }
+        }
         let mut f = keyform_eval::Evaluator::new(&self.model).evaluate_full(
             &values,
             keyform_eval::EvalOptions::default(),
@@ -731,10 +801,8 @@ impl Document {
         );
         // Form animation, Adjustment Mode 1: D added to the object's final
         // canvas form (form-animation-and-controllers.md §1 step 3).
-        // TODO: Adjustment Mode 2 (local entries) needs the local form
-        // before deformation.
         if let TrackKind::Model(m) = &track.kind {
-            if m.form.apply {
+            if m.form.apply && !o.no_form {
                 let fx = step_frame(x, track.frame_step.as_ref());
                 for o in &m.form.global {
                     let Some(mi) = self
@@ -757,7 +825,7 @@ impl Document {
                 }
             }
         }
-        if pl != keyform_anim::scene::Placement::IDENTITY {
+        if !o.unplaced && pl != keyform_anim::scene::Placement::IDENTITY {
             let place = |pos: &mut Vec<f32>| {
                 for q in pos.chunks_exact_mut(2) {
                     let p = pl.apply([q[0], q[1]]);
@@ -1050,6 +1118,7 @@ enum SceneOp {
     BakeLipSync(usize),
     ImportMotion(PathBuf),
     OpenPhysicsBake,
+    DeleteFormEdit(usize),
     BakePhysics(Vec<usize>, bool),
 }
 
@@ -1192,6 +1261,41 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     });
                 });
             });
+            // Form Edit (form-animation-and-controllers.md §1).
+            let (ti, mode) = match st.model_track() {
+                Some((ti, m)) => (Some(ti), Some((m.form.local_mode, m.form.apply))),
+                None => (None, None),
+            };
+            if let (Some(ti), Some((mut local, mut apply))) = (ti, mode) {
+                ui.toggle_value(&mut st.form_tool, "Form Edit")
+                    .on_hover_text("Drag art mesh vertices on the canvas to make a form key at the playhead");
+                let (l0, a0) = (local, apply);
+                egui::ComboBox::from_id_salt("form_mode")
+                    .selected_text(if local { "Adjustment Mode 2" } else { "Adjustment Mode 1" })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut local, false, "Adjustment Mode 1")
+                            .on_hover_text("Added to the final form");
+                        ui.selectable_value(&mut local, true, "Adjustment Mode 2")
+                            .on_hover_text("Added to the local form; the deformer still moves it");
+                    });
+                ui.checkbox(&mut apply, "Apply form edit");
+                if (local, apply) != (l0, a0) {
+                    let before = st.doc.animation.clone();
+                    let s = st.scene;
+                    if let TrackKind::Model(m) = &mut st.doc.animation.scenes[s].tracks[ti].kind {
+                        m.form.local_mode = local;
+                        m.form.apply = apply;
+                    }
+                    st.undo.push(("Form Edit settings".into(), UndoStep::Anim(before)));
+                    st.redo.clear();
+                    st.dirty = true;
+                }
+                if let Some(mi) = st.form_mesh {
+                    if ui.button("Delete Form Edit").clicked() {
+                        op = Some(SceneOp::DeleteFormEdit(mi));
+                    }
+                }
+            }
             ui.menu_button("Events", |ui| {
                 let f = st.frame.round() as i32;
                 ui.horizontal(|ui| {
@@ -1318,6 +1422,10 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 }
             }
             SceneOp::BakePhysics(params, every) => doc.bake_physics(&params, every).map(|_| ()),
+            SceneOp::DeleteFormEdit(mi) => {
+                doc.delete_form_edit(mi);
+                Ok(())
+            }
         };
         match r {
             Ok(()) => {

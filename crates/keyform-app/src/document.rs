@@ -2058,6 +2058,7 @@ impl Document {
                 let ov = Overrides {
                     part_opacity: vec![None; self.model.parts.len()],
                     model_opacity: 1.0,
+                    ..Default::default()
                 };
                 Evaluator::new(&self.model).evaluate_full(&self.live, EvalOptions::default(), &ov)
             });
@@ -2072,6 +2073,7 @@ impl Document {
             let ov = Overrides {
                 part_opacity: vec![None; self.model.parts.len()],
                 model_opacity: 1.0,
+                ..Default::default()
             };
             let ev = Evaluator::new(&self.model);
             self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
@@ -2147,6 +2149,7 @@ impl Document {
         let mut ov = Overrides {
             part_opacity: vec![None; self.model.parts.len()],
             model_opacity: self.motion_out.model_opacity,
+            ..Default::default()
         };
         if let Some(pose) = self.pose.as_ref().filter(|_| o.pose) {
             let st = self

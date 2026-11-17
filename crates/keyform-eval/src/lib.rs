@@ -102,6 +102,12 @@ pub struct Overrides {
     pub part_opacity: Vec<Option<f32>>,
     /// Multiplies every drawable's opacity (motion `Model/Opacity`).
     pub model_opacity: f32,
+    /// Added to an art mesh's interpolated local positions before its
+    /// deformer (form animation, Adjustment Mode 2), by art mesh index.
+    /// spec: 60-animation/form-animation-and-controllers.md §1 step 3
+    pub local_mesh: std::collections::HashMap<usize, Vec<f32>>,
+    /// The same for a warp deformer's grid points, by deformer index.
+    pub local_warp: std::collections::HashMap<usize, Vec<f32>>,
 }
 
 impl Default for Overrides {
@@ -109,6 +115,16 @@ impl Default for Overrides {
         Self {
             part_opacity: Vec::new(),
             model_opacity: 1.0,
+            local_mesh: Default::default(),
+            local_warp: Default::default(),
+        }
+    }
+}
+
+fn add_offsets(p: &mut [f32], d: Option<&Vec<f32>>) {
+    if let Some(d) = d.filter(|d| d.len() == p.len()) {
+        for (x, dx) in p.iter_mut().zip(d) {
+            *x += dx;
         }
     }
 }
@@ -347,6 +363,7 @@ impl<'m> Evaluator<'m> {
                 )
                 .map(|r| {
                     let mut points = r.form.positions;
+                    add_offsets(&mut points, ov.local_warp.get(&di));
                     if let Some(pm) = parent_map {
                         for xy in points.as_chunks_mut::<2>().0 {
                             let q = pm.map([xy[0], xy[1]]);
@@ -447,6 +464,7 @@ impl<'m> Evaluator<'m> {
                     };
                 };
                 let mut positions = std::mem::take(&mut r.form.positions);
+                add_offsets(&mut positions, ov.local_mesh.get(&ai));
                 let mut outside = r.outside || outside_parent;
                 if let Some(t) = target {
                     match &t.map {
