@@ -2154,6 +2154,23 @@ impl eframe::App for KeyformApp {
                 self.log.warn(e);
             }
         }
+        // In an animation, `--select` names a parameter whose curve to edit.
+        if let (Some(id), Some(s)) = (self.initial_select.as_ref(), self.slots.first_mut()) {
+            if let Some(a) = s.doc.anim.as_mut() {
+                if let Some((ti, m)) = a.model_track().map(|(i, m)| (i, m.clone())) {
+                    if let Some(k) = m
+                        .params
+                        .iter()
+                        .position(|x| keyform_anim::scene::param_id(&x.id) == Some(id.as_str()))
+                    {
+                        a.selected = Some((ti, crate::animation::AttrRef::Param(k)));
+                        a.key = Some(1);
+                        a.frame = 40.0;
+                        self.initial_select = None;
+                    }
+                }
+            }
+        }
         if let (Some(id), Some(s)) = (self.initial_select.take(), self.slots.first_mut()) {
             use crate::document::Selection;
             let m = &s.doc.model;
