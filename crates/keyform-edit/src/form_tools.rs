@@ -138,32 +138,6 @@ pub struct PasteMirror {
     pub vertical: Option<f32>,
 }
 
-/// The copy that applies to target `t`: the same object, else (with
-/// `multi`) one of the same kind with the same point count.
-fn copy_for<'c>(
-    m: &Model,
-    copies: &'c [CopiedForm],
-    t: ObjectRef,
-    multi: bool,
-) -> Option<&'c CopiedForm> {
-    if let Some(c) = copies.iter().find(|c| c.object == t) {
-        return Some(c);
-    }
-    if !multi {
-        return None;
-    }
-    let n = point_count(m, t)?;
-    let same: Vec<&CopiedForm> = copies
-        .iter()
-        .filter(|c| {
-            kind(c.object) == kind(t) && c.canvas.len() == n && same_deformer_kind(m, c.object, t)
-        })
-        .collect();
-    // Ambiguous matches need the multi-paste dialog; only a single match
-    // is taken here.
-    (same.len() == 1).then(|| same[0])
-}
-
 fn same_deformer_kind(m: &Model, a: ObjectRef, b: ObjectRef) -> bool {
     match (a, b) {
         (ObjectRef::Deformer(x), ObjectRef::Deformer(y)) => {
@@ -222,13 +196,94 @@ pub fn paste_form(
     w: f32,
     mirror: PasteMirror,
 ) -> Result<usize, FormError> {
+    let pairs = default_pairing(m, copies, targets);
+    paste_form_paired(m, values, copies, &pairs, w, mirror)
+}
+
+/// The copies (indices) that apply to each target (§2): its own copy, or
+/// in multi-target mode the copies of objects of the same kind and point
+/// count.
+pub fn paste_candidates(
+    m: &Model,
+    copies: &[CopiedForm],
+    targets: &[ObjectRef],
+) -> Vec<(ObjectRef, Vec<usize>)> {
     let multi = targets.len() > 1 || copies.len() > 1;
-    let mut order: Vec<ObjectRef> = targets.to_vec();
-    order.sort_by_key(|&o| (!matches!(o, ObjectRef::Deformer(_)), depth(m, o)));
+    targets
+        .iter()
+        .map(|&t| {
+            if let Some(k) = copies.iter().position(|c| c.object == t) {
+                return (t, vec![k]);
+            }
+            if !multi {
+                return (t, Vec::new());
+            }
+            let Some(n) = point_count(m, t) else {
+                return (t, Vec::new());
+            };
+            let ks = copies
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    kind(c.object) == kind(t)
+                        && c.canvas.len() == n
+                        && same_deformer_kind(m, c.object, t)
+                })
+                .map(|(k, _)| k)
+                .collect();
+            (t, ks)
+        })
+        .collect()
+}
+
+/// Whether pairing copies with targets is ambiguous (the multi-paste
+/// dialog is shown): some target has several candidate copies.
+pub fn pairing_ambiguous(m: &Model, copies: &[CopiedForm], targets: &[ObjectRef]) -> bool {
+    paste_candidates(m, copies, targets)
+        .iter()
+        .any(|(_, ks)| ks.len() > 1)
+}
+
+/// The default pairing: a target's own copy; otherwise the targets that
+/// share a candidate list take its copies in order (selection order
+/// against copy order), wrapping when there are more targets.
+pub fn default_pairing(
+    m: &Model,
+    copies: &[CopiedForm],
+    targets: &[ObjectRef],
+) -> Vec<(ObjectRef, Option<usize>)> {
+    let cands = paste_candidates(m, copies, targets);
+    let mut used: std::collections::HashMap<Vec<usize>, usize> = std::collections::HashMap::new();
+    cands
+        .into_iter()
+        .map(|(t, ks)| {
+            if ks.len() <= 1 {
+                return (t, ks.first().copied());
+            }
+            let n = used.entry(ks.clone()).or_insert(0);
+            let k = ks[*n % ks.len()];
+            *n += 1;
+            (t, Some(k))
+        })
+        .collect()
+}
+
+/// Paste / Blend with an explicit pairing: each target takes the copy
+/// given (none: skipped). See [`paste_form`].
+pub fn paste_form_paired(
+    m: &mut Model,
+    values: &[f32],
+    copies: &[CopiedForm],
+    pairs: &[(ObjectRef, Option<usize>)],
+    w: f32,
+    mirror: PasteMirror,
+) -> Result<usize, FormError> {
+    let mut order: Vec<(ObjectRef, Option<usize>)> = pairs.to_vec();
+    order.sort_by_key(|&(o, _)| (!matches!(o, ObjectRef::Deformer(_)), depth(m, o)));
     let mut n = 0;
     let mut frame = Evaluator::new(m).evaluate(values);
-    for t in order {
-        let Some(c) = copy_for(m, copies, t, multi).cloned() else {
+    for (t, k) in order {
+        let Some(c) = k.and_then(|k| copies.get(k)).cloned() else {
             continue;
         };
         let Ok(cell) = current_cell(m, t, values) else {

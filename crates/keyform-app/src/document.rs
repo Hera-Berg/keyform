@@ -78,6 +78,18 @@ enum DragKind {
     },
 }
 
+/// A paste waiting for its pairing (multi-paste dialog).
+#[derive(Clone, Debug)]
+pub struct PastePairing {
+    pub name: String,
+    pub w: f32,
+    pub mirror: keyform_edit::form_tools::PasteMirror,
+    /// Candidate copies of each target.
+    pub candidates: Vec<(Selection, Vec<usize>)>,
+    /// The chosen copy of each target.
+    pub pairs: Vec<(Selection, Option<usize>)>,
+}
+
 struct Drag {
     base: Model,
     kind: DragKind,
@@ -348,6 +360,9 @@ pub struct Document {
     pub path_prefs: crate::path_tool::PathPrefs,
     /// Temporary path handler, while active (deform-paths.md §6).
     pub temp_path: Option<crate::path_tool::TempPath>,
+    /// A paste whose copy ↔ target pairing is ambiguous, waiting for the
+    /// multi-paste dialog (form-tools.md §2).
+    pub paste_pairing: Option<PastePairing>,
     /// Copy Form data (form-tools.md §1).
     pub form_clipboard: Vec<keyform_edit::form_tools::CopiedForm>,
     /// Never saved yet: the first save asks for a location.
@@ -671,6 +686,7 @@ impl Document {
             lasso: false,
             soft_select: None,
             path_tool: None,
+            paste_pairing: None,
             path_prefs: Default::default(),
             temp_path: None,
             soft_prefs: Default::default(),
@@ -1301,11 +1317,35 @@ impl Document {
         } else {
             self.selection.objects.clone()
         };
+        use keyform_edit::form_tools as ft;
+        let copies = self.form_clipboard.clone();
+        if ft::pairing_ambiguous(&self.model, &copies, &targets) {
+            self.paste_pairing = Some(PastePairing {
+                name: name.to_owned(),
+                w,
+                mirror,
+                candidates: ft::paste_candidates(&self.model, &copies, &targets),
+                pairs: ft::default_pairing(&self.model, &copies, &targets),
+            });
+            return Ok(0);
+        }
+        let pairs = ft::default_pairing(&self.model, &copies, &targets);
+        self.paste_paired(name, w, mirror, &pairs)
+    }
+
+    /// Paste / Blend with a chosen copy for each target. One undo step.
+    pub fn paste_paired(
+        &mut self,
+        name: &str,
+        w: f32,
+        mirror: keyform_edit::form_tools::PasteMirror,
+        pairs: &[(Selection, Option<usize>)],
+    ) -> Result<usize, String> {
         let copies = self.form_clipboard.clone();
         let values = self.values.clone();
         let sel = self.selection.clone();
         let n = self.try_edit(name, |m| {
-            keyform_edit::form_tools::paste_form(m, &values, &copies, &targets, w, mirror)
+            keyform_edit::form_tools::paste_form_paired(m, &values, &copies, pairs, w, mirror)
                 .map_err(|e| e.to_string())
         })?;
         self.set_selection(sel);

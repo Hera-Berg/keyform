@@ -2521,3 +2521,81 @@ fn deform_path_drag_and_mesh_edit() {
         eprintln!("{path:?}: {tried} paths dragged");
     }
 }
+
+/// Multi-target paste pairing (form-tools.md §2): own copies pair with
+/// themselves; a target several copies fit is ambiguous; the default
+/// pairing hands the shared candidates out in order; an explicit pairing
+/// pastes the chosen copy.
+#[test]
+fn paste_pairing() {
+    use keyform_edit::form_tools::*;
+    use keyform_edit::ObjectRef;
+    use keyform_eval::Evaluator;
+    use keyform_formats::cmo3::Cmo3Document;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = doc.model;
+        let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+        let frame = Evaluator::new(&m).evaluate(&values);
+        // Three meshes on a key with the same vertex count.
+        let on_key =
+            |i: usize| keyform_edit::current_cell(&m, ObjectRef::ArtMesh(i), &values).is_ok();
+        let mut by_count: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+        for i in 0..m.art_meshes.len() {
+            if on_key(i) {
+                by_count
+                    .entry(m.art_meshes[i].vertex_count())
+                    .or_default()
+                    .push(i);
+            }
+        }
+        let Some(group) = by_count.values().find(|g| g.len() >= 4) else {
+            continue;
+        };
+        let (a, b, c, d) = (group[0], group[1], group[2], group[3]);
+        let copies: Vec<CopiedForm> = [a, b]
+            .iter()
+            .map(|&i| copy_form(&m, &frame, &values, ObjectRef::ArtMesh(i), None).unwrap())
+            .collect();
+        let own = [ObjectRef::ArtMesh(a), ObjectRef::ArtMesh(b)];
+        assert!(!pairing_ambiguous(&m, &copies, &own));
+        assert_eq!(
+            default_pairing(&m, &copies, &own),
+            vec![(own[0], Some(0)), (own[1], Some(1))]
+        );
+        let others = [ObjectRef::ArtMesh(c), ObjectRef::ArtMesh(d)];
+        assert!(pairing_ambiguous(&m, &copies, &others));
+        assert_eq!(
+            default_pairing(&m, &copies, &others),
+            vec![(others[0], Some(0)), (others[1], Some(1))]
+        );
+        // Paste b's form into c: c's vertices land on b's on the canvas.
+        let mut t = m.clone();
+        let n = paste_form_paired(
+            &mut t,
+            &values,
+            &copies,
+            &[(others[0], Some(1)), (others[1], None)],
+            1.0,
+            PasteMirror::default(),
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let f = Evaluator::new(&t).evaluate(&values);
+        let (pc, pb) = (
+            f.positions_before_glue(c).unwrap(),
+            frame.positions_before_glue(b).unwrap(),
+        );
+        let worst = pc
+            .iter()
+            .zip(pb)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.05, "{path:?}: {worst}");
+        assert!(f.meshes[d].positions == frame.meshes[d].positions);
+        eprintln!(
+            "{path:?}: pairing ok (vertex count {})",
+            m.art_meshes[a].vertex_count()
+        );
+    }
+}

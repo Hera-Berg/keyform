@@ -54,6 +54,12 @@ pub struct FormDialogs {
     ext_notice_open: bool,
     /// "Don't show again" was checked.
     ext_dont_show: bool,
+    /// The multi-paste dialog is turned off (`PasteSetting.
+    /// displayMultiPasteShapeDialog` = false): ambiguous pastes use the
+    /// default pairing.
+    pub multi_paste_off: bool,
+    /// The dialog's "Don't show again" box.
+    pairing_dont_show: bool,
 }
 
 /// Motion Mirroring dialog state; the flips and axis are remembered.
@@ -198,11 +204,13 @@ pub fn dialogs(
             special: st.special,
             special_h: st.special_h,
             special_v: st.special_v,
+            multi_paste_off: st.multi_paste_off,
             ..Default::default()
         };
         return;
     };
     blend_dialog(ctx, st, doc, log);
+    pairing_dialog(ctx, st, doc, log);
     special_dialog(ctx, st, doc);
     flip_dialog(ctx, st, doc, log);
     corners_dialog(ctx, st, doc, log);
@@ -492,6 +500,88 @@ fn mirror_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, 
 
 /// Blend Form: Apply Rate (−10000…10000 %), live Preview restored on
 /// Cancel. spec: form-tools.md §2
+/// Name of an object for lists.
+fn object_label(doc: &Document, o: Selection) -> String {
+    let m = &doc.model;
+    let info = match o {
+        Selection::ArtMesh(i) => m.art_meshes.get(i).map(|a| &a.info),
+        Selection::Deformer(i) => m.deformers.get(i).map(|d| &d.info),
+        Selection::Part(i) => m.parts.get(i).map(|p| &p.info),
+        Selection::Glue(i) => m.glues.get(i).map(|g| &g.info),
+    };
+    info.map_or_else(|| "?".into(), |i| i.display_name().to_owned())
+}
+
+/// Multi-paste dialog: pairs copied forms with targets when several
+/// copies fit a target. spec: form-tools.md §2; settings-keys.md
+/// (`PasteSetting.displayMultiPasteShapeDialog`)
+fn pairing_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, log: &mut Log) {
+    let Some(mut req) = doc.paste_pairing.take() else {
+        return;
+    };
+    let run = |doc: &mut Document, req: &crate::document::PastePairing, log: &mut Log| match doc
+        .paste_paired(&req.name, req.w, req.mirror, &req.pairs)
+    {
+        Ok(_) => {}
+        Err(e) => log.warn(e),
+    };
+    if st.multi_paste_off {
+        run(doc, &req, log);
+        return;
+    }
+    let mut open = true;
+    let (mut ok, mut cancel) = (false, false);
+    let mut dont_show = st.pairing_dont_show;
+    let copy_names: Vec<String> = doc
+        .form_clipboard
+        .iter()
+        .map(|c| object_label(doc, c.object))
+        .collect();
+    egui::Window::new("Paste Form: pair copies with targets")
+        .collapsible(false)
+        .resizable(true)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.label("Several copied forms fit these objects. Choose the form to paste into each:");
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("paste-pairs")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (k, (t, cands)) in req.candidates.iter().enumerate() {
+                                ui.label(object_label(doc, *t));
+                                let cur = &mut req.pairs[k].1;
+                                let text = cur
+                                    .and_then(|c| copy_names.get(c))
+                                    .cloned()
+                                    .unwrap_or_else(|| "(none)".into());
+                                egui::ComboBox::from_id_salt(("paste-pair", k))
+                                    .selected_text(text)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(cur, None, "(none)");
+                                        for &c in cands {
+                                            ui.selectable_value(cur, Some(c), &copy_names[c]);
+                                        }
+                                    });
+                                ui.end_row();
+                            }
+                        });
+                });
+            ui.checkbox(&mut dont_show, "Don't show again");
+            (ok, cancel) = yes_no(ui);
+        });
+    st.pairing_dont_show = dont_show;
+    if ok {
+        st.multi_paste_off = dont_show;
+        st.pairing_dont_show = false;
+        run(doc, &req, log);
+    } else if !cancel && open {
+        doc.paste_pairing = Some(req);
+    }
+}
+
 fn blend_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, log: &mut Log) {
     let Some((mut rate, mut preview, base)) = st.blend.take() else {
         return;
