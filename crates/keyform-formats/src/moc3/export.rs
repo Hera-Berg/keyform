@@ -846,7 +846,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         mesh_draw_orders.push(dos);
     }
     // Art mesh blend-shape deltas follow all art mesh grid keyforms (§8.4).
-    let mut bs_mesh_draw: Vec<(usize, f32, f32)> = Vec::new();
     if v >= 4 {
         for (mi_out, &ai) in mesh_order.iter().enumerate() {
             let am = &m.art_meshes[ai];
@@ -855,7 +854,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             }
             let g = prep(m, &am.grid);
             let root = am.target.is_none();
-            let (mut lo, mut hi) = (0.0f32, 0.0f32);
             let (b, n) = bs.add(
                 m,
                 &param_pos,
@@ -870,8 +868,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                     }
                     a.opacity.push(k.opacity);
                     a.draw_order.push(k.draw_order);
-                    lo = lo.min(k.draw_order);
-                    hi = hi.max(k.draw_order);
                     a.pos_begin.push(push_positions(&mut positions, &pts));
                     if v >= 5 {
                         a.kf_colors
@@ -883,7 +879,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 },
             )?;
             bs_meshes.push((count(mi_out)?, b, n));
-            bs_mesh_draw.push((mi_out, lo, hi));
         }
     }
     // Texture index = position among the pages used, in texture-manager order (§8.6).
