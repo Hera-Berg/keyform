@@ -168,6 +168,39 @@ pub struct LipSyncEffect {
     pub level: Attr,
 }
 
+/// One form key: the object's form when the key was made and the edited
+/// form (point positions; other form values aren't animated yet).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormKey {
+    pub frame: i32,
+    pub original: Vec<f32>,
+    pub target: Vec<f32>,
+}
+
+/// Form animation of one object (`KeyFormsForObject`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormObject {
+    /// The object's GUID (art mesh / deformer).
+    pub guid: Guid,
+    pub keys: Vec<FormKey>,
+    /// Scene time → key time (`attrTimeRemapping`).
+    pub time_remap: Option<Attr>,
+}
+
+/// A model track's form animation (`FormAnimationSet` + `CMvEffect_FormEdit`).
+/// spec: form-animation-and-controllers.md §1
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormAnimation {
+    /// Adjustment Mode 1: added to the final (canvas) form.
+    pub global: Vec<FormObject>,
+    /// Adjustment Mode 2: added to the local form before deformation.
+    pub local: Vec<FormObject>,
+    /// "Apply form edit".
+    pub apply: bool,
+    /// Adjustment Mode 2 is selected.
+    pub local_mode: bool,
+}
+
 /// A Live2D model track's effects.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelTrack {
@@ -180,6 +213,7 @@ pub struct ModelTrack {
     pub parts: Vec<Attr>,
     pub eye_blink: Option<EyeBlinkEffect>,
     pub lip_sync: Option<LipSyncEffect>,
+    pub form: FormAnimation,
 }
 
 /// A sound track (`CMvTrack_JavaSoundTrack_Source`, WAV).

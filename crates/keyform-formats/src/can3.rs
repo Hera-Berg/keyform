@@ -824,6 +824,42 @@ fn id_list(o: &O, name: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// One form-animation map (`formMapOnGlobal` / `formMapOnLocal`):
+/// entries GUID → `KeyFormsForObject`. spec: form-animation-and-controllers.md §1
+fn form_map(m: Option<O>) -> Result<Vec<keyform_model::animation::FormObject>> {
+    use keyform_model::animation::{FormKey, FormObject};
+    let mut out = Vec::new();
+    let Some(m) = m else { return Ok(out) };
+    for e in m.items()? {
+        let (Some(k), Some(v)) = (e.field("key")?, e.field("value")?) else {
+            continue;
+        };
+        let mut o = FormObject {
+            guid: k.attr("uuid").unwrap_or_default().to_owned(),
+            ..Default::default()
+        };
+        for fk in v.list("framePosKeyformList")? {
+            let pos = |f: Option<O>| -> Result<Vec<f32>> {
+                Ok(match f {
+                    Some(f) => f.f32_array("positions")?.unwrap_or_default(),
+                    None => Vec::new(),
+                })
+            };
+            o.keys.push(FormKey {
+                frame: fk.i32("framePos")?.unwrap_or(0),
+                original: pos(fk.field("originalForm")?)?,
+                target: pos(fk.field("targetForm")?)?,
+            });
+        }
+        o.keys.sort_by_key(|k| k.frame);
+        if let Some(a) = v.field("attrTimeRemapping")?.filter(|a| !a.is_null()) {
+            o.time_remap = Some(float_attr(&a)?);
+        }
+        out.push(o);
+    }
+    Ok(out)
+}
+
 fn model_track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<ModelTrack> {
     let mut m = ModelTrack {
         resource: t.guid("_resourceGuid")?.map(str::to_owned),
@@ -854,6 +890,15 @@ fn model_track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<ModelTrack> 
                 freeze: gr.bool("isFreezeMode")?.unwrap_or(false),
             });
         }
+    }
+    if let Some(fa) = t.field("formAnimationSet")? {
+        m.form.global = form_map(fa.field("formMapOnGlobal")?)?;
+        m.form.local = form_map(fa.field("formMapOnLocal")?)?;
+    }
+    m.form.apply = true;
+    if let Some(e) = t.field("formEditEffect")?.filter(|e| !e.is_null()) {
+        m.form.apply = e.bool("isApplyEditResult")?.unwrap_or(true);
+        m.form.local_mode = e.bool("isLocalFormAnimation")?.unwrap_or(false);
     }
     if let Some(e) = t.field("partsVisibleEffect")? {
         for a in effect_attrs(&e)? {

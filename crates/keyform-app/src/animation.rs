@@ -502,6 +502,34 @@ impl Document {
             keyform_eval::EvalOptions::default(),
             &ov,
         );
+        // Form animation, Adjustment Mode 1: D added to the object's final
+        // canvas form (form-animation-and-controllers.md §1 step 3).
+        // TODO: Adjustment Mode 2 (local entries) needs the local form
+        // before deformation.
+        if let TrackKind::Model(m) = &track.kind {
+            if m.form.apply {
+                let fx = step_frame(x, track.frame_step.as_ref());
+                for o in &m.form.global {
+                    let Some(mi) = self
+                        .model
+                        .art_meshes
+                        .iter()
+                        .position(|a| a.info.guid == o.guid)
+                    else {
+                        continue;
+                    };
+                    let Some(d) = keyform_anim::scene::form_difference(o, fx) else {
+                        continue;
+                    };
+                    let pos = &mut f.meshes[mi].positions;
+                    if d.len() == pos.len() {
+                        for (p, dv) in pos.iter_mut().zip(d) {
+                            *p += dv;
+                        }
+                    }
+                }
+            }
+        }
         if pl != keyform_anim::scene::Placement::IDENTITY {
             let place = |pos: &mut Vec<f32>| {
                 for q in pos.chunks_exact_mut(2) {
@@ -1578,5 +1606,43 @@ mod tests {
             121
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A global form key moves its art mesh by target − original in the
+    /// scene (before the track's placement scales it).
+    #[test]
+    fn global_form_animation() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        let before = doc.anim_frame_at(0.0).unwrap();
+        let n = doc.model.art_meshes[0].vertex_count();
+        let guid = doc.model.art_meshes[0].info.guid.clone();
+        let a = doc.anim.as_mut().unwrap();
+        let (ti, _) = a.model_track().unwrap();
+        let TrackKind::Model(m) = &mut a.doc.animation.scenes[0].tracks[ti].kind else {
+            panic!()
+        };
+        let key = keyform_model::animation::FormKey {
+            frame: 0,
+            original: vec![0.0; 2 * n],
+            target: (0..n).flat_map(|_| [100.0, 0.0]).collect(),
+        };
+        m.form.global.push(keyform_model::animation::FormObject {
+            guid,
+            keys: vec![key],
+            time_remap: None,
+        });
+        m.form.apply = true;
+        let after = doc.anim_frame_at(0.0).unwrap();
+        let (p0, p1) = (&before.meshes[0].positions, &after.meshes[0].positions);
+        // 100 model px × the track's fit scale, to the right.
+        let dx = p1[0] - p0[0];
+        assert!(dx > 1.0 && (p1[1] - p0[1]).abs() < 1e-3, "{dx}");
+        assert!(after.meshes[1].positions == before.meshes[1].positions);
     }
 }

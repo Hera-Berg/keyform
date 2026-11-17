@@ -470,6 +470,50 @@ pub fn placement(t: &keyform_model::animation::Track, x: f64) -> Placement {
     }
 }
 
+// ----------------------------------------------------------- form animation
+
+/// The form difference D(t) of an object's keys (target − original per
+/// value): after the last key the last one's, on or before the first
+/// key that key's, else linear between the surrounding keys.
+/// spec: form-animation-and-controllers.md §1 step 2
+pub fn form_difference(o: &keyform_model::animation::FormObject, f: f64) -> Option<Vec<f32>> {
+    let k = &o.keys;
+    if k.is_empty() {
+        return None;
+    }
+    let t = match &o.time_remap {
+        Some(a) if !a.curve.keys.is_empty() => eval_curve(&a.curve, f),
+        _ => f,
+    };
+    let diff = |key: &keyform_model::animation::FormKey| -> Vec<f32> {
+        key.target
+            .iter()
+            .zip(&key.original)
+            .map(|(a, b)| a - b)
+            .collect()
+    };
+    let last = k.len() - 1;
+    if t >= f64::from(k[last].frame) {
+        return Some(diff(&k[last]));
+    }
+    if t <= f64::from(k[0].frame) {
+        return Some(diff(&k[0]));
+    }
+    let i = k.partition_point(|x| f64::from(x.frame) <= t) - 1;
+    let (a, b) = (&k[i], &k[i + 1]);
+    if t == f64::from(a.frame) {
+        return Some(diff(a));
+    }
+    let w = ((t - f64::from(a.frame)) / f64::from(b.frame - a.frame)) as f32;
+    Some(
+        diff(a)
+            .iter()
+            .zip(diff(b))
+            .map(|(x, y)| (1.0 - w) * x + w * y)
+            .collect(),
+    )
+}
+
 // ------------------------------------------------------------------ effects
 
 /// Eye blink result for parameter value v in [lo, hi] at frame x. §4
@@ -660,5 +704,29 @@ mod tests {
             (q[0] - 100.0).abs() < 1e-5 && (q[1] - 51.0).abs() < 1e-5,
             "{q:?}"
         );
+    }
+
+    #[test]
+    fn form_differences() {
+        use keyform_model::animation::{FormKey, FormObject};
+        let o = FormObject {
+            guid: String::new(),
+            keys: vec![
+                FormKey {
+                    frame: 10,
+                    original: vec![0.0, 0.0],
+                    target: vec![2.0, 0.0],
+                },
+                FormKey {
+                    frame: 20,
+                    original: vec![0.0, 0.0],
+                    target: vec![4.0, 2.0],
+                },
+            ],
+            time_remap: None,
+        };
+        assert_eq!(form_difference(&o, 0.0).unwrap(), vec![2.0, 0.0]);
+        assert_eq!(form_difference(&o, 15.0).unwrap(), vec![3.0, 1.0]);
+        assert_eq!(form_difference(&o, 30.0).unwrap(), vec![4.0, 2.0]);
     }
 }
