@@ -26,6 +26,8 @@ pub struct ViewGpu {
     /// The texture images the renderer was built with (data address and
     /// length per slot), to rebuild it when a page is re-rendered.
     textures_key: Vec<Option<(usize, usize)>>,
+    /// Textures of image tracks, by track GUID.
+    image_tex: std::collections::HashMap<String, egui::TextureHandle>,
 }
 
 /// Pick radius for points, in screen points.
@@ -241,6 +243,24 @@ pub fn canvas_ui(
                 };
                 match r.render_to(&doc.model, frame, &opts, tex) {
                     Ok(()) => {
+                        let layers = if doc.mode == crate::document::Mode::Animation {
+                            doc.image_layers(doc.anim.as_ref().map_or(0.0, |a| a.frame))
+                        } else {
+                            Vec::new()
+                        };
+                        let to_screen = |p: [f32; 2]| -> Pos2 {
+                            let q = view.to_px(p);
+                            rect.min + egui::vec2(q[0], q[1]) / ppp
+                        };
+                        for l in layers.iter().filter(|l| !l.front) {
+                            paint_image_layer(
+                                ui.ctx(),
+                                &painter,
+                                &mut gpu.image_tex,
+                                l,
+                                &to_screen,
+                            );
+                        }
                         // Group opacity: the premultiplied image × opacity.
                         let a = (doc.group_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                         painter.image(
@@ -249,6 +269,15 @@ pub fn canvas_ui(
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::from_rgba_premultiplied(a, a, a, a),
                         );
+                        for l in layers.iter().filter(|l| l.front) {
+                            paint_image_layer(
+                                ui.ctx(),
+                                &painter,
+                                &mut gpu.image_tex,
+                                l,
+                                &to_screen,
+                            );
+                        }
                     }
                     Err(e) => {
                         painter.text(
@@ -318,6 +347,44 @@ pub fn canvas_ui(
         .hover_pos()
         .map(|p| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]));
     response
+}
+
+/// An image track on the canvas: a textured quad at its placement, with
+/// its opacity. spec: animation-model.md §5.1
+fn paint_image_layer(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    l: &crate::track_layers::ImageLayer,
+    to_screen: &dyn Fn([f32; 2]) -> Pos2,
+) {
+    let (w, h) = (l.image.width as usize, l.image.height as usize);
+    let tex = cache.entry(l.guid.clone()).or_insert_with(|| {
+        let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &l.image.data);
+        ctx.load_texture(
+            format!("image-track-{}", l.guid),
+            img,
+            egui::TextureOptions::LINEAR,
+        )
+    });
+    let a = (l.placement.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let tint = Color32::from_rgba_premultiplied(a, a, a, a);
+    let mut mesh = egui::Mesh::with_texture(tex.id());
+    let (fw, fh) = (w as f32, h as f32);
+    for (p, uv) in [
+        ([0.0, 0.0], [0.0, 0.0]),
+        ([fw, 0.0], [1.0, 0.0]),
+        ([fw, fh], [1.0, 1.0]),
+        ([0.0, fh], [0.0, 1.0]),
+    ] {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: to_screen(l.placement.apply(p)),
+            uv: Pos2::new(uv[0], uv[1]),
+            color: tint,
+        });
+    }
+    mesh.indices = vec![0, 1, 2, 0, 2, 3];
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Arrow tool (canvas-and-tools.md §3):

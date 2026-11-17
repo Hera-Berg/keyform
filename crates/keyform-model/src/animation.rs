@@ -231,12 +231,34 @@ pub struct SoundTrack {
     pub volume: Option<Attr>,
 }
 
+/// An image track (`CMvTrack_Image_Source`): a linked image.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImageTrack {
+    pub resource: Option<Guid>,
+}
+
+/// A scene track (`CMvTrack_Scene_Source`): another scene, nested.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneTrack {
+    /// The nested scene's GUID (`resourceGuid`).
+    pub scene: Option<Guid>,
+    /// Plays the nested scene's work area (`isWorkAreaReferenced`).
+    pub work_area: bool,
+    /// The nested scene's first frame used.
+    pub start_frame: i32,
+    /// `CMvEffect_SceneTrackDefault.attrFrameNo`: the nested scene's frame
+    /// when keyed.
+    pub frame_no: Option<Attr>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackKind {
     Group,
     Model(Box<ModelTrack>),
     Sound(Box<SoundTrack>),
-    /// Kept as stored; not evaluated yet (image, sound, text, …).
+    Image(Box<ImageTrack>),
+    Scene(Box<SceneTrack>),
+    /// Kept as stored; not evaluated yet (text, image sequence, …).
     Other(String),
 }
 

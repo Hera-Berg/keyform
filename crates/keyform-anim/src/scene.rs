@@ -641,6 +641,24 @@ impl Placement {
         }
         [self.xy[0] + q[0], self.xy[1] + q[1]]
     }
+
+    /// Scene point → track point (the inverse of [`Self::apply`]); `None`
+    /// when a scale is 0.
+    pub fn unapply(&self, p: [f32; 2]) -> Option<[f32; 2]> {
+        let mut q = [p[0] - self.xy[0], p[1] - self.xy[1]];
+        if self.rotate != 0.0 {
+            let (s, c) = self.rotate.to_radians().sin_cos();
+            q = [c * q[0] + s * q[1], -s * q[0] + c * q[1]];
+        }
+        q[0] -= self.shear * q[1];
+        if self.scale[0] == 0.0 || self.scale[1] == 0.0 {
+            return None;
+        }
+        Some([
+            q[0] / self.scale[0] + self.anchor[0],
+            q[1] / self.scale[1] + self.anchor[1],
+        ])
+    }
 }
 
 /// The track's placement at frame x; identity without a visual effect.
@@ -835,6 +853,19 @@ mod tests {
     /// before rotation; rotation is clockwise on screen. spec: §5.1
     #[test]
     fn transform_with_shear() {
+        let back = Placement {
+            xy: [3.0, 4.0],
+            anchor: [1.0, 2.0],
+            scale: [0.5, 2.0],
+            rotate: 33.0,
+            shear: 0.3,
+            opacity: 1.0,
+        };
+        let r = back.unapply(back.apply([7.0, -5.0])).unwrap();
+        assert!(
+            (r[0] - 7.0).abs() < 1e-4 && (r[1] + 5.0).abs() < 1e-4,
+            "{r:?}"
+        );
         let pl = Placement {
             xy: [300.0, 400.0],
             anchor: [100.0, 50.0],

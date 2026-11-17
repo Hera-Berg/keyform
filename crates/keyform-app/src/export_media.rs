@@ -112,12 +112,25 @@ pub fn render_frame(
             },
         )
         .map_err(|e| e.to_string())?;
-    keyform_render::composite_group(
-        &mut img,
-        doc.anim_group_opacity(frame),
-        white.then_some([1.0, 1.0, 1.0]),
-    );
-    Ok(img)
+    keyform_render::composite_group(&mut img, doc.anim_group_opacity(frame), None);
+    // Image tracks behind and in front of the model track.
+    let layers = doc.image_layers(frame);
+    let mut out = keyform_formats::image::RgbaImage {
+        width: img.width,
+        height: img.height,
+        data: vec![0; img.data.len()],
+    };
+    for l in layers.iter().filter(|l| !l.front) {
+        crate::track_layers::composite_image(&mut out, l, k);
+    }
+    crate::track_layers::composite_over(&mut out, &img);
+    for l in layers.iter().filter(|l| l.front) {
+        crate::track_layers::composite_image(&mut out, l, k);
+    }
+    if white {
+        keyform_render::composite_group(&mut out, 1.0, Some([1.0, 1.0, 1.0]));
+    }
+    Ok(out)
 }
 
 fn jpeg(img: &RgbaImage, path: &Path, quality: u8) -> Result<(), String> {

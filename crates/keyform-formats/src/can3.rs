@@ -320,6 +320,13 @@ impl Can3Document {
 
     /// Adds a sound track playing the WAV `path` to scene `index`, as the
     /// lip-sync source of the scene's model track.
+    /// Adds an image track for the image at `path` (`size` pixels).
+    pub fn add_image_track(&mut self, index: usize, path: &str, size: (u32, u32)) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::add_image_track_xml(&mut self.xml, index, path, size)?;
+        self.reload()
+    }
+
     /// Adds a sound track for the WAV at `path`, `seconds` long.
     pub fn add_sound_track(&mut self, index: usize, path: &str, seconds: f64) -> Result<()> {
         self.sync()?;
@@ -846,6 +853,29 @@ fn track(t: &O, ids: &mut Vec<(u8, usize, String)>) -> Result<(Track, Option<Str
                 speed: t.f64("speed")?.unwrap_or(100.0),
                 start_frame: t.i32("startFrame")?.unwrap_or(0),
                 volume,
+            }))
+        }
+        "CMvTrack_Image_Source" => {
+            TrackKind::Image(Box::new(keyform_model::animation::ImageTrack {
+                resource: t.guid("_resourceGuid")?.map(str::to_owned),
+            }))
+        }
+        "CMvTrack_Scene_Source" => {
+            let mut frame_no = None;
+            if let Some(em) = src.field("effectManager")? {
+                for e in em.list("effectList")? {
+                    if e.tag() == "CMvEffect_SceneTrackDefault" {
+                        if let Some(a) = e.field("attrFrameNo")?.filter(|a| !a.is_null()) {
+                            frame_no = Some(float_attr(&a)?);
+                        }
+                    }
+                }
+            }
+            TrackKind::Scene(Box::new(keyform_model::animation::SceneTrack {
+                scene: t.guid("resourceGuid")?.map(str::to_owned),
+                work_area: t.bool("isWorkAreaReferenced")?.unwrap_or(false),
+                start_frame: t.i32("startFrame")?.unwrap_or(0),
+                frame_no,
             }))
         }
         other => TrackKind::Other(other.to_owned()),

@@ -445,27 +445,22 @@ fn common(g: &mut Graph) -> Common {
     }
 }
 
-/// Builds a Live2D model track for `model` (linked as resource
-/// `resource`) in scene `scene` under the root group `parent`. Returns
-/// (track id, track GUID object id). spec: animation-model.md §2
-#[allow(clippy::too_many_arguments)]
-fn model_track(
+/// A new visual effect (`CMvEffect_VisualDefault`) for track `track` of
+/// type `tag`: xy at the scene centre, anchor at the centre of the track's
+/// own size `own`, 100 %, opacity 0–1. spec: animation-model.md §5.1
+fn visual_effect(
     g: &mut Graph,
     c: &Common,
-    model: &Model,
-    name: &str,
-    scene: &str,
-    parent_guid: &str,
-    resource: &str,
-    frames: i32,
+    tag: &str,
+    track: &str,
     scene_size: (i32, i32),
-) -> (String, String) {
-    const T: &str = "CMvTrack_Live2DModel_Source";
-    let guid = g.guid("CTrackGuid", &format!("{name} CMvTrack_Live2DModel_Source"));
-    let track = g.reserve(T);
+    own: (f32, f32),
+) -> String {
+    #[allow(non_snake_case)]
+    let T = tag;
     // Visual effect: xy at the scene centre, anchor at the model canvas
     // centre, 100 %, no fit-to-scene. spec: animation-model.md §5.1
-    let (mw, mh) = (model.canvas.width as f32, model.canvas.height as f32);
+    let (mw, mh) = own;
     let (sw, sh) = (scene_size.0 as f32, scene_size.1 as f32);
     let scale = 100.0f32;
     let xy = point_attr(
@@ -475,7 +470,7 @@ fn model_track(
         &c.relative,
         (sw / 2.0, sh / 2.0),
         T,
-        &track,
+        track,
     );
     let fa = |g: &mut Graph, id: &str, name: &str, base: f64, range: (f64, f64)| {
         float_attr(
@@ -492,7 +487,7 @@ fn model_track(
                 fixed: false,
             },
             T,
-            &track,
+            track,
         )
     };
     let unbounded = (f64::MIN, f64::MAX);
@@ -507,10 +502,10 @@ fn model_track(
         &c.relative,
         (mw / 2.0, mh / 2.0),
         T,
-        &track,
+        track,
     );
     let op = fa(g, "opacity", "Opacity", 1.0, (0.0, 1.0));
-    let fs = int_attr(g, "frameStep", "Frame Step", &c.relative, 1, T, &track);
+    let fs = int_attr(g, "frameStep", "Frame Step", &c.relative, 1, T, track);
     let apw = fa(
         g,
         "artPathWidth",
@@ -532,10 +527,10 @@ fn model_track(
     .iter()
     .map(|(t, id, a)| (t.to_string(), id.to_string(), a.to_string()))
     .collect();
-    let visual = g.add(
+    g.add(
         "CMvEffect_VisualDefault",
         vec![
-            effect_super(&c.visual, false, &vattrs, T, &track),
+            effect_super(&c.visual, false, &vattrs, T, track),
             r("CMvAttrPt", "attrXY", &xy),
             r("CMvAttrF", "attrScaleX", &sx),
             r("CMvAttrF", "attrScaleY", &sy),
@@ -547,7 +542,29 @@ fn model_track(
             r("CMvAttrF", "attrArtPathWidth", &apw),
         ],
         &[],
-    );
+    )
+}
+
+/// Builds a Live2D model track for `model` (linked as resource
+/// `resource`) in scene `scene` under the root group `parent`. Returns
+/// (track id, track GUID object id). spec: animation-model.md §2
+#[allow(clippy::too_many_arguments)]
+fn model_track(
+    g: &mut Graph,
+    c: &Common,
+    model: &Model,
+    name: &str,
+    scene: &str,
+    parent_guid: &str,
+    resource: &str,
+    frames: i32,
+    scene_size: (i32, i32),
+) -> (String, String) {
+    const T: &str = "CMvTrack_Live2DModel_Source";
+    let guid = g.guid("CTrackGuid", &format!("{name} CMvTrack_Live2DModel_Source"));
+    let track = g.reserve(T);
+    let (mw, mh) = (model.canvas.width as f32, model.canvas.height as f32);
+    let visual = visual_effect(g, c, T, &track, scene_size, (mw, mh));
     // Eye blink and lip sync on the model's parameter lists.
     let ids = |list: &[usize]| -> Vec<Element> {
         list.iter()
@@ -1540,6 +1557,158 @@ pub fn add_sound_track_xml(
         vec![linked, d("speed", SPEED), i("startFrame", 0)],
         &[],
     );
+    let shx = shared(xml).expect("shared");
+    // Resource manager lists, scene sources, root children.
+    for e in xml.root.children[shx].children.iter_mut() {
+        let id = e.attr("xs.id").map(str::to_owned);
+        if id.as_deref() == Some(rm.as_str()) {
+            if let Some(l) = e.child_field_mut("_resourceRefList") {
+                l.children.push(item("CResourceData", &rdata));
+                l.set_attr("count", l.children.len().to_string());
+            }
+            if let Some(m) = e.child_field_mut("resourceGuidMap") {
+                let mut en = Element::new("entry");
+                en.children = vec![
+                    r("CResourceGuid", "key", &res),
+                    r("CResourceData", "value", &rdata),
+                ];
+                m.children.push(en);
+                m.attrs.retain(|(k, _)| k != "keyType");
+                m.set_attr("count", m.children.len().to_string());
+            }
+            if let Some(l) = e
+                .child_field_mut("rootGroup")
+                .and_then(|g| g.child_field_mut("_childGuids"))
+            {
+                l.children.push(item("CResourceGuid", &res));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.as_deref() == Some(scene_id.as_str()) {
+            if let Some(l) = e
+                .child_field_mut("trackSourceSet")
+                .and_then(|t| t.child_field_mut("_sources"))
+            {
+                l.children.push(item(T, &track));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if id.as_deref() == Some(root.as_str()) {
+            if let Some(l) = e.child_field_mut("_childTrackGuids") {
+                l.children.push(item("CTrackGuid", &tg));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+    }
+    fix_markers(xml);
+    Ok(())
+}
+
+/// Adds an image track showing the image at `path` (`size` pixels) to
+/// scene `index` for the scene's length, with a visual effect (centred,
+/// 100 %) and a linked image resource. spec: animation-model.md §2, §5.1
+// TODO(Q-0035): written like the sound track; not yet opened in the
+// reference.
+pub fn add_image_track_xml(
+    xml: &mut XmlDocument,
+    index: usize,
+    path: &str,
+    size: (u32, u32),
+) -> Result<()> {
+    let (sh, j) = scene_obj(xml, index)?;
+    let scene_el = &xml.root.children[sh].children[j];
+    let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
+    let root = field_ref(scene_el, "rootTrack")
+        .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
+    let frames: i32 = scene_el
+        .child_field("movieInfo")
+        .and_then(|m| m.child_field("duration"))
+        .and_then(|d| d.text.trim().parse().ok())
+        .unwrap_or(60);
+    let scene_size = scene_el
+        .child_field("canvas")
+        .map(|c| {
+            let n = |k: &str| {
+                c.child_field(k)
+                    .and_then(|x| x.text.trim().parse().ok())
+                    .unwrap_or(640)
+            };
+            (n("pixelWidth"), n("pixelHeight"))
+        })
+        .unwrap_or((640, 640));
+    let root_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(root.as_str()))
+        .ok_or_else(|| FormatError::Invalid("root track not found".into()))?;
+    let root_guid = field_ref(root_el.child_field("super").unwrap_or(root_el), "guid")
+        .ok_or_else(|| FormatError::Invalid("root track without guid".into()))?;
+    // The resource manager and its root group GUID.
+    let (_, k) = animation_obj(xml).ok_or_else(|| FormatError::Invalid("no CAnimation".into()))?;
+    let rm = field_ref(&xml.root.children[sh].children[k], "resourceManager")
+        .ok_or_else(|| FormatError::Invalid("no resource manager".into()))?;
+    let rm_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(rm.as_str()))
+        .ok_or_else(|| FormatError::Invalid("resource manager not found".into()))?;
+    let rgg = rm_el
+        .child_field("rootGroup")
+        .and_then(|g| g.child_field("guid"))
+        .and_then(|g| g.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid("resource group without guid".into()))?;
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+    const T: &str = "CMvTrack_Image_Source";
+    let mut g = Graph::on(xml)?;
+    let res = g.guid("CResourceGuid", &name);
+    let mut rf = named("ACResource_File", "super");
+    rf.children = vec![
+        text("file", "srcFile", path.to_owned()),
+        r("CResourceGuid", "guid", &res),
+        s("name", &name),
+    ];
+    let mut link = named("CResource_Linked_Image", "resourceRef");
+    link.children = vec![rf];
+    let mut entry = named("ACResourceEntry", "super");
+    entry.children = vec![
+        r("CResourceGroupGuid", "parentGuid", &rgg),
+        r("CResourceManager", "_resourceManager", &rm),
+    ];
+    let rdata = g.add("CResourceData", vec![entry, null("customName"), link], &[]);
+    let tg = g.guid("CTrackGuid", &format!("{name} {T}"));
+    let track = g.reserve(T);
+    let c = common(&mut g);
+    let visual = visual_effect(
+        &mut g,
+        &c,
+        T,
+        &track,
+        scene_size,
+        (size.0 as f32, size.1 as f32),
+    );
+    let mut src = track_source(
+        &name,
+        &tg,
+        frames,
+        T,
+        &track,
+        Some(&visual),
+        Some(&root_guid),
+        &scene_id,
+    );
+    if let Some(em) = src.children.get_mut(16) {
+        em.children = vec![typed_array(
+            "effectList",
+            "ICMvEffect",
+            vec![item("CMvEffect_VisualDefault", &visual)],
+        )];
+    }
+    let mut linked = named("ICMvTrack_Linked", "super");
+    linked.children = vec![src, r("CResourceGuid", "_resourceGuid", &res)];
+    g.fill(&track, vec![linked], &[]);
     let shx = shared(xml).expect("shared");
     // Resource manager lists, scene sources, root children.
     for e in xml.root.children[shx].children.iter_mut() {

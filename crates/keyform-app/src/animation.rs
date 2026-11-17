@@ -51,6 +51,9 @@ pub struct AnimState {
     pub rename: Option<String>,
     /// Decoded WAVs of the sound resources, by resource GUID.
     pub sounds: std::collections::HashMap<String, keyform_anim::audio::Pcm>,
+    /// Decoded images of the image tracks' resources, by resource GUID.
+    pub images:
+        std::collections::HashMap<String, std::sync::Arc<keyform_formats::image::RgbaImage>>,
     /// The same WAVs as stored PCM (for the level analysis, §4.1).
     pub raw_sounds: std::collections::HashMap<String, keyform_anim::lipsync_bake::RawWav>,
     /// The sound playing with the playhead.
@@ -113,7 +116,42 @@ impl AnimState {
     }
 
     /// Decodes the WAVs of the sound tracks' resources (once each).
+    /// Decodes the PNGs of the image tracks' resources (once each).
+    pub fn load_images(&mut self, log: &mut Log) {
+        let wanted: Vec<String> = self
+            .doc
+            .animation
+            .scenes
+            .iter()
+            .flat_map(|s| s.tracks.iter())
+            .filter_map(|t| match &t.kind {
+                TrackKind::Image(it) => it.resource.clone(),
+                _ => None,
+            })
+            .collect();
+        for g in wanted {
+            if self.images.contains_key(&g) {
+                continue;
+            }
+            let Some(r) = self.doc.animation.resources.iter().find(|r| r.guid == g) else {
+                continue;
+            };
+            let path = self.resource_path(&r.path);
+            match std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|d| {
+                    keyform_formats::image::RgbaImage::decode_png(&d).map_err(|e| e.to_string())
+                }) {
+                Ok(img) => {
+                    self.images.insert(g, std::sync::Arc::new(img));
+                }
+                Err(e) => log.warn(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+
     pub fn load_sounds(&mut self, log: &mut Log) {
+        self.load_images(log);
         let wanted: Vec<String> = self
             .doc
             .animation
@@ -403,6 +441,7 @@ impl Document {
             rename: None,
             sounds: Default::default(),
             raw_sounds: Default::default(),
+            images: Default::default(),
             audio: None,
             audio_tried: false,
             settings: None,
@@ -464,6 +503,7 @@ impl Document {
             rename: None,
             sounds: Default::default(),
             raw_sounds: Default::default(),
+            images: Default::default(),
             audio: None,
             audio_tried: false,
             settings: None,
@@ -1126,6 +1166,7 @@ enum SceneOp {
     Delete,
     AddTrack,
     AddSound(PathBuf),
+    AddImage(PathBuf),
     BakeLipSync(usize),
     ImportMotion(PathBuf),
     OpenPhysicsBake,
@@ -1239,6 +1280,12 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     ui.close();
                     if let Some(p) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
                         op = Some(SceneOp::AddSound(p));
+                    }
+                }
+                if ui.button("Add image track…").clicked() {
+                    ui.close();
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png"]).pick_file() {
+                        op = Some(SceneOp::AddImage(p));
                     }
                 }
                 if ui.button("Import motion3.json…").clicked() {
@@ -1400,6 +1447,19 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     }) {
                     Ok(w) => doc.anim_structure("Add Sound Track", |d, _| {
                         d.add_sound_track(scene, &abs.to_string_lossy(), w.duration())
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
+            SceneOp::AddImage(p) => {
+                let abs = std::fs::canonicalize(&p).unwrap_or(p);
+                match std::fs::read(&abs)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| {
+                        keyform_formats::image::RgbaImage::decode_png(&b).map_err(|e| e.to_string())
+                    }) {
+                    Ok(img) => doc.anim_structure("Add Image Track", |d, _| {
+                        d.add_image_track(scene, &abs.to_string_lossy(), (img.width, img.height))
                     }),
                     Err(e) => Err(e),
                 }

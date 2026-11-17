@@ -30,6 +30,7 @@ mod psd_dialog;
 mod soft_select;
 mod texture_atlas;
 mod theme;
+mod track_layers;
 mod viewer_settings;
 
 use std::path::PathBuf;
