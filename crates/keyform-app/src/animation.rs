@@ -45,6 +45,10 @@ pub struct AnimState {
     drag: Option<keyform_model::animation::Animation>,
     /// Changed since opening or the last save.
     pub dirty: bool,
+    /// Never saved: the first save asks for a location.
+    pub untitled: bool,
+    /// The scene name being edited (Rename).
+    pub rename: Option<String>,
 }
 
 impl AnimState {
@@ -185,8 +189,75 @@ impl Document {
             redo: Vec::new(),
             drag: None,
             dirty: false,
+            untitled: false,
+            rename: None,
         });
         Ok(d)
+    }
+
+    /// A new animation on the model `model` (a `.cmo3`) with one scene of
+    /// 120 frames at 30 fps; unsaved (the first save asks for a location).
+    /// spec: animation-model.md §1–2
+    pub fn new_animation(model: &Path, log: &mut Log) -> Result<Self, String> {
+        let mut d = Document::open(model, log)?;
+        let stem = model
+            .file_stem()
+            .map_or_else(|| "Animation".into(), |s| s.to_string_lossy().into_owned());
+        let path = model.with_file_name(format!("{stem}_animation.can3"));
+        let abs = std::fs::canonicalize(model).unwrap_or_else(|_| model.to_path_buf());
+        let doc = Can3Document::new_animation(
+            &stem,
+            &path.to_string_lossy(),
+            &d.model,
+            &abs.to_string_lossy(),
+            "Scene1",
+            120,
+            30.0,
+        )
+        .map_err(|e| e.to_string())?;
+        d.title = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        d.mode = Mode::Animation;
+        d.anim = Some(AnimState {
+            doc,
+            path,
+            scene: 0,
+            frame: 0.0,
+            playing: false,
+            looping: true,
+            selected: None,
+            px_per_frame: 6.0,
+            keyed_only: false,
+            key: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            drag: None,
+            dirty: true,
+            untitled: true,
+            rename: None,
+        });
+        Ok(d)
+    }
+
+    /// Runs a structural change (scenes, tracks) on the animation. These
+    /// aren't undoable yet: the animation's undo steps are cleared.
+    pub fn anim_structure(
+        &mut self,
+        f: impl FnOnce(&mut Can3Document, &keyform_model::Model) -> keyform_formats::Result<()>,
+    ) -> Result<(), String> {
+        let model = self.model.clone();
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        f(&mut st.doc, &model).map_err(|e| e.to_string())?;
+        st.undo.clear();
+        st.redo.clear();
+        st.dirty = true;
+        st.selected = None;
+        st.key = None;
+        st.scene = st
+            .scene
+            .min(st.doc.animation.scenes.len().saturating_sub(1));
+        Ok(())
     }
 
     /// Parameter values and part opacities of the current frame: each
@@ -253,6 +324,23 @@ impl Document {
             }
         }
         st.frame = st.frame.clamp(lo, hi.max(lo));
+    }
+
+    /// Saves the animation's `.can3` (edited curves in place), atomically;
+    /// `to` saves under a new path (the first save of a new animation).
+    pub fn save_animation_to(&mut self, to: Option<&Path>) -> Result<PathBuf, String> {
+        if let Some(p) = to {
+            let st = self.anim.as_mut().ok_or("No animation is open.")?;
+            st.doc
+                .set_file(&p.to_string_lossy())
+                .map_err(|e| e.to_string())?;
+            st.path = p.to_path_buf();
+            st.untitled = false;
+            self.title = p
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        }
+        self.save_animation()
     }
 
     /// Saves the animation's `.can3` (edited curves in place), atomically.
@@ -330,7 +418,93 @@ const ROW_H: f32 = 18.0;
 
 /// The timeline: scene, transport, ruler with work area and playhead, and
 /// one row of keys per attribute. spec: palettes.md §7
+/// A structural change chosen in the timeline header.
+enum SceneOp {
+    Add,
+    Rename(String),
+    Delete,
+    AddTrack,
+}
+
 pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::Tokens) {
+    let mut op = None;
+    if let Some(st) = doc.anim.as_mut() {
+        ui.horizontal(|ui| {
+            ui.menu_button("Scene", |ui| {
+                if ui.button("Create new scene").clicked() {
+                    op = Some(SceneOp::Add);
+                    ui.close();
+                }
+                if ui.button("Rename…").clicked() {
+                    st.rename = st.scene().map(|s| s.name.clone());
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        st.doc.animation.scenes.len() > 1,
+                        egui::Button::new("Delete scene"),
+                    )
+                    .clicked()
+                {
+                    op = Some(SceneOp::Delete);
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Add model track").clicked() {
+                    op = Some(SceneOp::AddTrack);
+                    ui.close();
+                }
+            });
+            if let Some(name) = st.rename.as_mut() {
+                let r = ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
+                if ui.button("OK").clicked()
+                    || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                {
+                    op = Some(SceneOp::Rename(name.clone()));
+                }
+                if ui.button("Cancel").clicked() {
+                    st.rename = None;
+                }
+            }
+        });
+    }
+    if let Some(op) = op {
+        let scene = doc.anim.as_ref().map_or(0, |a| a.scene);
+        let frames = doc
+            .anim
+            .as_ref()
+            .and_then(|a| a.scene())
+            .map_or(120, |s| s.duration);
+        let fps = doc
+            .anim
+            .as_ref()
+            .and_then(|a| a.scene())
+            .map_or(30.0, |s| s.fps);
+        let n = doc
+            .anim
+            .as_ref()
+            .map_or(0, |a| a.doc.animation.scenes.len());
+        let r = match op {
+            SceneOp::Add => doc.anim_structure(|d, m| {
+                d.add_scene(&format!("Scene{}", n + 1), m, frames, fps)
+                    .map(|_| ())
+            }),
+            SceneOp::Rename(name) => doc.anim_structure(|d, _| d.rename_scene(scene, &name)),
+            SceneOp::Delete => doc.anim_structure(|d, _| d.delete_scene(scene)),
+            SceneOp::AddTrack => doc.anim_structure(|d, m| d.add_model_track(scene, m, &m.name)),
+        };
+        match r {
+            Ok(()) => {
+                if let Some(a) = doc.anim.as_mut() {
+                    a.rename = None;
+                    if matches!(a.doc.animation.scenes.len(), k if k > n) {
+                        a.scene = a.doc.animation.scenes.len() - 1;
+                    }
+                }
+            }
+            Err(e) => doc.notice = Some(e),
+        }
+    }
     let Some(st) = doc.anim.as_mut() else { return };
     ui.horizontal(|ui| {
         let names: Vec<String> = st
@@ -815,6 +989,45 @@ mod tests {
         // Motion export writes the scenes marked for export.
         let out = doc.export_motions(&dir).unwrap();
         assert_eq!(out.len(), 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// File ▸ New ▸ Animation on hiyori: one scene, a scene added, saved
+    /// under a chosen path, reopened.
+    #[test]
+    fn new_animation_save_reopen() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let model = root.join("hiyori_pro_t11.cmo3");
+        if !model.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        assert_eq!(doc.mode, Mode::Animation);
+        assert!(doc.is_modified());
+        let a = doc.anim.as_ref().unwrap();
+        assert!(a.untitled);
+        assert_eq!(a.doc.animation.scenes.len(), 1);
+        doc.anim_structure(|d, m| d.add_scene("Two", m, 60, 30.0).map(|_| ()))
+            .unwrap();
+        doc.tick(0.0, &Default::default(), &mut log);
+        let dir = std::env::temp_dir().join(format!("kf-newanim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("made.can3");
+        doc.save_animation_to(Some(&out)).unwrap();
+        assert!(!doc.is_modified());
+        let back = Document::open_animation(&out, &mut log).unwrap();
+        let names: Vec<_> = back
+            .anim
+            .as_ref()
+            .unwrap()
+            .doc
+            .animation
+            .scenes
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Scene1".to_string(), "Two".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

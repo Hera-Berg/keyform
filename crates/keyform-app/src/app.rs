@@ -348,21 +348,26 @@ impl KeyformApp {
         };
         match opened {
             Ok(doc) => {
-                let uid = self.next_uid;
-                self.next_uid += 1;
-                self.slots.push(Slot {
-                    uid,
-                    doc,
-                    gpu: ViewGpu::default(),
-                });
-                self.add_view_tab(Tab::View(uid));
-                self.activate(self.slots.len() - 1);
+                self.add_slot(doc);
                 self.recent.retain(|p| p != path);
                 self.recent.insert(0, path.to_path_buf());
                 self.recent.truncate(10);
             }
             Err(e) => self.log.error(e),
         }
+    }
+
+    /// Shows a document in a new view and activates it.
+    fn add_slot(&mut self, doc: Document) {
+        let uid = self.next_uid;
+        self.next_uid += 1;
+        self.slots.push(Slot {
+            uid,
+            doc,
+            gpu: ViewGpu::default(),
+        });
+        self.add_view_tab(Tab::View(uid));
+        self.activate(self.slots.len() - 1);
     }
 
     fn add_view_tab(&mut self, tab: Tab) {
@@ -548,6 +553,19 @@ impl KeyformApp {
                     {
                         self.new_model.open = true;
                         ui.close();
+                    }
+                    if ui.button("Animation…").clicked() {
+                        ui.close();
+                        if let Some(m) = rfd::FileDialog::new()
+                            .set_title("Model for the new animation")
+                            .add_filter("Model project (*.cmo3)", &["cmo3"])
+                            .pick_file()
+                        {
+                            match Document::new_animation(&m, &mut self.log) {
+                                Ok(doc) => self.add_slot(doc),
+                                Err(e) => self.log.error(e),
+                            }
+                        }
                     }
                 });
                 if ui
@@ -1402,9 +1420,34 @@ impl KeyformApp {
         let Some(s) = self.slots.get_mut(i) else {
             return false;
         };
-        // An animation saves its .can3 (the model is saved from Modeling).
+        // An animation saves its .can3 (the model is saved from Modeling);
+        // a new one asks where first.
         if s.doc.anim.as_ref().is_some_and(|a| a.dirty) {
-            match s.doc.save_animation() {
+            let to = if s.doc.anim.as_ref().is_some_and(|a| a.untitled) {
+                let st = s.doc.anim.as_ref().expect("anim");
+                let dir = st
+                    .path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                let name = st
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match rfd::FileDialog::new()
+                    .set_directory(dir)
+                    .set_file_name(name)
+                    .add_filter("Animation (*.can3)", &["can3"])
+                    .save_file()
+                {
+                    Some(p) => Some(p),
+                    None => return false,
+                }
+            } else {
+                None
+            };
+            match s.doc.save_animation_to(to.as_deref()) {
                 Ok(p) => self.log.info(format!("saved {}", p.display())),
                 Err(e) => {
                     self.log.error(format!("save failed: {e}"));

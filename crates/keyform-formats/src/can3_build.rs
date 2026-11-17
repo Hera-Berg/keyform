@@ -1253,3 +1253,156 @@ pub fn rename_scene_xml(xml: &mut XmlDocument, index: usize, name: &str) -> Resu
     }
     Ok(())
 }
+
+/// The shared index of scene `index` (by the animation's `_scenes`).
+fn scene_obj(xml: &XmlDocument, index: usize) -> Result<(usize, usize)> {
+    let (sh, k) = animation_obj(xml).ok_or_else(|| FormatError::Invalid("no CAnimation".into()))?;
+    let id = xml.root.children[sh].children[k]
+        .children
+        .iter()
+        .find(|c| c.field_name() == Some("_scenes"))
+        .and_then(|l| l.children.get(index))
+        .and_then(|e| e.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid(format!("no scene {index}")))?;
+    let j = xml.root.children[sh]
+        .children
+        .iter()
+        .position(|c| c.attr("xs.id") == Some(id.as_str()))
+        .ok_or_else(|| FormatError::Invalid("scene not found".into()))?;
+    Ok((sh, j))
+}
+
+fn field_ref(e: &Element, name: &str) -> Option<String> {
+    let mut st = vec![e];
+    while let Some(x) = st.pop() {
+        if x.field_name() == Some(name) {
+            if let Some(r) = x.attr("xs.ref") {
+                return Some(r.to_owned());
+            }
+        }
+        // Don't descend into other shared objects' content (refs only).
+        st.extend(x.children.iter());
+    }
+    None
+}
+
+/// Adds a model track for `model` (the first linked model resource) to
+/// scene `index`, under its root group.
+pub fn add_model_track_xml(
+    xml: &mut XmlDocument,
+    index: usize,
+    model: &Model,
+    name: &str,
+) -> Result<()> {
+    let res = first_resource(xml)
+        .ok_or_else(|| FormatError::Unsupported("the animation links no model".into()))?;
+    let (sh, j) = scene_obj(xml, index)?;
+    let scene_el = &xml.root.children[sh].children[j];
+    let scene_id = scene_el.attr("xs.id").unwrap_or_default().to_owned();
+    let root = field_ref(scene_el, "rootTrack")
+        .ok_or_else(|| FormatError::Invalid("scene without root track".into()))?;
+    let frames = scene_el
+        .child_field("movieInfo")
+        .and_then(|m| m.child_field("duration"))
+        .and_then(|d| d.text.trim().parse().ok())
+        .unwrap_or(60);
+    let size = scene_el
+        .child_field("canvas")
+        .map(|c| {
+            let n = |k: &str| {
+                c.child_field(k)
+                    .and_then(|x| x.text.trim().parse().ok())
+                    .unwrap_or(640)
+            };
+            (n("pixelWidth"), n("pixelHeight"))
+        })
+        .unwrap_or((640, 640));
+    let root_el = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(root.as_str()))
+        .ok_or_else(|| FormatError::Invalid("root track not found".into()))?;
+    let root_guid = field_ref(root_el.child_field("super").unwrap_or(root_el), "guid")
+        .ok_or_else(|| FormatError::Invalid("root track without guid".into()))?;
+    let mut g = Graph::on(xml)?;
+    let c = common(&mut g);
+    let (track, tg) = model_track(
+        &mut g, &c, model, name, &scene_id, &root_guid, &res, frames, size,
+    );
+    let sh = shared(xml).expect("shared");
+    for e in xml.root.children[sh].children.iter_mut() {
+        if e.attr("xs.id") == Some(scene_id.as_str()) {
+            if let Some(l) = e
+                .child_field_mut("trackSourceSet")
+                .and_then(|t| t.child_field_mut("_sources"))
+            {
+                l.children.push(item("CMvTrack_Live2DModel_Source", &track));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+        if e.attr("xs.id") == Some(root.as_str()) {
+            if let Some(l) = e.child_field_mut("_childTrackGuids") {
+                l.children.push(item("CTrackGuid", &tg));
+                l.set_attr("count", l.children.len().to_string());
+            }
+        }
+    }
+    fix_markers(xml);
+    Ok(())
+}
+
+/// Removes track `t` (not the root group) of scene `index` from the
+/// scene's sources and its parent group's children.
+pub fn delete_track_xml(xml: &mut XmlDocument, index: usize, t: usize) -> Result<()> {
+    let (sh, j) = scene_obj(xml, index)?;
+    let scene_el = &mut xml.root.children[sh].children[j];
+    let root = field_ref(scene_el, "rootTrack");
+    let l = scene_el
+        .child_field_mut("trackSourceSet")
+        .and_then(|x| x.child_field_mut("_sources"))
+        .ok_or_else(|| FormatError::Invalid("scene without tracks".into()))?;
+    let id = l
+        .children
+        .get(t)
+        .and_then(|e| e.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid(format!("no track {t}")))?;
+    if Some(&id) == root.as_ref() {
+        return Err(FormatError::Unsupported(
+            "the root group can't be deleted".into(),
+        ));
+    }
+    l.children.remove(t);
+    l.set_attr("count", l.children.len().to_string());
+    // The track's GUID object, removed from every group's children.
+    let guid = xml.root.children[sh]
+        .children
+        .iter()
+        .find(|c| c.attr("xs.id") == Some(id.as_str()))
+        .and_then(|e| {
+            let mut st = vec![e];
+            while let Some(x) = st.pop() {
+                if x.name == "ICMvTrack_Source" {
+                    return x
+                        .child_field("guid")
+                        .and_then(|g| g.attr("xs.ref"))
+                        .map(str::to_owned);
+                }
+                st.extend(x.children.iter());
+            }
+            None
+        });
+    if let Some(g) = guid {
+        for e in xml.root.children[sh].children.iter_mut() {
+            if let Some(l) = e.child_field_mut("_childTrackGuids") {
+                let n = l.children.len();
+                l.children.retain(|c| c.attr("xs.ref") != Some(g.as_str()));
+                if l.children.len() != n {
+                    l.set_attr("count", l.children.len().to_string());
+                }
+            }
+        }
+    }
+    Ok(())
+}

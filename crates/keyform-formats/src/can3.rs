@@ -176,6 +176,62 @@ impl Can3Document {
         self.reload()
     }
 
+    /// Adds a model track for `model` (the linked model) to scene `index`.
+    pub fn add_model_track(
+        &mut self,
+        index: usize,
+        model: &keyform_model::Model,
+        name: &str,
+    ) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::add_model_track_xml(&mut self.xml, index, model, name)?;
+        self.reload()
+    }
+
+    /// Deletes track `t` of scene `index` (not the root group).
+    pub fn delete_track(&mut self, index: usize, t: usize) -> Result<()> {
+        self.sync()?;
+        crate::can3_build::delete_track_xml(&mut self.xml, index, t)?;
+        self.reload()
+    }
+
+    /// Sets the document's own stored path (`CAnimation.file`, which the
+    /// linked models' paths are resolved against).
+    pub fn set_file(&mut self, path: &str) -> Result<()> {
+        self.sync()?;
+        let main = self
+            .xml
+            .root
+            .children
+            .iter()
+            .find(|c| c.name == "main")
+            .and_then(|m| m.children.first())
+            .and_then(|c| c.attr("xs.ref"))
+            .map(str::to_owned)
+            .ok_or_else(|| FormatError::Invalid("no CAnimation".into()))?;
+        let sh = self
+            .xml
+            .root
+            .children
+            .iter_mut()
+            .find(|c| c.name == "shared")
+            .ok_or_else(|| FormatError::Invalid("no <shared>".into()))?;
+        let a = sh
+            .children
+            .iter_mut()
+            .find(|c| c.attr("xs.id") == Some(main.as_str()))
+            .ok_or_else(|| FormatError::Invalid("no CAnimation".into()))?;
+        match a.child_field_mut("file") {
+            Some(f) => f.text = path.to_owned(),
+            None => {
+                return Err(FormatError::Unsupported(
+                    "the animation has no file field".into(),
+                ))
+            }
+        }
+        Ok(())
+    }
+
     pub fn rename_scene(&mut self, index: usize, name: &str) -> Result<()> {
         self.sync()?;
         crate::can3_build::rename_scene_xml(&mut self.xml, index, name)?;

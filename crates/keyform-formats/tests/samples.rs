@@ -3246,6 +3246,16 @@ fn can3_structure() {
     assert_eq!(names.len(), n0);
     assert_eq!(names[0], "First");
     assert_eq!(names.last().unwrap(), "Added");
+    // A second model track, then deleting the first one.
+    let last = doc.animation.scenes.len() - 1;
+    doc.add_model_track(last, &model, "Second").unwrap();
+    let s = &doc.animation.scenes[last];
+    assert_eq!(s.tracks.len(), 3);
+    assert_eq!(s.tracks[2].name, "Second");
+    assert_eq!(s.tracks[2].parent, Some(0));
+    doc.delete_track(last, 1).unwrap();
+    assert_eq!(doc.animation.scenes[last].tracks.len(), 2);
+    assert!(doc.delete_track(last, 0).is_err(), "root group");
     let edited = doc.animation.clone();
     let bytes = doc.save_bytes().unwrap();
     let back = Can3Document::read(&bytes).unwrap();
