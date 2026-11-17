@@ -1418,9 +1418,13 @@ impl Document {
             .as_ref()
             .map(|p| (p.mesh, p.finished_graph().0, p.graph_changed()));
         let (glue_add, glue_remove) = (s.glue_add.clone(), s.glue_remove.clone());
+        let values = self.values.clone();
         let t = self.try_edit("Mesh Edit", |m| {
+            // Deform paths on (or driving) the mesh are re-anchored and
+            // rebound (deform-paths.md §1 "Topology observers").
             let t = if changed_self || generator.is_some() || partner.is_none() {
-                keyform_edit::mesh::set_mesh(m, a, &graph).map_err(|e| e.to_string())?
+                keyform_edit::deform_path::set_mesh_keep_paths(m, &values, a, &graph)
+                    .map_err(|e| e.to_string())?
             } else {
                 Default::default()
             };
@@ -1429,7 +1433,8 @@ impl Document {
             }
             if let Some((b, pg, pchanged)) = &partner {
                 if *pchanged {
-                    keyform_edit::mesh::set_mesh(m, *b, pg).map_err(|e| e.to_string())?;
+                    keyform_edit::deform_path::set_mesh_keep_paths(m, &values, *b, pg)
+                        .map_err(|e| e.to_string())?;
                 }
                 // Glue pairs by vertex UID (glue.md "Bind / unbind").
                 let idx = |m: &keyform_model::Model, x: usize, uid: i64| {

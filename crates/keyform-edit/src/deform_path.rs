@@ -596,6 +596,523 @@ pub fn deform(path: &DeformPath, before: &[V2], after: &[V2], p0: &[V2]) -> Vec<
         .collect()
 }
 
+// ------------------------------------------------------ path structure edits
+// spec: deform-paths.md §5
+
+/// Whether points `a` and `b` can be joined: neither on a curve, or each a
+/// free end of an open curve (on different curves, or the two ends of the
+/// same curve with more than 2 points, which closes it).
+pub fn can_join(p: &DeformPath, a: usize, b: usize) -> bool {
+    if a == b || a >= p.points.len() || b >= p.points.len() {
+        return false;
+    }
+    let end = |k: usize| -> Option<Option<usize>> {
+        match p.points[k].curve {
+            None => Some(None),
+            Some(c) => {
+                let cv = p.curves.get(c)?;
+                (cv.open && (cv.points.first() == Some(&k) || cv.points.last() == Some(&k)))
+                    .then_some(Some(c))
+            }
+        }
+    };
+    match (end(a), end(b)) {
+        (Some(Some(c)), Some(Some(d))) if c == d => p.curves[c].points.len() > 2,
+        (Some(_), Some(_)) => true,
+        _ => false,
+    }
+}
+
+/// Joins `a` and `b` (see [`can_join`]); returns whether anything changed.
+pub fn join(
+    p: &mut DeformPath,
+    a: usize,
+    b: usize,
+    new_curve_guid: impl FnOnce() -> String,
+) -> bool {
+    if !can_join(p, a, b) {
+        return false;
+    }
+    match (p.points[a].curve, p.points[b].curve) {
+        (None, None) => {
+            let c = p.curves.len();
+            p.curves
+                .push(ControlCurve::new(new_curve_guid(), vec![a, b]));
+            p.points[a].curve = Some(c);
+            p.points[b].curve = Some(c);
+        }
+        (Some(c), None) | (None, Some(c)) => {
+            let (free, on) = if p.points[a].curve.is_none() {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let cv = &mut p.curves[c];
+            if cv.points.last() == Some(&on) {
+                cv.points.push(free);
+            } else {
+                cv.points.insert(0, free);
+            }
+            p.points[free].curve = Some(c);
+        }
+        (Some(c), Some(d)) if c == d => p.curves[c].open = false,
+        (Some(c), Some(d)) => {
+            // Merge d into c at the touching ends.
+            let mut first = p.curves[c].points.clone();
+            let mut second = p.curves[d].points.clone();
+            if first.first() == Some(&a) {
+                first.reverse();
+            }
+            if second.last() == Some(&b) {
+                second.reverse();
+            }
+            first.extend(second);
+            p.curves[c].points = first;
+            remove_curve(p, d);
+            for &k in &p.curves[if d < c { c - 1 } else { c }].points.clone() {
+                p.points[k].curve = Some(if d < c { c - 1 } else { c });
+            }
+        }
+    }
+    true
+}
+
+/// Removes curve `c`; its points become free, later curves shift down.
+pub fn remove_curve(p: &mut DeformPath, c: usize) {
+    if c >= p.curves.len() {
+        return;
+    }
+    p.curves.remove(c);
+    for q in &mut p.points {
+        q.curve = match q.curve {
+            Some(x) if x == c => None,
+            Some(x) if x > c => Some(x - 1),
+            x => x,
+        };
+    }
+    for t in &mut p.targets {
+        t.effects.retain_mut(|e| match &mut e.effector {
+            Effector::Curve { curve, .. } if *curve == c => false,
+            Effector::Curve { curve, .. } => {
+                if *curve > c {
+                    *curve -= 1;
+                }
+                true
+            }
+            _ => true,
+        });
+    }
+}
+
+/// Curves with fewer than 2 points are deleted; closed curves with 2
+/// points reopen.
+fn tidy_curves(p: &mut DeformPath) {
+    let mut c = 0;
+    while c < p.curves.len() {
+        if p.curves[c].points.len() < 2 {
+            remove_curve(p, c);
+            continue;
+        }
+        if p.curves[c].points.len() == 2 {
+            p.curves[c].open = true;
+        }
+        c += 1;
+    }
+    for (ci, cv) in p.curves.iter().enumerate() {
+        for &k in &cv.points {
+            if let Some(q) = p.points.get_mut(k) {
+                q.curve = Some(ci);
+            }
+        }
+    }
+}
+
+/// Inserts a point (already pushed as index `k`, free) into curve `c` at
+/// parameter `t`, inside segment ⌊t⌋. spec: §5 ("after index ⌈t⌉" read as
+/// the list position ⌈t⌉)
+pub fn insert_on_curve(p: &mut DeformPath, c: usize, t: f32, k: usize) {
+    let Some(cv) = p.curves.get_mut(c) else {
+        return;
+    };
+    // List position ⌈t⌉ (= ⌊t⌋ + 1 inside a segment): between the
+    // segment's two points; after the last point of a closed curve.
+    let at = (t.max(0.0).floor() as usize + 1).min(cv.points.len());
+    cv.points.insert(at, k);
+    p.points[k].curve = Some(c);
+}
+
+/// Deletes control point `k`. Returns whether the path has no points left.
+pub fn delete_point(p: &mut DeformPath, k: usize) -> bool {
+    if k >= p.points.len() {
+        return p.points.is_empty();
+    }
+    p.points.remove(k);
+    for cv in &mut p.curves {
+        cv.points.retain(|&x| x != k);
+        for x in &mut cv.points {
+            if *x > k {
+                *x -= 1;
+            }
+        }
+    }
+    for t in &mut p.targets {
+        t.effects.retain_mut(|e| match &mut e.effector {
+            Effector::Point(j) if *j == k => false,
+            Effector::Point(j) => {
+                if *j > k {
+                    *j -= 1;
+                }
+                true
+            }
+            _ => true,
+        });
+    }
+    tidy_curves(p);
+    p.points.is_empty()
+}
+
+/// Deletes the segment of curve `c` starting at index `seg`. spec: §5
+/// "Delete edge"
+pub fn delete_edge(
+    p: &mut DeformPath,
+    c: usize,
+    seg: usize,
+    new_curve_guid: impl FnOnce() -> String,
+) {
+    let Some(cv) = p.curves.get(c).cloned() else {
+        return;
+    };
+    let n = cv.points.len();
+    if !cv.open {
+        // Open it so the removed segment becomes the gap.
+        let s = seg % n;
+        let pts: Vec<usize> = (0..n).map(|i| cv.points[(s + 1 + i) % n]).collect();
+        p.curves[c].points = pts;
+        p.curves[c].open = true;
+    } else if seg + 1 >= n {
+        return;
+    } else if seg == 0 {
+        let k = p.curves[c].points.remove(0);
+        p.points[k].curve = None;
+    } else if seg + 2 == n {
+        if let Some(k) = p.curves[c].points.pop() {
+            p.points[k].curve = None;
+        }
+    } else {
+        let tail = p.curves[c].points.split_off(seg + 1);
+        let mut nc = ControlCurve::new(new_curve_guid(), tail);
+        nc.width = cv.width;
+        nc.hardness = cv.hardness;
+        p.curves.push(nc);
+    }
+    tidy_curves(p);
+}
+
+// ------------------------------------------------------------ on a model
+
+use keyform_eval::{DeformerMap, Frame};
+use keyform_model::Model;
+
+use crate::forms::{current_cell, parent_deformer, FormError};
+use crate::ObjectRef;
+
+/// Canvas positions of mesh `i` in `frame`.
+fn canvas(frame: &Frame, i: usize) -> Option<&[f32]> {
+    frame.meshes.get(i).map(|s| &s.positions[..])
+}
+
+/// Current canvas positions of path `pi` of mesh `mi`'s control points:
+/// anchored on the main mesh, else the stored bind position.
+pub fn point_positions(m: &Model, frame: &Frame, mi: usize, pi: usize) -> Vec<V2> {
+    let Some(p) = m.art_meshes.get(mi).and_then(|a| a.paths.get(pi)) else {
+        return Vec::new();
+    };
+    let pos = canvas(frame, mi).unwrap_or(&[]);
+    p.points
+        .iter()
+        .map(|c| anchored(&c.anchor, pos).unwrap_or(c.pos_default))
+        .collect()
+}
+
+/// The vertices bound by a path of mesh `mi`: all of the main mesh's, then
+/// each sub mesh's. spec: §2
+fn target_vertices(
+    m: &Model,
+    frame: &Frame,
+    values: &[f32],
+    mi: usize,
+    subs: &[String],
+) -> Vec<BindVertex> {
+    let mut meshes = vec![mi];
+    for g in subs {
+        if let Some(k) = m.art_meshes.iter().position(|a| &a.info.guid == g) {
+            if k != mi && !meshes.contains(&k) {
+                meshes.push(k);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for k in meshes {
+        let a = &m.art_meshes[k];
+        let Some(pos) = canvas(frame, k) else {
+            continue;
+        };
+        let form = current_cell(m, ObjectRef::ArtMesh(k), values)
+            .ok()
+            .and_then(|c| a.grid.guids.get(c).cloned())
+            .unwrap_or_default();
+        for v in 0..a.vertex_count() {
+            let Some(q) = pos.get(2 * v..2 * v + 2) else {
+                continue;
+            };
+            let uid = a.point_uids.get(v).copied().unwrap_or(v as i64);
+            out.push((a.info.guid.clone(), uid, v, form.clone(), [q[0], q[1]]));
+        }
+    }
+    out
+}
+
+/// Resets the target points of path `pi` of mesh `mi` and binds them in
+/// the state of `frame`. spec: §2, §3
+pub fn rebind(m: &mut Model, frame: &Frame, values: &[f32], mi: usize, pi: usize) {
+    let pts = point_positions(m, frame, mi, pi);
+    let Some(subs) = m
+        .art_meshes
+        .get(mi)
+        .and_then(|a| a.paths.get(pi))
+        .map(|p| p.sub_meshes.clone())
+    else {
+        return;
+    };
+    let verts = target_vertices(m, frame, values, mi, &subs);
+    let a = std::sync::Arc::make_mut(&mut m.art_meshes[mi]);
+    bind(&mut a.paths[pi], &pts, &verts);
+}
+
+/// Anchors control point `k` of path `pi` of mesh `mi` at canvas `at`,
+/// in the main mesh's state in `frame`. spec: §1 "Anchoring"
+pub fn reanchor(m: &mut Model, frame: &Frame, mi: usize, pi: usize, k: usize, at: V2) {
+    let Some(pos) = canvas(frame, mi).map(<[f32]>::to_vec) else {
+        return;
+    };
+    let a = std::sync::Arc::make_mut(&mut m.art_meshes[mi]);
+    let an = anchor(&pos, &a.indices, at);
+    if let Some(c) = a.paths.get_mut(pi).and_then(|p| p.points.get_mut(k)) {
+        c.anchor = an;
+        c.recovery = at;
+    }
+}
+
+/// One mesh a drag writes: its index, keyform cell and parent map.
+#[derive(Clone, Debug)]
+struct DragMesh {
+    mesh: usize,
+    cell: usize,
+    parent: Option<DeformerMap>,
+}
+
+/// A drag of control points (§4), set up at press.
+#[derive(Clone, Debug)]
+pub struct PathDrag {
+    pub mesh: usize,
+    pub path: usize,
+    /// Dragged control points.
+    pub selected: Vec<usize>,
+    /// Control point positions at press.
+    pub before: Vec<V2>,
+    /// Points locked at their canvas position (total effect < 0.5).
+    pub locked: Vec<bool>,
+    /// Target vertices' positions at press (target order).
+    p0: Vec<V2>,
+    /// Per target: (index into `meshes`, vertex index).
+    at: Vec<Option<(usize, usize)>>,
+    meshes: Vec<DragMesh>,
+}
+
+impl PathDrag {
+    /// Sets up a drag of `selected` points of path `pi` of mesh `mi` in the
+    /// state of `frame`. Fails when a target mesh isn't on a keyform.
+    pub fn begin(
+        m: &Model,
+        frame: &Frame,
+        values: &[f32],
+        mi: usize,
+        pi: usize,
+        selected: Vec<usize>,
+    ) -> Result<Self, FormError> {
+        let a = m.art_meshes.get(mi).ok_or(FormError::Missing)?;
+        let p = a.paths.get(pi).ok_or(FormError::Missing)?;
+        let before = point_positions(m, frame, mi, pi);
+        let totals = total_effects(p, &a.info.guid);
+        let locked = totals.iter().map(|&t| t < 0.5).collect();
+        let mut meshes: Vec<DragMesh> = Vec::new();
+        let mut p0 = Vec::with_capacity(p.targets.len());
+        let mut at = Vec::with_capacity(p.targets.len());
+        for t in &p.targets {
+            let found = m
+                .art_meshes
+                .iter()
+                .position(|x| x.info.guid == t.mesh)
+                .and_then(|k| {
+                    let v = m.art_meshes[k].vertex_of_uid(t.uid)?;
+                    Some((k, v))
+                });
+            let Some((k, v)) = found else {
+                p0.push([0.0, 0.0]);
+                at.push(None);
+                continue;
+            };
+            let slot = match meshes.iter().position(|d| d.mesh == k) {
+                Some(s) => s,
+                None => {
+                    let cell = current_cell(m, ObjectRef::ArtMesh(k), values)?;
+                    let parent = parent_deformer(m, ObjectRef::ArtMesh(k))
+                        .and_then(|d| frame.deformers.get(d))
+                        .and_then(|s| s.map.clone());
+                    meshes.push(DragMesh {
+                        mesh: k,
+                        cell,
+                        parent,
+                    });
+                    meshes.len() - 1
+                }
+            };
+            let pos = canvas(frame, k).unwrap_or(&[]);
+            p0.push(
+                pos.get(2 * v..2 * v + 2)
+                    .map_or([0.0, 0.0], |q| [q[0], q[1]]),
+            );
+            at.push(Some((slot, v)));
+        }
+        Ok(Self {
+            mesh: mi,
+            path: pi,
+            selected,
+            before,
+            locked,
+            p0,
+            at,
+            meshes,
+        })
+    }
+
+    /// Control point positions with the selected points moved by `delta`.
+    pub fn after(&self, delta: V2) -> Vec<V2> {
+        let mut out = self.before.clone();
+        for &k in &self.selected {
+            if let Some(q) = out.get_mut(k) {
+                *q = add(*q, delta);
+            }
+        }
+        out
+    }
+
+    /// Applies the drag by canvas `delta` to `m` (the model at press):
+    /// each target vertex moves to its deformed position in its mesh's
+    /// current keyform. spec: §4 "On drag"
+    pub fn apply(&self, m: &mut Model, delta: V2) -> Result<(), FormError> {
+        let Some(p) = m
+            .art_meshes
+            .get(self.mesh)
+            .and_then(|a| a.paths.get(self.path))
+        else {
+            return Err(FormError::Missing);
+        };
+        let after = self.after(delta);
+        let moved = deform(p, &self.before, &after, &self.p0);
+        for (slot, d) in self.meshes.iter().enumerate() {
+            let a = std::sync::Arc::make_mut(&mut m.art_meshes[d.mesh]);
+            let f = a.grid.keyforms.get_mut(d.cell).ok_or(FormError::Missing)?;
+            for (t, at) in self.at.iter().enumerate() {
+                let Some((s, v)) = *at else { continue };
+                if s != slot || 2 * v + 1 >= f.positions.len() {
+                    continue;
+                }
+                let dl = sub(moved[t], self.p0[t]);
+                if dl == [0.0, 0.0] {
+                    continue;
+                }
+                let local = [f.positions[2 * v], f.positions[2 * v + 1]];
+                let q = match &d.parent {
+                    None => add(local, dl),
+                    Some(map) => map
+                        .inverse(add(map.map(local), dl))
+                        .ok_or(FormError::NotInvertible)?,
+                };
+                f.positions[2 * v] = q[0];
+                f.positions[2 * v + 1] = q[1];
+            }
+        }
+        Ok(())
+    }
+
+    /// On release, with `frame` the state after the drag: locked points
+    /// are re-anchored at their positions (dragged or kept), and the total
+    /// effects stored. spec: §4 "On release"
+    pub fn finish(&self, m: &mut Model, frame: &Frame, delta: V2) {
+        let after = self.after(delta);
+        for (k, &l) in self.locked.iter().enumerate() {
+            if l {
+                reanchor(m, frame, self.mesh, self.path, k, after[k]);
+            }
+        }
+        let a = std::sync::Arc::make_mut(&mut m.art_meshes[self.mesh]);
+        let guid = a.info.guid.clone();
+        if let Some(p) = a.paths.get_mut(self.path) {
+            let totals = total_effects(p, &guid);
+            for (c, t) in p.points.iter_mut().zip(totals) {
+                c.total_effect = t;
+            }
+        }
+    }
+}
+
+/// Replaces mesh `i`'s topology ([`crate::mesh::set_mesh`]) keeping its
+/// deform paths: control points are held at their canvas positions,
+/// re-anchored on the new mesh, and every path driving it is rebound, in
+/// the state at `values`. spec: deform-paths.md §1 "Topology observers"
+pub fn set_mesh_keep_paths(
+    m: &mut Model,
+    values: &[f32],
+    i: usize,
+    g: &crate::mesh::MeshGraph,
+) -> Result<crate::mesh::Triangulated, crate::mesh::MeshError> {
+    let guid = m
+        .art_meshes
+        .get(i)
+        .map(|a| a.info.guid.clone())
+        .unwrap_or_default();
+    // Paths that drive mesh i: its own, and those listing it as a sub mesh.
+    let mut driving: Vec<(usize, usize)> = Vec::new();
+    for (k, a) in m.art_meshes.iter().enumerate() {
+        for (pi, p) in a.paths.iter().enumerate() {
+            if k == i || p.sub_meshes.contains(&guid) {
+                driving.push((k, pi));
+            }
+        }
+    }
+    if driving.is_empty() {
+        return crate::mesh::set_mesh(m, i, g);
+    }
+    let ev = |m: &Model| keyform_eval::Evaluator::new(m).evaluate(values);
+    let f0 = ev(m);
+    let held: Vec<Vec<V2>> = driving
+        .iter()
+        .map(|&(k, pi)| point_positions(m, &f0, k, pi))
+        .collect();
+    let t = crate::mesh::set_mesh(m, i, g)?;
+    let f1 = ev(m);
+    for (&(k, pi), pts) in driving.iter().zip(&held) {
+        if k == i {
+            for (c, &q) in pts.iter().enumerate() {
+                reanchor(m, &f1, k, pi, c, q);
+            }
+        }
+        rebind(m, &f1, values, k, pi);
+    }
+    Ok(t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,5 +1200,89 @@ mod tests {
         let after = [[0.0, 5.0], [10.0, 5.0], [20.0, 5.0]];
         let out = deform(&path, &pts, &after, &[[10.0, 3.0]]);
         assert!((out[0][1] - 8.0).abs() < 1e-3, "{out:?}");
+    }
+
+    fn path_with(n: usize) -> DeformPath {
+        let mut p = DeformPath::new(String::new(), 2);
+        p.points = (0..n).map(|_| cp(None)).collect();
+        p
+    }
+
+    #[test]
+    fn joining() {
+        let g = || "c".to_string();
+        let mut p = path_with(5);
+        assert!(join(&mut p, 0, 1, g));
+        assert_eq!(p.curves[0].points, vec![0, 1]);
+        // A free point joins an end.
+        assert!(join(&mut p, 1, 2, g));
+        assert!(join(&mut p, 3, 0, g));
+        assert_eq!(p.curves[0].points, vec![3, 0, 1, 2]);
+        // A middle point can't be joined.
+        assert!(!can_join(&p, 0, 4));
+        // Two curves merge at their touching ends.
+        let mut q = path_with(4);
+        join(&mut q, 0, 1, g);
+        join(&mut q, 2, 3, g);
+        assert!(join(&mut q, 0, 2, g));
+        assert_eq!(q.curves.len(), 1);
+        assert_eq!(q.curves[0].points, vec![1, 0, 2, 3]);
+        assert!(q.points.iter().all(|c| c.curve == Some(0)));
+        // The ends of one curve with more than 2 points close it.
+        assert!(join(&mut q, 1, 3, g));
+        assert!(!q.curves[0].open);
+        let mut r = path_with(2);
+        join(&mut r, 0, 1, g);
+        assert!(!can_join(&r, 0, 1));
+    }
+
+    #[test]
+    fn deleting() {
+        let g = || "c".to_string();
+        let mut p = path_with(3);
+        join(&mut p, 0, 1, g);
+        join(&mut p, 1, 2, g);
+        assert!(!delete_point(&mut p, 1));
+        assert_eq!(p.curves[0].points, vec![0, 1]);
+        assert!(!delete_point(&mut p, 0));
+        assert!(p.curves.is_empty() && p.points[0].curve.is_none());
+        assert!(delete_point(&mut p, 0));
+        // A closed curve left with 2 points reopens.
+        let mut q = path_with(3);
+        join(&mut q, 0, 1, g);
+        join(&mut q, 1, 2, g);
+        join(&mut q, 2, 0, g);
+        assert!(!q.curves[0].open);
+        delete_point(&mut q, 2);
+        assert!(q.curves[0].open);
+        // Delete edge: split in the middle, drop an end, open a loop.
+        let mut r = path_with(4);
+        for k in 0..3 {
+            join(&mut r, k, k + 1, g);
+        }
+        delete_edge(&mut r, 0, 1, g);
+        assert_eq!(r.curves.len(), 2);
+        assert_eq!(
+            (r.curves[0].points.clone(), r.curves[1].points.clone()),
+            (vec![0, 1], vec![2, 3])
+        );
+        assert_eq!(r.points[3].curve, Some(1));
+        delete_edge(&mut r, 1, 0, g);
+        assert_eq!(r.curves.len(), 1);
+        assert!(r.points[2].curve.is_none() && r.points[3].curve.is_none());
+        let mut c = path_with(4);
+        for k in 0..3 {
+            join(&mut c, k, k + 1, g);
+        }
+        join(&mut c, 3, 0, g);
+        delete_edge(&mut c, 0, 3, g);
+        assert!(c.curves[0].open);
+        assert_eq!(c.curves[0].points, vec![0, 1, 2, 3]);
+        delete_edge(&mut c, 0, 0, g);
+        assert_eq!(c.curves[0].points, vec![1, 2, 3]);
+        // Insert inside segment 1.
+        c.points.push(cp(None));
+        insert_on_curve(&mut c, 0, 1.4, 4);
+        assert_eq!(c.curves[0].points, vec![1, 2, 4, 3]);
     }
 }

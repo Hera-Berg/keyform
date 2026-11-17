@@ -2419,3 +2419,92 @@ fn deform_paths_save() {
         );
     }
 }
+
+/// Dragging every control point of a sample path by δ moves each vertex
+/// bound with full weight by δ on the canvas (deform-paths.md §4), and a
+/// mesh edit keeps the paths (§1 "Topology observers").
+#[test]
+fn deform_path_drag_and_mesh_edit() {
+    use keyform_edit::deform_path::{point_positions, set_mesh_keep_paths, PathDrag};
+    use keyform_edit::mesh::MeshGraph;
+    use keyform_eval::Evaluator;
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::Effector;
+    for path in sample_files("cmo3") {
+        let doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m0 = doc.model;
+        let values: Vec<f32> = m0.parameters.iter().map(|p| p.default).collect();
+        let f0 = Evaluator::new(&m0).evaluate(&values);
+        let mut tried = 0;
+        for mi in 0..m0.art_meshes.len() {
+            if m0.art_meshes[mi].paths.is_empty() {
+                continue;
+            }
+            let Ok(drag) = PathDrag::begin(
+                &m0,
+                &f0,
+                &values,
+                mi,
+                0,
+                (0..m0.art_meshes[mi].paths[0].points.len()).collect(),
+            ) else {
+                continue;
+            };
+            let delta = [6.0, -4.0];
+            let mut m = m0.clone();
+            drag.apply(&mut m, delta).unwrap();
+            let f1 = Evaluator::new(&m).evaluate(&values);
+            let p = &m0.art_meshes[mi].paths[0];
+            let mut checked = 0;
+            for t in &p.targets {
+                if !(t.effects.len() == 1 && (t.effects[0].weight - 1.0).abs() < 1e-3) {
+                    continue;
+                }
+                let _ = matches!(t.effects[0].effector, Effector::Curve { .. });
+                let k = m0
+                    .art_meshes
+                    .iter()
+                    .position(|a| a.info.guid == t.mesh)
+                    .unwrap();
+                let v = m0.art_meshes[k].vertex_of_uid(t.uid).unwrap();
+                let (a, b) = (&f0.meshes[k].positions, &f1.meshes[k].positions);
+                let d = [b[2 * v] - a[2 * v], b[2 * v + 1] - a[2 * v + 1]];
+                assert!(
+                    (d[0] - delta[0]).abs() < 0.05 && (d[1] - delta[1]).abs() < 0.05,
+                    "{path:?} mesh {mi} vertex {v}: moved {d:?}"
+                );
+                checked += 1;
+            }
+            assert!(checked > 0);
+            // Release: the stored totals are recomputed.
+            drag.finish(&mut m, &f1, delta);
+            // Mesh edit with the same graph keeps the points where they
+            // were and rebinds every vertex.
+            let before = point_positions(&m0, &f0, mi, 0);
+            let mut m = m0.clone();
+            let g = MeshGraph::of(&m.art_meshes[mi]);
+            set_mesh_keep_paths(&mut m, &values, mi, &g).unwrap();
+            let f2 = Evaluator::new(&m).evaluate(&values);
+            let after = point_positions(&m, &f2, mi, 0);
+            for (x, y) in before.iter().zip(&after) {
+                assert!(
+                    (x[0] - y[0]).abs() < 0.01 && (x[1] - y[1]).abs() < 0.01,
+                    "{x:?} {y:?}"
+                );
+            }
+            let p = &m.art_meshes[mi].paths[0];
+            let subs: usize = p
+                .sub_meshes
+                .iter()
+                .filter_map(|g| m.art_meshes.iter().find(|a| &a.info.guid == g))
+                .map(|a| a.vertex_count())
+                .sum();
+            assert_eq!(p.targets.len(), m.art_meshes[mi].vertex_count() + subs);
+            tried += 1;
+            if tried >= 3 {
+                break;
+            }
+        }
+        eprintln!("{path:?}: {tried} paths dragged");
+    }
+}
