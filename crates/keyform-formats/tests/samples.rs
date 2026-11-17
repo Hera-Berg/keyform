@@ -2701,3 +2701,178 @@ fn can3_smooth_handles() {
         assert_eq!(bad, 0, "{path:?}");
     }
 }
+
+#[test]
+#[ignore]
+fn can3_dump_scene() {
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    let path = std::env::var("CAN3").unwrap();
+    let which: usize = std::env::var("SCENE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let s = &doc.animation.scenes[which];
+    eprintln!(
+        "scene {} duration {} fps {} work {}..{} start {} fades {} {} loop {} restricted {}",
+        s.name,
+        s.duration,
+        s.fps,
+        s.work_start,
+        s.work_end,
+        s.start_frame,
+        s.fade_in_ms,
+        s.fade_out_ms,
+        s.loop_motion,
+        s.bezier_restricted
+    );
+    for t in &s.tracks {
+        eprintln!(
+            "track {} start {} dur {} opacity keys {:?}",
+            t.name,
+            t.start,
+            t.duration,
+            t.opacity.as_ref().map(|a| a.curve.keys.len())
+        );
+        if let TrackKind::Model(m) = &t.kind {
+            for a in m.params.iter().chain(&m.parts) {
+                let k = &a.curve.keys;
+                eprintln!(
+                    "  {} keys {} first {:?} last {:?} base {} shy {} freeze {} fades {} {}",
+                    a.id,
+                    k.len(),
+                    k.first().map(|k| (k.frame, k.value)),
+                    k.last().map(|k| (k.frame, k.value)),
+                    a.curve.base,
+                    a.shy,
+                    a.freeze,
+                    a.fade_in_ms,
+                    a.fade_out_ms
+                );
+            }
+        }
+    }
+}
+
+/// motion3.json export (motion3-json.md §2) of every sample scene equals
+/// the motion the reference exported from it (runtime/motion/<scene>).
+#[test]
+fn can3_motion_export() {
+    use keyform_anim::motion::Motion;
+    use keyform_anim::motion_export::{export_motion, ExportOptions};
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    for path in sample_files("can3") {
+        let dir = path.parent().unwrap().join("runtime/motion");
+        let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let (mut compared, mut differ) = (0, 0);
+        for s in &doc.animation.scenes {
+            let ref_path = dir.join(format!("{}.motion3.json", s.name));
+            let Ok(text) = std::fs::read_to_string(&ref_path) else {
+                continue;
+            };
+            let reference = Motion::parse(&text).unwrap();
+            let ti = s
+                .tracks
+                .iter()
+                .position(|t| matches!(t.kind, TrackKind::Model(_)))
+                .unwrap();
+            let o = ExportOptions {
+                legacy_smooth: doc.animation.smooth_legacy,
+                ..Default::default()
+            };
+            let mine = export_motion(s, ti, &o, &|_| None, &|_| None).unwrap();
+            // Through JSON, as written (rounding).
+            let mine = Motion::parse(&mine.to_json().to_string()).unwrap();
+            compared += 1;
+            let mut notes = Vec::new();
+            if (mine.duration - reference.duration).abs() > 1e-3 {
+                notes.push(format!(
+                    "duration {} vs {}",
+                    mine.duration, reference.duration
+                ));
+            }
+            let ids = |m: &Motion| m.curves.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+            if ids(&mine) != ids(&reference) {
+                notes.push(format!(
+                    "curves {:?}\n   vs {:?}",
+                    ids(&mine),
+                    ids(&reference)
+                ));
+            } else {
+                for (a, b) in mine.curves.iter().zip(&reference.curves) {
+                    if a != b {
+                        let k = a
+                            .segments
+                            .iter()
+                            .zip(&b.segments)
+                            .position(|(x, y)| x != y)
+                            .unwrap_or(0);
+                        notes.push(format!(
+                            "{}: start {:?} vs {:?}; segment {k}: {:?}\n   vs {:?}",
+                            a.id,
+                            a.start,
+                            b.start,
+                            a.segments.get(k),
+                            b.segments.get(k)
+                        ));
+                        if a.segments.len() != b.segments.len() {
+                            notes.push(format!(
+                                "   segments {} vs {}",
+                                a.segments.len(),
+                                b.segments.len()
+                            ));
+                        }
+                        break;
+                    }
+                }
+            }
+            if mine.user_data != reference.user_data {
+                notes.push("user data".into());
+            }
+            // hiyori_free's runtime m07 was exported from another revision
+            // of the scene (its ParamCheek key at frame 30 is 0 in the .can3,
+            // 1 in the motion).
+            let known = path.ends_with("hiyori_free_t03.can3") && s.name == "hiyori_m07";
+            if !notes.is_empty() && !known {
+                differ += 1;
+                eprintln!("{}: {}", s.name, notes.join("; "));
+            }
+        }
+        eprintln!("{path:?}: {compared} scenes compared, {differ} differ");
+        assert_eq!(differ, 0, "{path:?}");
+    }
+}
+
+#[test]
+#[ignore]
+fn can3_debug_attr() {
+    use keyform_anim::motion_export::{export_motion, ExportOptions};
+    use keyform_formats::can3::Can3Document;
+    use keyform_model::animation::TrackKind;
+    let path = std::env::var("CAN3").unwrap();
+    let which: usize = std::env::var("SCENE").unwrap().parse().unwrap();
+    let id = std::env::var("ATTR").unwrap();
+    let doc = Can3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let s = &doc.animation.scenes[which];
+    for (ti, t) in s.tracks.iter().enumerate() {
+        if let TrackKind::Model(m) = &t.kind {
+            for a in m
+                .params
+                .iter()
+                .chain(&m.parts)
+                .filter(|a| a.id.ends_with(&id))
+            {
+                eprintln!(
+                    "track {ti} {} range {:?} keys {:?} types {:?}",
+                    a.id, a.range, a.curve.keys, a.curve.types
+                );
+            }
+            let mo = export_motion(s, ti, &ExportOptions::default(), &|_| None, &|_| None).unwrap();
+            for c in mo.curves.iter().filter(|c| c.id.ends_with(&id)) {
+                eprintln!("export {:?} {:?}", c.start, c.segments);
+            }
+        }
+    }
+}

@@ -7,6 +7,7 @@ pub mod audio;
 pub mod expression;
 pub mod json;
 pub mod motion;
+pub mod motion_export;
 pub mod motionsync;
 pub mod player;
 pub mod pose;

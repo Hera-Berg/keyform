@@ -115,6 +115,22 @@ fn is_bezier(c: &Curve, seg: usize) -> bool {
     c.type_at(seg) == CurveType::Bezier
 }
 
+/// The keys whose automatic handles are flat (zero slope): the first and
+/// last keys, and keys equal to a neighbour or a strict local extremum.
+/// spec: §3.2 step 2
+pub fn flat_keys(c: &Curve) -> Vec<bool> {
+    let n = c.keys.len();
+    (0..n)
+        .map(|i| {
+            if i == 0 || i + 1 == n {
+                return true;
+            }
+            let (p, v, q) = (c.keys[i - 1].value, c.keys[i].value, c.keys[i + 1].value);
+            v == p || v == q || (v < p && v < q) || (v > p && v > q)
+        })
+        .collect()
+}
+
 /// Recomputes the automatic handles of SMOOTH keys. spec: §3.2 (steps 1–3;
 /// `legacy` adds step 4's force-fix handling, without force-fix flags
 /// this only skips keys whose own segment is BEZIER)
@@ -123,15 +139,7 @@ pub fn smooth_handles(c: &mut Curve, legacy: bool) {
     if n < 2 {
         return;
     }
-    let flat: Vec<bool> = (0..n)
-        .map(|i| {
-            if i == 0 || i + 1 == n {
-                return true;
-            }
-            let (p, v, q) = (c.keys[i - 1].value, c.keys[i].value, c.keys[i + 1].value);
-            v == p || v == q || (v < p && v < q) || (v > p && v > q)
-        })
-        .collect();
+    let flat = flat_keys(c);
     let keys = c.keys.clone();
     for i in 0..n {
         // Sides: prev segment = i − 1, next segment = i.

@@ -190,8 +190,9 @@ impl Motion {
                 } else {
                     3
                 };
+                // Opacity curves use 2 decimals for times as well.
                 let n = |x: f32| num(f64::from(x), d);
-                let t = |x: f32| num(f64::from(x), 3);
+                let t = |x: f32| num(f64::from(x), d);
                 let mut s = vec![t(c.start[0]), n(c.start[1])];
                 points_total += 1;
                 for seg in &c.segments {
@@ -234,7 +235,8 @@ impl Motion {
             })
             .collect();
         let mut meta = Map::new();
-        meta.insert("Duration".into(), num(f64::from(self.duration), 3));
+        // Duration: 2 decimals (observed in the reference's exports).
+        meta.insert("Duration".into(), num(f64::from(self.duration), 2));
         meta.insert("Fps".into(), json!(f64::from(self.fps)));
         if let Some(f) = self.fade_in {
             meta.insert("FadeInTime".into(), num(f64::from(f), 3));

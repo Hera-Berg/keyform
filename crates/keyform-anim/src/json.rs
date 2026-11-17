@@ -9,8 +9,12 @@ pub fn num(v: f64, decimals: i32) -> Value {
     if !v.is_finite() {
         return Value::from(0);
     }
-    let p = 10f64.powi(decimals);
-    let r = (v * p).round() / p;
+    // Decimal rounding of the exact binary value, ties to even (0.995 →
+    // 0.99, 0.8125 → 0.812), as the reference's files show.
+    let r: f64 = format!("{:.*}", decimals.max(0) as usize, v)
+        .parse()
+        .unwrap_or(0.0);
+    let r = if r == 0.0 { 0.0 } else { r };
     if r == r.trunc() && r.abs() < 9.0e15 {
         Value::from(r as i64)
     } else {
@@ -42,7 +46,10 @@ mod tests {
         assert_eq!(num(-8.0, 3).to_string(), "-8");
         assert_eq!(num(0.0666667, 3).to_string(), "0.067");
         assert_eq!(num(1.005, 2).to_string(), "1");
-        assert_eq!(num(30.25, 1).to_string(), "30.3");
+        assert_eq!(num(0.995, 2).to_string(), "0.99");
+        assert_eq!(num(0.8125, 3).to_string(), "0.812");
+        assert_eq!(num(-0.0625, 3).to_string(), "-0.062");
+        assert_eq!(num(30.25, 1).to_string(), "30.2");
         assert_eq!(num(f64::NAN, 3).to_string(), "0");
     }
 }
