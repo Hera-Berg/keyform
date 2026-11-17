@@ -142,6 +142,8 @@ pub struct KeyformApp {
     /// The "Issues on Mask Settings" dialog is open.
     mask_dialog: bool,
     export_image: crate::export_image::ExportImageState,
+    /// Animation image sequence / GIF / video export (dialogs.md §14).
+    export_media: crate::export_media::MediaState,
     create_deformer: crate::create_deformer::CreateDeformerState,
     auto_mesh: crate::auto_mesh_dialog::AutoMeshDialog,
     atlas: crate::texture_atlas::AtlasWindow,
@@ -274,6 +276,7 @@ impl KeyformApp {
                 .storage
                 .and_then(|s| eframe::get_value(s, EXPORT_IMAGE_KEY))
                 .unwrap_or_default(),
+            export_media: Default::default(),
             playback,
             dock,
             slots: Vec::new(),
@@ -609,6 +612,20 @@ impl KeyformApp {
                 }
                 ui.separator();
                 ui.menu_button("Export Image/Video", |ui| {
+                    let animation = self
+                        .active
+                        .and_then(|i| self.slots.get(i))
+                        .is_some_and(|s| s.doc.mode == Mode::Animation && s.doc.anim.is_some());
+                    if ui
+                        .add_enabled(
+                            animation,
+                            egui::Button::new("Image sequence / GIF / Video…"),
+                        )
+                        .on_disabled_hover_text("Needs the Animation workspace")
+                        .clicked()
+                    {
+                        self.export_media.open = true;
+                    }
                     let modeling = self
                         .active
                         .and_then(|i| self.slots.get(i))
@@ -2373,6 +2390,7 @@ impl eframe::App for KeyformApp {
         crate::param_dialog::dialog(&ctx, &mut self.param_dialog, doc, &mut self.log);
         let doc = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc);
         crate::export_image::dialog(&ctx, &mut self.export_image, doc, &mut self.log);
+        crate::export_media::dialog(&ctx, &mut self.export_media, doc, &mut self.log);
         self.closing_step(&ctx);
         let title = match self.active.and_then(|i| self.slots.get(i)) {
             Some(s) => format!(

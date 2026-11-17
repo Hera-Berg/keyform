@@ -193,11 +193,16 @@ impl Document {
     /// model parameter takes its attribute's value (frame-stepped by its
     /// group, else the track), with eye blink / lip sync. spec: §3.1a, §4, §5
     pub fn anim_values(&self) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
+        self.anim_values_at(self.anim.as_ref()?.frame)
+    }
+
+    /// [`Document::anim_values`] at scene frame `frame`.
+    pub fn anim_values_at(&self, frame: f64) -> Option<(Vec<f32>, Vec<Option<f32>>)> {
         let st = self.anim.as_ref()?;
         let scene = st.scene()?;
         let (ti, m) = st.model_track()?;
         let track = &scene.tracks[ti];
-        let x = st.frame - f64::from(track.start) + f64::from(track.offset);
+        let x = frame - f64::from(track.start) + f64::from(track.offset);
         let model = &self.model;
         let mut values: Vec<f32> = model.parameters.iter().map(|p| p.default).collect();
         let group_step = |pi: usize| -> Option<&IntCurve> {

@@ -10,6 +10,7 @@ mod canvas;
 mod create_deformer;
 mod document;
 mod export_image;
+mod export_media;
 mod fonts;
 mod form_dialogs;
 mod glue_tool;
