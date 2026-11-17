@@ -253,114 +253,6 @@ pub fn delete_all_keys(
     Ok(true)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use keyform_model::{ArtMesh, ArtMeshForm, EditableMesh, ObjectInfo};
-
-    fn model() -> Model {
-        let form = |x: f32| ArtMeshForm {
-            positions: vec![x, 0.0],
-            ..ArtMeshForm::default()
-        };
-        let mut a = ArtMesh {
-            clip_missing: false,
-            info: ObjectInfo::new("A"),
-            target: None,
-            positions: vec![0.0, 0.0],
-            uvs: vec![0.0, 0.0],
-            indices: Vec::new(),
-            texture: None,
-            clip: Vec::new(),
-            invert_clip: false,
-            culling: false,
-            color_composition: Default::default(),
-            alpha_composition: Default::default(),
-            user_data: String::new(),
-            point_uids: vec![0],
-            mesh: EditableMesh::default(),
-            model_image: None,
-            generator: Default::default(),
-            grid: KeyformGrid::single(form(0.0)),
-            blend_shapes: Default::default(),
-            paths: Vec::new(),
-        };
-        a.grid = KeyformGrid {
-            bindings: vec![Binding::new(0, vec![-10.0, 10.0])],
-            keyforms: vec![form(-10.0), form(10.0)],
-            guids: vec!["g0".into(), "g1".into()],
-        };
-        let mut rep = Parameter::new("R", -180.0, 180.0, 0.0);
-        rep.repeat = true;
-        Model {
-            parameters: vec![
-                Arc::new(Parameter::new("X", -10.0, 10.0, 0.0)),
-                Arc::new(Parameter::new("Y", 0.0, 1.0, 0.0)),
-                Arc::new(rep),
-            ],
-            art_meshes: vec![Arc::new(a)],
-            ..Model::default()
-        }
-    }
-
-    fn xs(m: &Model) -> Vec<f32> {
-        m.art_meshes[0]
-            .grid
-            .keyforms
-            .iter()
-            .map(|f| f.positions[0])
-            .collect()
-    }
-
-    #[test]
-    fn add_key_interpolates_and_keeps_identities() {
-        let mut m = model();
-        let a = ObjectRef::ArtMesh(0);
-        assert_eq!(add_key(&mut m, a, 0, 5.0), Ok(true));
-        assert_eq!(keys_of(&m, a, 0), vec![-10.0, 5.0, 10.0]);
-        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0]);
-        let g = &m.art_meshes[0].grid.guids;
-        assert_eq!((g[0].as_str(), g[2].as_str()), ("g0", "g1"));
-        assert_eq!(g[1].len(), 36, "new keyform gets a new GUID");
-        assert_eq!(add_key(&mut m, a, 0, 5.0), Ok(false));
-        assert_eq!(add_key(&mut m, a, 0, 5.0005), Err(KeyError::TooClose));
-        // A second parameter: binding with one key, nothing else changes.
-        assert_eq!(add_key(&mut m, a, 1, 0.0), Ok(true));
-        assert_eq!(m.art_meshes[0].grid.bindings.len(), 2);
-        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0]);
-        // Its second key duplicates the row of forms.
-        assert_eq!(add_key(&mut m, a, 1, 1.0), Ok(true));
-        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0, -10.0, 5.0, 10.0]);
-        assert!(m.art_meshes[0].grid.is_consistent());
-    }
-
-    #[test]
-    fn repeat_parameter_gets_min_and_max() {
-        let mut m = model();
-        let a = ObjectRef::ArtMesh(0);
-        add_key(&mut m, a, 2, 30.0).unwrap();
-        assert_eq!(keys_of(&m, a, 2), vec![-180.0, 30.0, 180.0]);
-        assert_eq!(remove_key(&mut m, a, 2, 180.0), Err(KeyError::RepeatEnds));
-        assert_eq!(remove_key(&mut m, a, 2, 30.0), Ok(true));
-    }
-
-    #[test]
-    fn remove_and_delete_all() {
-        let mut m = model();
-        let a = ObjectRef::ArtMesh(0);
-        add_key(&mut m, a, 0, 0.0).unwrap();
-        assert_eq!(remove_key(&mut m, a, 0, 3.0), Err(KeyError::NoKey));
-        assert_eq!(remove_key(&mut m, a, 0, -10.0), Ok(true));
-        assert_eq!(xs(&m), vec![0.0, 10.0]);
-        assert_eq!(m.art_meshes[0].grid.guids[1], "g1");
-        // Delete all keys at 5: the shape there is kept, the binding goes.
-        assert_eq!(delete_all_keys(&mut m, a, 0, 5.0), Ok(true));
-        assert!(m.art_meshes[0].grid.bindings.is_empty());
-        assert_eq!(xs(&m), vec![5.0]);
-        assert_eq!(delete_all_keys(&mut m, a, 0, 5.0), Ok(false));
-    }
-}
-
 /// An operation on an object's grid together with its blend shapes.
 trait BlendOp {
     type Out;
@@ -583,4 +475,112 @@ impl BlendOp for SwapBlend {
 /// swap back).
 pub fn swap_blend_form(m: &mut Model, o: ObjectRef, cell: usize, entry: usize) -> bool {
     with_blend(m, o, SwapBlend { cell, entry }).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keyform_model::{ArtMesh, ArtMeshForm, EditableMesh, ObjectInfo};
+
+    fn model() -> Model {
+        let form = |x: f32| ArtMeshForm {
+            positions: vec![x, 0.0],
+            ..ArtMeshForm::default()
+        };
+        let mut a = ArtMesh {
+            clip_missing: false,
+            info: ObjectInfo::new("A"),
+            target: None,
+            positions: vec![0.0, 0.0],
+            uvs: vec![0.0, 0.0],
+            indices: Vec::new(),
+            texture: None,
+            clip: Vec::new(),
+            invert_clip: false,
+            culling: false,
+            color_composition: Default::default(),
+            alpha_composition: Default::default(),
+            user_data: String::new(),
+            point_uids: vec![0],
+            mesh: EditableMesh::default(),
+            model_image: None,
+            generator: Default::default(),
+            grid: KeyformGrid::single(form(0.0)),
+            blend_shapes: Default::default(),
+            paths: Vec::new(),
+        };
+        a.grid = KeyformGrid {
+            bindings: vec![Binding::new(0, vec![-10.0, 10.0])],
+            keyforms: vec![form(-10.0), form(10.0)],
+            guids: vec!["g0".into(), "g1".into()],
+        };
+        let mut rep = Parameter::new("R", -180.0, 180.0, 0.0);
+        rep.repeat = true;
+        Model {
+            parameters: vec![
+                Arc::new(Parameter::new("X", -10.0, 10.0, 0.0)),
+                Arc::new(Parameter::new("Y", 0.0, 1.0, 0.0)),
+                Arc::new(rep),
+            ],
+            art_meshes: vec![Arc::new(a)],
+            ..Model::default()
+        }
+    }
+
+    fn xs(m: &Model) -> Vec<f32> {
+        m.art_meshes[0]
+            .grid
+            .keyforms
+            .iter()
+            .map(|f| f.positions[0])
+            .collect()
+    }
+
+    #[test]
+    fn add_key_interpolates_and_keeps_identities() {
+        let mut m = model();
+        let a = ObjectRef::ArtMesh(0);
+        assert_eq!(add_key(&mut m, a, 0, 5.0), Ok(true));
+        assert_eq!(keys_of(&m, a, 0), vec![-10.0, 5.0, 10.0]);
+        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0]);
+        let g = &m.art_meshes[0].grid.guids;
+        assert_eq!((g[0].as_str(), g[2].as_str()), ("g0", "g1"));
+        assert_eq!(g[1].len(), 36, "new keyform gets a new GUID");
+        assert_eq!(add_key(&mut m, a, 0, 5.0), Ok(false));
+        assert_eq!(add_key(&mut m, a, 0, 5.0005), Err(KeyError::TooClose));
+        // A second parameter: binding with one key, nothing else changes.
+        assert_eq!(add_key(&mut m, a, 1, 0.0), Ok(true));
+        assert_eq!(m.art_meshes[0].grid.bindings.len(), 2);
+        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0]);
+        // Its second key duplicates the row of forms.
+        assert_eq!(add_key(&mut m, a, 1, 1.0), Ok(true));
+        assert_eq!(xs(&m), vec![-10.0, 5.0, 10.0, -10.0, 5.0, 10.0]);
+        assert!(m.art_meshes[0].grid.is_consistent());
+    }
+
+    #[test]
+    fn repeat_parameter_gets_min_and_max() {
+        let mut m = model();
+        let a = ObjectRef::ArtMesh(0);
+        add_key(&mut m, a, 2, 30.0).unwrap();
+        assert_eq!(keys_of(&m, a, 2), vec![-180.0, 30.0, 180.0]);
+        assert_eq!(remove_key(&mut m, a, 2, 180.0), Err(KeyError::RepeatEnds));
+        assert_eq!(remove_key(&mut m, a, 2, 30.0), Ok(true));
+    }
+
+    #[test]
+    fn remove_and_delete_all() {
+        let mut m = model();
+        let a = ObjectRef::ArtMesh(0);
+        add_key(&mut m, a, 0, 0.0).unwrap();
+        assert_eq!(remove_key(&mut m, a, 0, 3.0), Err(KeyError::NoKey));
+        assert_eq!(remove_key(&mut m, a, 0, -10.0), Ok(true));
+        assert_eq!(xs(&m), vec![0.0, 10.0]);
+        assert_eq!(m.art_meshes[0].grid.guids[1], "g1");
+        // Delete all keys at 5: the shape there is kept, the binding goes.
+        assert_eq!(delete_all_keys(&mut m, a, 0, 5.0), Ok(true));
+        assert!(m.art_meshes[0].grid.bindings.is_empty());
+        assert_eq!(xs(&m), vec![5.0]);
+        assert_eq!(delete_all_keys(&mut m, a, 0, 5.0), Ok(false));
+    }
 }
