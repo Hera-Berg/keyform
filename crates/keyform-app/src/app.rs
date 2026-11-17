@@ -335,7 +335,15 @@ impl KeyformApp {
             self.activate(i);
             return;
         }
-        match Document::open(path, &mut self.log) {
+        let is_can3 = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("can3"));
+        let opened = if is_can3 {
+            Document::open_animation(path, &mut self.log)
+        } else {
+            Document::open(path, &mut self.log)
+        };
+        match opened {
             Ok(doc) => {
                 let uid = self.next_uid;
                 self.next_uid += 1;
@@ -474,7 +482,8 @@ impl KeyformApp {
 
     fn open_dialog(&mut self) {
         let files = rfd::FileDialog::new()
-            .add_filter("Models", &["cmo3", "moc3", "json", "psd"])
+            .add_filter("Models", &["cmo3", "can3", "moc3", "json", "psd"])
+            .add_filter("Animation (*.can3)", &["can3"])
             .add_filter("Model project (*.cmo3)", &["cmo3"])
             .add_filter("Photoshop document (*.psd)", &["psd"])
             .add_filter("Runtime model (*.moc3, *.model3.json)", &["moc3", "json"])
@@ -618,6 +627,20 @@ impl KeyformApp {
                         .clicked()
                     {
                         self.export_runtime_active();
+                    }
+                    let anim = self
+                        .active
+                        .and_then(|i| self.slots.get(i))
+                        .is_some_and(|s| s.doc.anim.is_some());
+                    if ui
+                        .add_enabled(
+                            anim,
+                            egui::Button::new("Export motion files (motion3.json)…"),
+                        )
+                        .on_disabled_hover_text("Needs an animation (.can3)")
+                        .clicked()
+                    {
+                        self.export_motions_active();
                     }
                 });
                 ui.separator();
@@ -1161,7 +1184,9 @@ impl KeyformApp {
             let label = match mode {
                 Mode::Modeling => "Modeling",
                 Mode::Viewer => "Viewer",
+                Mode::Animation => "Animation",
             };
+            let has_anim = doc.as_ref().is_some_and(|d| d.anim.is_some());
             let mut chosen = mode;
             egui::ComboBox::from_id_salt("workspace")
                 .selected_text(label)
@@ -1171,7 +1196,9 @@ impl KeyformApp {
                         ui.selectable_value(&mut chosen, Mode::Modeling, "Modeling");
                     });
                     ui.selectable_value(&mut chosen, Mode::Viewer, "Viewer");
-                    ui.add_enabled(false, egui::Button::selectable(false, "Animation"));
+                    ui.add_enabled_ui(has_anim, |ui| {
+                        ui.selectable_value(&mut chosen, Mode::Animation, "Animation");
+                    });
                 });
             if let Some(d) = doc {
                 if chosen != d.mode {
@@ -1425,6 +1452,30 @@ impl KeyformApp {
         }
     }
 
+    /// File ▸ Export For Runtime ▸ motion files: every scene marked for
+    /// export as `<scene>.motion3.json` in a chosen folder (motion3-json.md §2).
+    fn export_motions_active(&mut self) {
+        let Some(d) = self.active.and_then(|i| self.slots.get(i)).map(|s| &s.doc) else {
+            return;
+        };
+        let start = d
+            .anim
+            .as_ref()
+            .and_then(|a| a.path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() else {
+            return;
+        };
+        match d.export_motions(&dir) {
+            Ok(files) => self.log.info(format!(
+                "Exported {} motion files to {}",
+                files.len(),
+                dir.display()
+            )),
+            Err(e) => self.log.error(e),
+        }
+    }
+
     /// File ▸ Export For Runtime: writes the runtime set into a chosen
     /// folder, then shows the mask check if it found problems (§21).
     fn export_runtime_active(&mut self) {
@@ -1536,6 +1587,13 @@ impl KeyformApp {
         if let Some(s) = d.mesh_edit.as_mut() {
             if if redo { s.redo() } else { s.undo() } {
                 self.log.status = format!("{}: Mesh Edit", if redo { "Redo" } else { "Undo" });
+            }
+            return;
+        }
+        // The Animation workspace undoes animation edits.
+        if d.mode == Mode::Animation {
+            if let Some(n) = d.anim.as_mut().and_then(|a| a.step(redo)) {
+                self.log.status = format!("{}: {n}", if redo { "Redo" } else { "Undo" });
             }
             return;
         }
@@ -2175,6 +2233,25 @@ impl eframe::App for KeyformApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        // Animation workspace: the timeline under the views (palettes.md §7).
+        if let Some(d) = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc)
+            .filter(|d| d.mode == Mode::Animation && d.anim.is_some())
+        {
+            let tokens = self.tokens;
+            egui::Panel::bottom("timeline")
+                .resizable(true)
+                .default_size(220.0)
+                .show(ui, |ui| crate::animation::timeline_ui(ui, d, &tokens));
+            // Space plays / pauses.
+            if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                if let Some(a) = d.anim.as_mut() {
+                    a.playing = !a.playing;
+                }
+            }
+        }
 
         let mut closed = Vec::new();
         let mut open_request = false;

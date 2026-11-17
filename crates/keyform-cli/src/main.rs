@@ -356,11 +356,17 @@ fn export_motions(input: &Path, outdir: &Path) -> Result<(), Box<dyn std::error:
         ..Default::default()
     };
     for s in doc.animation.scenes.iter().filter(|s| s.export_motion) {
-        let Some(ti) = s.tracks.iter().position(|t| matches!(t.kind, TrackKind::Model(_))) else {
+        let Some(ti) = s
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Model(_)))
+        else {
             eprintln!("{}: no model track", s.name);
             continue;
         };
-        let Some(m) = export_motion(s, ti, &o, &|_| None, &|_| None) else { continue };
+        let Some(m) = export_motion(s, ti, &o, &|_| None, &|_| None) else {
+            continue;
+        };
         let out = outdir.join(format!("{}.motion3.json", s.name));
         std::fs::write(&out, keyform_anim::json::to_string(&m.to_json()))?;
         println!("{}", out.display());

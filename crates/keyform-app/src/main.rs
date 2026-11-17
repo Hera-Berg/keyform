@@ -3,6 +3,7 @@
 //! Usage: `keyform [FILE…] [--screenshot OUT.png [--frames N]] [--size WxH] [--play MOTION]
 //! [--select OBJECT_ID] [ID=VALUE …]`
 
+mod animation;
 mod app;
 mod auto_mesh_dialog;
 mod canvas;

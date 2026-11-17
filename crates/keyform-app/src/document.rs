@@ -45,6 +45,8 @@ pub enum Mode {
     Modeling,
     /// Playback preview (viewer.md §3).
     Viewer,
+    /// An animation (`.can3`) played on the model at the playhead.
+    Animation,
 }
 
 /// An object being dragged on the canvas: edits are previewed live on top of
@@ -363,6 +365,8 @@ pub struct Document {
     /// A paste whose copy ↔ target pairing is ambiguous, waiting for the
     /// multi-paste dialog (form-tools.md §2).
     pub paste_pairing: Option<PastePairing>,
+    /// The animation of a `.can3` document (Animation workspace).
+    pub anim: Option<crate::animation::AnimState>,
     /// Copy Form data (form-tools.md §1).
     pub form_clipboard: Vec<keyform_edit::form_tools::CopiedForm>,
     /// Never saved yet: the first save asks for a location.
@@ -687,6 +691,7 @@ impl Document {
             soft_select: None,
             path_tool: None,
             paste_pairing: None,
+            anim: None,
             path_prefs: Default::default(),
             temp_path: None,
             soft_prefs: Default::default(),
@@ -1967,6 +1972,9 @@ impl Document {
         if self.mode == Mode::Modeling {
             return false;
         }
+        if self.mode == Mode::Animation {
+            return self.anim.as_ref().is_some_and(|a| a.playing);
+        }
         self.motion_player.is_playing()
             || o.physics && !self.model.physics.settings.is_empty()
             || o.pose && self.pose.is_some()
@@ -2033,6 +2041,21 @@ impl Document {
     /// Advances playback by `dt` seconds and evaluates the model, in the
     /// frame order of spec 70-advanced/viewer.md §3.1.
     pub fn tick(&mut self, dt: f32, o: &PlaybackOptions, log: &mut Log) {
+        if self.mode == Mode::Animation {
+            // The scene at the playhead (animation-model.md §5).
+            self.anim_tick(dt);
+            let (values, parts) = self
+                .anim_values()
+                .unwrap_or_else(|| (self.values.clone(), vec![None; self.model.parts.len()]));
+            self.live = values;
+            let ov = Overrides {
+                part_opacity: parts,
+                model_opacity: 1.0,
+            };
+            let ev = Evaluator::new(&self.model);
+            self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
+            return;
+        }
         if self.mode == Mode::Modeling {
             // The model exactly at the slider values, nothing animated.
             self.live.clone_from(&self.values);

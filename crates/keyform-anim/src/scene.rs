@@ -272,6 +272,90 @@ pub fn clamp_handles(c: &mut Curve, lo: f64, hi: f64) {
     }
 }
 
+// -------------------------------------------------------------- key editing
+
+/// After every edit (§3.2–3.3): anchors clamped to [lo, hi] (handles move
+/// with them) and rounded to 1/10000, SMOOTH handles recomputed, handles
+/// clamped to their segment and the range.
+pub fn refresh(c: &mut Curve, lo: f64, hi: f64, legacy: bool) {
+    let (lo, hi) = (lo.min(hi), lo.max(hi));
+    for k in &mut c.keys {
+        let v = (k.value.clamp(lo, hi) * 10000.0).round() / 10000.0;
+        let d = v - k.value;
+        if d != 0.0 {
+            for h in [k.prev.as_mut(), k.next.as_mut()].into_iter().flatten() {
+                h.value += d;
+            }
+        }
+        k.value = v;
+    }
+    c.types.resize(c.keys.len(), CurveType::Smooth);
+    smooth_handles(c, legacy);
+    clamp_handles(c, lo, hi);
+}
+
+/// Sets a key at `frame` to `value` (inserting one with curve type `t`
+/// when there is none). Returns its index.
+pub fn set_key(c: &mut Curve, frame: i32, value: f64, t: CurveType) -> usize {
+    match c.keys.binary_search_by_key(&frame, |k| k.frame) {
+        Ok(i) => {
+            c.keys[i].value = value;
+            i
+        }
+        Err(i) => {
+            c.keys.insert(
+                i,
+                Key {
+                    frame,
+                    value,
+                    ..Default::default()
+                },
+            );
+            c.types.insert(i.min(c.types.len()), t);
+            i
+        }
+    }
+}
+
+/// Moves key `i` to (`frame`, `value`); refused (false) when another key
+/// sits on that frame. Handles move with the anchor.
+pub fn move_key(c: &mut Curve, i: usize, frame: i32, value: f64) -> bool {
+    if i >= c.keys.len()
+        || c.keys
+            .iter()
+            .enumerate()
+            .any(|(j, k)| j != i && k.frame == frame)
+    {
+        return false;
+    }
+    let mut k = c.keys.remove(i);
+    let t = if i < c.types.len() {
+        c.types.remove(i)
+    } else {
+        CurveType::Smooth
+    };
+    let (df, dv) = ((frame - k.frame) as f32, value - k.value);
+    for h in [k.prev.as_mut(), k.next.as_mut()].into_iter().flatten() {
+        h.frame += df;
+        h.value += dv;
+    }
+    k.frame = frame;
+    k.value = value;
+    let j = c.keys.partition_point(|x| x.frame < frame);
+    c.keys.insert(j, k);
+    c.types.insert(j.min(c.types.len()), t);
+    true
+}
+
+pub fn delete_key(c: &mut Curve, i: usize) {
+    if i < c.keys.len() {
+        c.keys.remove(i);
+        if i < c.types.len() {
+            c.types.remove(i);
+        }
+    }
+}
+
 // ------------------------------------------------------------------ effects
 
 /// Eye blink result for parameter value v in [lo, hi] at frame x. §4
@@ -392,5 +476,31 @@ mod tests {
         assert_eq!(step_frame(13.0, Some(&s)), 13.0);
         assert_eq!(step_frame(35.0, Some(&s)), 30.0);
         assert_eq!(step_frame(7.3, None), 7.3);
+    }
+
+    #[test]
+    fn key_editing() {
+        let mut c = Curve::default();
+        assert_eq!(set_key(&mut c, 10, 1.0, CurveType::Linear), 0);
+        assert_eq!(set_key(&mut c, 0, 0.0, CurveType::Smooth), 0);
+        assert_eq!(set_key(&mut c, 20, 50.0, CurveType::Smooth), 2);
+        refresh(&mut c, -10.0, 10.0, false);
+        assert_eq!(c.keys[2].value, 10.0, "clamped to the range");
+        assert_eq!(
+            c.types,
+            vec![CurveType::Smooth, CurveType::Linear, CurveType::Smooth]
+        );
+        assert!(!move_key(&mut c, 0, 10, 3.0), "frame taken");
+        assert!(move_key(&mut c, 0, 15, 3.0));
+        assert_eq!(
+            c.keys.iter().map(|k| k.frame).collect::<Vec<_>>(),
+            vec![10, 15, 20]
+        );
+        assert_eq!(c.types[1], CurveType::Smooth, "the type moves with its key");
+        delete_key(&mut c, 0);
+        assert_eq!(c.keys.len(), 2);
+        refresh(&mut c, -10.0, 10.0, false);
+        // Handles within their segments.
+        assert!(c.keys[0].next.unwrap().frame <= 20.0);
     }
 }

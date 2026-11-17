@@ -59,7 +59,7 @@ pub fn render(doc: &Document, percent: f32, opaque_white: bool) -> Result<RgbaIm
     // The current parameter values, on a fresh evaluation of the model.
     let values = match doc.mode {
         Mode::Modeling => &doc.values,
-        Mode::Viewer => &doc.live,
+        Mode::Viewer | Mode::Animation => &doc.live,
     };
     let frame = Evaluator::new(&doc.model).evaluate(values);
     let r = CpuRenderer::new(&doc.model);
