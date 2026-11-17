@@ -288,10 +288,13 @@ impl Cmo3Document {
         // The rewritten document must load back as exactly the edited model.
         let mut warnings = Vec::new();
         let (loaded, sources) = super::load_model(&archive, &xml, &mut warnings)?;
-        if !loaded.same_data(&self.model) {
+        // Physics enable flags are editor preview state, not stored.
+        let mut want = self.model.clone();
+        want.physics = want.physics.as_stored();
+        if !loaded.same_data(&want) {
             return invalid(format!(
                 "the rewritten document does not reload as the edited model ({})",
-                first_difference(&loaded, &self.model)
+                first_difference(&loaded, &want)
             ));
         }
         self.xml = xml;

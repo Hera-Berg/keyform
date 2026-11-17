@@ -149,6 +149,7 @@ pub struct KeyformApp {
     atlas: crate::texture_atlas::AtlasWindow,
     new_model: crate::new_model_dialog::NewModelDialog,
     parts_settings: crate::parts_settings::PartsSettings,
+    physics_editor: crate::physics_editor::PhysicsEditor,
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
@@ -269,6 +270,7 @@ impl KeyformApp {
             atlas: Default::default(),
             new_model: Default::default(),
             parts_settings: Default::default(),
+            physics_editor: Default::default(),
             forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
@@ -486,6 +488,11 @@ impl KeyformApp {
     fn cancel_closing(&mut self) {
         self.closing.clear();
         self.quit_after_closing = false;
+    }
+
+    /// Opens the Physics Settings window (also `--physics`).
+    pub fn open_physics(&mut self) {
+        self.physics_editor.show();
     }
 
     fn open_dialog(&mut self) {
@@ -1045,6 +1052,17 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        ui.separator();
+        if ui
+            .add_enabled(
+                doc_ok_for_physics(self),
+                egui::Button::new("Physics Settings…"),
+            )
+            .clicked()
+        {
+            self.physics_editor.show();
+            ui.close();
+        }
     }
 
     /// Modeling ▸ Texture Atlas ▸ Edit Texture Atlas [Ctrl+T].
@@ -2442,6 +2460,11 @@ impl eframe::App for KeyformApp {
             .active
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
+        crate::physics_editor::window(&ctx, &mut self.physics_editor, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
         crate::form_dialogs::dialogs(&ctx, &mut self.forms, doc, &mut self.log);
         if let Some(mut p) = self.pending_psd.take() {
             let mut docs: Vec<(u64, &mut Document)> =
@@ -2783,6 +2806,14 @@ fn glue_controls(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
             log.warn(e);
         }
     }
+}
+
+/// Modeling ▸ Physics Settings needs an editable model in Modeling.
+/// spec: 70-advanced/physics-editor.md
+fn doc_ok_for_physics(app: &KeyformApp) -> bool {
+    app.active
+        .and_then(|i| app.slots.get(i))
+        .is_some_and(|s| s.doc.editable() && s.doc.mode == Mode::Modeling)
 }
 
 #[cfg(test)]

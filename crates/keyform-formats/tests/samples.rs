@@ -3672,3 +3672,91 @@ fn can3_dump_track_opacity() {
         }
     }
 }
+
+/// Physics editing (physics-editor.md): an edited setting, a new one, a
+/// deleted one and the FPS hint survive a save and reload.
+#[test]
+fn physics_edits_save() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::{PhysicsInput, PhysicsKind, PhysicsOutput, PhysicsSetting, PhysicsVertex};
+    let only = std::env::var("KEYFORM_PHYSICS_SRC").unwrap_or_default();
+    for path in sample_files("cmo3") {
+        if !path.to_string_lossy().contains(&only) {
+            continue;
+        }
+        let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+        let m = &mut doc.model;
+        if m.physics.settings.len() < 2 || m.parameters.len() < 3 {
+            continue;
+        }
+        let ph = &mut m.physics;
+        ph.settings.remove(1);
+        let s = &mut ph.settings[0];
+        s.name = "Edited <&> group".into();
+        s.vertices[1].radius = 7.5;
+        s.vertices.push(PhysicsVertex {
+            position: [0.0, 17.5],
+            mobility: 0.95,
+            delay: 1.0,
+            acceleration: 1.0,
+            radius: 10.0,
+        });
+        s.inputs.push(PhysicsInput {
+            parameter: 2,
+            weight: 25.0,
+            kind: PhysicsKind::Angle,
+            reflect: true,
+        });
+        s.position.maximum = 9.5;
+        ph.settings.push(PhysicsSetting {
+            guid: keyform_model::new_guid(),
+            id: "PhysicsSetting99".into(),
+            name: "New group".into(),
+            enabled: true,
+            inputs: vec![PhysicsInput {
+                parameter: 0,
+                weight: 100.0,
+                kind: PhysicsKind::X,
+                reflect: false,
+            }],
+            outputs: vec![PhysicsOutput {
+                parameter: 1,
+                vertex_index: 1,
+                translation_scale: [0.0, 0.0],
+                angle_scale: 1.25,
+                weight: 100.0,
+                kind: PhysicsKind::Angle,
+                reflect: false,
+            }],
+            vertices: vec![
+                PhysicsVertex {
+                    position: [0.0, 0.0],
+                    mobility: 1.0,
+                    delay: 1.0,
+                    acceleration: 1.0,
+                    radius: 0.0,
+                },
+                PhysicsVertex {
+                    position: [0.0, 10.0],
+                    mobility: 0.95,
+                    delay: 1.0,
+                    acceleration: 1.0,
+                    radius: 10.0,
+                },
+            ],
+            position: Default::default(),
+            angle: Default::default(),
+        });
+        ph.fps = Some(30.0);
+        let edited = doc.model.clone();
+        let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let back = Cmo3Document::read(&bytes).unwrap();
+        assert!(back.warnings.is_empty(), "{path:?}: {:?}", back.warnings);
+        assert_eq!(back.model.physics, edited.physics, "{path:?}");
+        if let Some(out) = std::env::var_os("KEYFORM_PHYSICS_OUT") {
+            std::fs::write(out, &bytes).unwrap();
+        }
+        eprintln!("{path:?}: physics edits saved");
+        break;
+    }
+}

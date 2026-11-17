@@ -3,6 +3,7 @@
 //!
 //! spec: 70-advanced/physics.md
 
+pub mod edit;
 pub mod json3;
 pub mod sim;
 

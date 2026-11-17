@@ -7,12 +7,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use keyform_model::{Model, ParamEntry, Parameter, ParameterKind};
+use keyform_model::{Model, ParamEntry, Parameter, ParameterKind, PhysicsSetting};
 
 use super::grid::{
     add_shared, field_path, get_shared, scalar, set_count, share_in_place, shared, stub, uuid_of,
     Ctx,
 };
+use super::objects::guid_id;
 use super::{element_at, format_f32, unsupported, write_parameter};
 use crate::cmo3::SourceMap;
 use crate::error::{invalid, Result};
@@ -443,64 +444,242 @@ pub(super) fn sync_physics(
     old: &Model,
     new: &Model,
 ) -> Result<()> {
-    if old.physics == new.physics {
+    if old.physics.as_stored() == new.physics.as_stored() {
         return Ok(());
     }
-    let kept: Vec<&str> = new
-        .physics
-        .settings
-        .iter()
-        .map(|s| s.guid.as_str())
-        .collect();
-    let survivors: Vec<_> = old
-        .physics
-        .settings
-        .iter()
-        .filter(|s| kept.contains(&s.guid.as_str()))
-        .collect();
-    let same_rest = survivors.len() == new.physics.settings.len()
-        && survivors.iter().zip(&new.physics.settings).all(|(a, b)| {
-            // Parameter indices may have shifted: compare by GUID.
-            let pg = |m: &Model, i: usize| m.parameters.get(i).map(|p| p.guid.clone());
-            a.guid == b.guid
-                && a.inputs.len() == b.inputs.len()
-                && a.outputs.len() == b.outputs.len()
-                && a.inputs
-                    .iter()
-                    .zip(&b.inputs)
-                    .all(|(x, y)| pg(old, x.parameter) == pg(new, y.parameter))
-                && a.outputs
-                    .iter()
-                    .zip(&b.outputs)
-                    .all(|(x, y)| pg(old, x.parameter) == pg(new, y.parameter))
-        })
-        && old.physics.fps == new.physics.fps;
-    if !same_rest {
-        return unsupported("physics settings");
+    // The document stores no gravity, wind or enable flag (physics.md §1).
+    if old.physics.gravity != new.physics.gravity || old.physics.wind != new.physics.wind {
+        return unsupported("physics gravity / wind (not stored in the model file)");
     }
     ctx.structural = true;
     let main = main_path(root)?;
     let set = field_path(root, &main, "physicsSettingsSourceSet")?;
     let list = field_path(root, &set, "_sourceCubismPhysics")?;
     let snapshot = element_at(root, Some(&list))?.clone();
-    let mut keep = Vec::new();
+    // Existing entries by setting uuid: (list child, its content).
+    let mut by_uuid: HashMap<String, (Element, Element)> = HashMap::new();
     for c in &snapshot.children {
         let content = match c.attr("xs.ref") {
             Some(id) => get_shared(root, id).cloned(),
             None => Some(c.clone()),
         };
+        let Some(content) = content else { continue };
         let uuid = content
-            .as_ref()
-            .and_then(|e| e.child_field("guid").cloned())
+            .child_field("guid")
+            .cloned()
             .and_then(|g| uuid_of(root, &g));
-        if uuid.is_none_or(|u| kept.contains(&u.as_str())) {
-            keep.push(c.clone());
-        } else if let Some(id) = c.attr("xs.ref") {
+        if let Some(u) = uuid {
+            by_uuid.insert(u, (c.clone(), content));
+        }
+    }
+    let mut children = Vec::new();
+    for s in &new.physics.settings {
+        let before = old.physics.settings.iter().find(|o| o.guid == s.guid);
+        let (before, s) = (
+            before.map(|b| PhysicsSetting {
+                enabled: true,
+                ..b.clone()
+            }),
+            &PhysicsSetting {
+                enabled: true,
+                ..s.clone()
+            },
+        );
+        let before = before.as_ref();
+        match (by_uuid.remove(&s.guid), before) {
+            (Some((child, _)), Some(b)) if same_setting(old, b, new, s) => children.push(child),
+            (Some((child, content)), _) => {
+                if let Some(id) = child.attr("xs.ref") {
+                    ctx.orphans.push(id.to_owned());
+                }
+                children.push(physics_setting(root, ctx, new, s, Some(&content))?);
+            }
+            (None, _) => children.push(physics_setting(root, ctx, new, s, None)?),
+        }
+    }
+    for (child, _) in by_uuid.into_values() {
+        if let Some(id) = child.attr("xs.ref") {
             ctx.orphans.push(id.to_owned());
         }
     }
     let l = element_at(root, Some(&list))?;
-    l.children = keep;
+    l.children = children;
     set_count(l);
+    // `settingFPS`: `<i>` or `<null/>` (both observed).
+    if old.physics.fps != new.physics.fps {
+        let e = element_at(root, Some(&set))?;
+        let fps = match new.physics.fps {
+            Some(f) => scalar("i", "settingFPS", format!("{}", f.round() as i32)),
+            None => Element::new("null").with_attr("xs.n", "settingFPS"),
+        };
+        match e
+            .children
+            .iter()
+            .position(|c| c.field_name() == Some("settingFPS"))
+        {
+            Some(i) => e.children[i] = fps,
+            None => e.children.push(fps),
+        }
+    }
     Ok(())
+}
+
+/// Whether two settings are equal, comparing parameters by GUID.
+fn same_setting(
+    ma: &Model,
+    a: &keyform_model::PhysicsSetting,
+    mb: &Model,
+    b: &keyform_model::PhysicsSetting,
+) -> bool {
+    let pg = |m: &Model, i: usize| m.parameters.get(i).map(|p| p.guid.clone());
+    let strip = |s: &keyform_model::PhysicsSetting| {
+        let mut s = s.clone();
+        s.inputs.iter_mut().for_each(|x| x.parameter = 0);
+        s.outputs.iter_mut().for_each(|x| x.parameter = 0);
+        s
+    };
+    strip(a) == strip(b)
+        && a.inputs
+            .iter()
+            .zip(&b.inputs)
+            .all(|(x, y)| pg(ma, x.parameter) == pg(mb, y.parameter))
+        && a.outputs
+            .iter()
+            .zip(&b.outputs)
+            .all(|(x, y)| pg(ma, x.parameter) == pg(mb, y.parameter))
+}
+
+/// A `CPhysicsSettingsSource` element in the layout the reference writes
+/// (inline, fields name, guid, id, inputs, outputs, vertices, normalisation;
+/// observed in hiyori_free_t08.cmo3). Data GUIDs and the inputs' unused
+/// scales are kept from `template` by position.
+/// spec: 10-formats/cmo3-schema.md `CPhysicsSettingsSource`, physics.md §1
+fn physics_setting(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    m: &Model,
+    s: &keyform_model::PhysicsSetting,
+    template: Option<&Element>,
+) -> Result<Element> {
+    use keyform_model::PhysicsKind;
+    let f = |v: f32| crate::graph::format_f32(v);
+    let el = |tag: &str, name: &str| Element::new(tag).with_attr("xs.n", name);
+    let vec2 = |name: &str, v: [f32; 2]| {
+        let mut e = Element::new("GVector2").with_attr("xs.n", name);
+        e.children = vec![scalar("f", "x", f(v[0])), scalar("f", "y", f(v[1]))];
+        e
+    };
+    let kind = |k: PhysicsKind| {
+        el("CPhysicsSourceType", "type").with_attr(
+            "v",
+            match k {
+                PhysicsKind::X => "SRC_TO_X",
+                PhysicsKind::Y => "SRC_TO_Y",
+                PhysicsKind::Angle => "SRC_TO_G_ANGLE",
+            },
+        )
+    };
+    let old_items = |list: &str| -> Vec<Element> {
+        template
+            .and_then(|t| t.child_field(list))
+            .map(|l| l.children.clone())
+            .unwrap_or_default()
+    };
+    let data_guid = |old: Option<&Element>| {
+        let uuid = old
+            .and_then(|o| o.child_field("guid"))
+            .and_then(|g| g.attr("uuid"))
+            .map(str::to_owned)
+            .unwrap_or_else(keyform_model::new_guid);
+        el("CPhysicsDataGuid", "guid")
+            .with_attr("uuid", uuid)
+            .with_attr("note", "(no debug info)")
+    };
+    let param_ref = |root: &mut Element, ctx: &mut Ctx, i: usize, name: &str| -> Result<Element> {
+        let Some(p) = m.parameters.get(i) else {
+            return invalid("physics refers to a missing parameter");
+        };
+        let id = guid_id(root, ctx, &p.guid, "CParameterGuid", &p.id)?;
+        Ok(stub("CParameterGuid", Some(name), &id))
+    };
+    let list = |name: &str, items: Vec<Element>| {
+        let mut l = el("carray_list", name);
+        l.children = items;
+        set_count(&mut l);
+        l
+    };
+    let old_in = old_items("inputs");
+    let mut inputs = Vec::new();
+    for (k, x) in s.inputs.iter().enumerate() {
+        let o = old_in.get(k);
+        let mut e = Element::new("CPhysicsInput");
+        let angle = o
+            .and_then(|o| o.child_field("angleScale"))
+            .cloned()
+            .unwrap_or_else(|| scalar("f", "angleScale", "0.0"));
+        let trans = o
+            .and_then(|o| o.child_field("translationScale"))
+            .cloned()
+            .unwrap_or_else(|| vec2("translationScale", [0.0, 0.0]));
+        e.children = vec![
+            data_guid(o),
+            param_ref(root, ctx, x.parameter, "source")?,
+            angle,
+            trans,
+            scalar("f", "weight", f(x.weight)),
+            kind(x.kind),
+            scalar("b", "isReverse", x.reflect.to_string()),
+        ];
+        inputs.push(e);
+    }
+    let old_out = old_items("outputs");
+    let mut outputs = Vec::new();
+    for (k, x) in s.outputs.iter().enumerate() {
+        let mut e = Element::new("CPhysicsOutput");
+        e.children = vec![
+            data_guid(old_out.get(k)),
+            param_ref(root, ctx, x.parameter, "destination")?,
+            scalar("i", "vertexIndex", x.vertex_index.to_string()),
+            vec2("translationScale", x.translation_scale),
+            scalar("f", "angleScale", f(x.angle_scale)),
+            scalar("f", "weight", f(x.weight)),
+            kind(x.kind),
+            scalar("b", "isReverse", x.reflect.to_string()),
+        ];
+        outputs.push(e);
+    }
+    let old_v = old_items("vertices");
+    let mut vertices = Vec::new();
+    for (k, v) in s.vertices.iter().enumerate() {
+        let mut e = Element::new("CPhysicsVertex");
+        e.children = vec![
+            data_guid(old_v.get(k)),
+            vec2("position", v.position),
+            scalar("f", "mobility", f(v.mobility)),
+            scalar("f", "delay", f(v.delay)),
+            scalar("f", "acceleration", f(v.acceleration)),
+            scalar("f", "radius", f(v.radius)),
+        ];
+        vertices.push(e);
+    }
+    let mut e = Element::new("CPhysicsSettingsSource");
+    let mut name = el("s", "name");
+    name.text = super::xml_text(&s.name);
+    e.children = vec![
+        name,
+        el("CPhysicsSettingsGuid", "guid")
+            .with_attr("uuid", s.guid.clone())
+            .with_attr("note", "(no debug info)"),
+        el("CPhysicsSettingId", "id").with_attr("idstr", s.id.clone()),
+        list("inputs", inputs),
+        list("outputs", outputs),
+        list("vertices", vertices),
+        scalar("f", "normalizedPositionValueMax", f(s.position.maximum)),
+        scalar("f", "normalizedPositionValueMin", f(s.position.minimum)),
+        scalar("f", "normalizedPositionDefaultValue", f(s.position.default)),
+        scalar("f", "normalizedAngleValueMax", f(s.angle.maximum)),
+        scalar("f", "normalizedAngleValueMin", f(s.angle.minimum)),
+        scalar("f", "normalizedAngleDefaultValue", f(s.angle.default)),
+    ];
+    Ok(e)
 }

@@ -96,6 +96,16 @@ pub struct PhysicsRig {
     pub settings: Vec<PhysicsSetting>,
 }
 
+impl PhysicsRig {
+    /// The rig as the model file stores it: the editor-only enable flags
+    /// set (physics-editor.md §3 "Enable" is preview state).
+    pub fn as_stored(&self) -> PhysicsRig {
+        let mut r = self.clone();
+        r.settings.iter_mut().for_each(|s| s.enabled = true);
+        r
+    }
+}
+
 impl Default for PhysicsRig {
     fn default() -> Self {
         Self {

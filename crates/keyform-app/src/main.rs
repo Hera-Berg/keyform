@@ -26,6 +26,7 @@ mod param_ctrl_ui;
 mod param_dialog;
 mod parts_settings;
 mod path_tool;
+mod physics_editor;
 mod psd_dialog;
 mod reference_p5;
 mod soft_select;
@@ -49,6 +50,7 @@ fn main() -> eframe::Result<()> {
     let mut atlas = false;
     let mut tab = None;
     let mut parts_settings = false;
+    let mut physics = false;
     let mut glue_tool = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -61,6 +63,7 @@ fn main() -> eframe::Result<()> {
             "--atlas" => atlas = true,
             "--tab" => tab = args.next(),
             "--parts-settings" => parts_settings = true,
+            "--physics" => physics = true,
             "--glue-tool" => {
                 use keyform_edit::glue_brush::GlueBrush;
                 glue_tool = match args.next().as_deref() {
@@ -127,6 +130,9 @@ fn main() -> eframe::Result<()> {
             a.initial_atlas = atlas;
             a.initial_tab = tab;
             a.palettes.open_parts_settings = parts_settings;
+            if physics {
+                a.open_physics();
+            }
             a.initial_glue_tool = glue_tool;
             Ok(Box::new(a))
         }),
