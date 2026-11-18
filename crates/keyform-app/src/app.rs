@@ -151,6 +151,7 @@ pub struct KeyformApp {
     parts_settings: crate::parts_settings::PartsSettings,
     physics_editor: crate::physics_editor::PhysicsEditor,
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
+    sway: crate::generators_ui::SwayDialog,
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
@@ -273,6 +274,7 @@ impl KeyformApp {
             parts_settings: Default::default(),
             physics_editor: Default::default(),
             motion_sync: Default::default(),
+            sway: Default::default(),
             forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
@@ -1073,6 +1075,33 @@ impl KeyformApp {
             .clicked()
         {
             self.motion_sync.show();
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add_enabled(
+                doc_ok_for_physics(self),
+                egui::Button::new("Auto Generation of Sway Motion…"),
+            )
+            .clicked()
+        {
+            self.sway.show();
+            ui.close();
+        }
+        if ui
+            .add_enabled(self.active.is_some(), egui::Button::new("Set Random Pose"))
+            .clicked()
+        {
+            if let Some(d) = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc)
+            {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |t| t.as_nanos() as u64);
+                crate::generators_ui::random_pose(d, seed);
+            }
             ui.close();
         }
     }
@@ -2478,6 +2507,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::motion_sync_dialog::dialog(&ctx, &mut self.motion_sync, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::generators_ui::sway_dialog(&ctx, &mut self.sway, doc, &mut self.log);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

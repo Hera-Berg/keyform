@@ -15,6 +15,7 @@ mod export_media;
 mod fonts;
 mod form_dialogs;
 mod form_edit;
+mod generators_ui;
 mod glue_tool;
 mod icons;
 mod inspector;

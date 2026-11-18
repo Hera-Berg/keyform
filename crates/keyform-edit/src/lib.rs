@@ -11,6 +11,7 @@ pub mod history;
 pub mod keys;
 pub mod mesh;
 pub mod objects;
+pub mod sway;
 pub mod warp_net;
 
 pub use checks::{mask_issues, IssueList, MaskIssues, OpenBinding};
