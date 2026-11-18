@@ -43,6 +43,16 @@ pub struct PhysicsEditor {
     held: Option<(usize, Vec<[f32; 2]>)>,
     message: Option<String>,
     verified: bool,
+    /// Playlist playback (§2).
+    play: Option<Playback>,
+    playlist_item: usize,
+    repeat: bool,
+    /// Fading: 0 None, 1 Linear, 2 Easing; fade time in ms.
+    fading: (u8, f32),
+    record: bool,
+    /// Recording Settings: true = create a new animation file, false =
+    /// add to the current animation file (observed default).
+    record_new_file: bool,
     /// User presets (`physics_preset40.xml`), loaded on first use.
     user_presets: Option<Vec<keyform_physics::presets::Preset>>,
     /// Selected preset per kind (input, model) by name.
@@ -142,6 +152,7 @@ pub fn window(
         .show(ctx, |ui| {
             ui.add_enabled_ui(editable, |ui| {
                 menus(ui, st, doc, &mut rig, log);
+                playback_bar(ui, st, doc, log);
                 ui.separator();
                 header(ui, st, &mut rig);
                 if rig.settings.is_empty() {
@@ -402,6 +413,174 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
 }
 
 /// §5.1 Input settings.
+/// A playing test motion.
+struct Playback {
+    motion: keyform_anim::recorder::TestMotion,
+    t: f32,
+    /// Slider values before playback (restored on stop; fade origin).
+    start: Vec<f32>,
+    recorder: Option<keyform_anim::recorder::Recorder>,
+}
+
+/// §2 playback bar: playlist (Keyform's test motions), Play / Stop,
+/// Repeat, fading, Record and Recording Settings. Physics runs on the
+/// driven values; outputs show on the sliders.
+// TODO(Q-0045): scenes of a linked .can3 in the playlist; Play All /
+// Shuffle; the reference's fade curves.
+fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, log: &mut Log) {
+    use keyform_anim::recorder::{Recorder, TestMotion};
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr("Playlist:"));
+        egui::ComboBox::from_id_salt("phys-playlist")
+            .selected_text(TestMotion::ALL[st.playlist_item.min(2)].name())
+            .show_ui(ui, |ui| {
+                for (i, m) in TestMotion::ALL.iter().enumerate() {
+                    ui.selectable_value(&mut st.playlist_item, i, m.name());
+                }
+            });
+        let playing = st.play.is_some();
+        if ui
+            .button(if playing { "■" } else { "▶" })
+            .on_hover_text(crate::i18n::tr("Playback/Stop"))
+            .clicked()
+        {
+            if playing {
+                stop_playback(st, doc, log);
+            } else {
+                st.play = Some(Playback {
+                    motion: TestMotion::ALL[st.playlist_item.min(2)],
+                    t: 0.0,
+                    start: doc.values.clone(),
+                    recorder: st.record.then(|| {
+                        Recorder::new(
+                            doc.model.physics.fps.unwrap_or(60.0),
+                            doc.model.parameters.iter().map(|p| p.id.clone()).collect(),
+                        )
+                    }),
+                });
+                doc.sim.reset(&doc.model.physics);
+            }
+        }
+        ui.toggle_value(&mut st.repeat, crate::i18n::tr("Repeat"));
+        ui.toggle_value(&mut st.record, crate::i18n::tr("Record"));
+        ui.menu_button("⚙", |ui| {
+            ui.label(crate::i18n::tr("Recording Settings"));
+            ui.radio_value(
+                &mut st.record_new_file,
+                true,
+                crate::i18n::tr("Create a new animation file"),
+            );
+            ui.radio_value(
+                &mut st.record_new_file,
+                false,
+                crate::i18n::tr("Add to the current animation file"),
+            );
+        });
+        ui.label(crate::i18n::tr("Fading:"));
+        egui::ComboBox::from_id_salt("phys-fading")
+            .selected_text(["None", "Linear", "Easing"][usize::from(st.fading.0.min(2))])
+            .show_ui(ui, |ui| {
+                for (i, n) in ["None", "Linear", "Easing"].iter().enumerate() {
+                    ui.selectable_value(&mut st.fading.0, i as u8, crate::i18n::tr(n));
+                }
+            });
+        ui.add(
+            egui::DragValue::new(&mut st.fading.1)
+                .range(0.0..=10000.0)
+                .suffix(" ms"),
+        );
+    });
+    // Drive the parameters and step the simulation.
+    let dt = ui.ctx().input(|i| i.stable_dt).min(0.1);
+    let duration = 12.0;
+    let mut finished = false;
+    if let Some(p) = &mut st.play {
+        p.t += dt;
+        if p.t > duration {
+            if st.repeat {
+                p.t -= duration;
+            } else {
+                finished = true;
+            }
+        }
+        let fade = match st.fading.0 {
+            0 => 1.0,
+            k => {
+                let u = (p.t * 1000.0 / st.fading.1.max(1.0)).clamp(0.0, 1.0);
+                if k == 2 {
+                    u * u * (3.0 - 2.0 * u)
+                } else {
+                    u
+                }
+            }
+        };
+        for (id, frac) in p.motion.sample(p.t) {
+            if let Some(i) = doc.model.parameters.iter().position(|q| q.id == id) {
+                let q = &doc.model.parameters[i];
+                let target = if frac >= 0.0 {
+                    q.default + frac * (q.max - q.default)
+                } else {
+                    q.default + frac * (q.default - q.min)
+                };
+                let from = p.start.get(i).copied().unwrap_or(q.default);
+                doc.values[i] = from + (target - from) * fade;
+            }
+        }
+        if !doc.model.physics.settings.is_empty() {
+            let mut v = doc.values.clone();
+            doc.sim
+                .step(&doc.model.physics, &doc.model.parameters, &mut v, dt);
+            doc.values = v;
+        }
+        if let Some(r) = &mut p.recorder {
+            r.push(dt, &doc.values);
+        }
+        ui.ctx().request_repaint();
+    }
+    if finished {
+        stop_playback(st, doc, log);
+    }
+}
+
+/// Stops playback: restores the sliders and writes the recording.
+fn stop_playback(st: &mut PhysicsEditor, doc: &mut Document, log: &mut Log) {
+    use keyform_anim::recorder::Thinning;
+    let Some(p) = st.play.take() else { return };
+    if p.start.len() == doc.values.len() {
+        doc.values = p.start;
+    }
+    let Some(r) = p.recorder else { return };
+    if r.frames.len() < 2 {
+        return;
+    }
+    let text = r.to_motion3(Thinning::None, false);
+    if !st.record_new_file && doc.anim.is_some() {
+        // Add to the current animation file: imported as a new scene.
+        let tmp = std::env::temp_dir().join(format!(
+            "keyform-recording-{}.motion3.json",
+            std::process::id()
+        ));
+        if std::fs::write(&tmp, &text).is_ok() {
+            match doc.import_motion(&tmp) {
+                Ok(_) => log.info("Recording added to the animation as a new scene."),
+                Err(e) => log.warn(e),
+            }
+            let _ = std::fs::remove_file(&tmp);
+        }
+        return;
+    }
+    if let Some(path) = rfd::FileDialog::new()
+        .add_filter("motion3.json", &["json"])
+        .set_file_name("recording.motion3.json")
+        .save_file()
+    {
+        match std::fs::write(&path, text) {
+            Ok(()) => log.info(format!("recording saved to {}", path.display())),
+            Err(e) => log.warn(e.to_string()),
+        }
+    }
+}
+
 fn presets_path() -> std::path::PathBuf {
     crate::template_list::templates_dir()
         .parent()

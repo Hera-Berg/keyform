@@ -153,6 +153,7 @@ pub struct KeyformApp {
     plugins: crate::external_host::Plugins,
     api_window: bool,
     api_mode: &'static str,
+    api_recording: crate::external_host::ApiRecording,
     physics_editor: crate::physics_editor::PhysicsEditor,
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     sway: crate::generators_ui::SwayDialog,
@@ -299,6 +300,7 @@ impl KeyformApp {
             plugins,
             api_window: false,
             api_mode: "Modeling",
+            api_recording: Default::default(),
             settings,
             mask_dialog: false,
             create_deformer: Default::default(),
@@ -532,6 +534,66 @@ impl KeyformApp {
         self.quit_after_closing = false;
     }
 
+    /// Recording from external input (external-api.md §5): samples the
+    /// active document's values (pushed values included) while on; when
+    /// switched off the recording is saved as motion3.json, or added to the
+    /// open animation as a new scene.
+    fn api_record_step(&mut self, ctx: &egui::Context) {
+        use keyform_anim::recorder::{Recorder, Thinning};
+        let Some(i) = self.active.filter(|&i| i < self.slots.len()) else {
+            return;
+        };
+        let rec = &mut self.api_recording;
+        if rec.on {
+            let d = &self.slots[i].doc;
+            let r = rec.recorder.get_or_insert_with(|| {
+                Recorder::new(
+                    rec.fps,
+                    d.model.parameters.iter().map(|p| p.id.clone()).collect(),
+                )
+            });
+            if r.ids.len() == d.live.len() {
+                r.push(ctx.input(|x| x.stable_dt).min(0.1), &d.live);
+            }
+            ctx.request_repaint();
+        } else if let Some(r) = rec.recorder.take() {
+            if r.frames.len() < 2 {
+                return;
+            }
+            let thin = if rec.thinning == 1 {
+                Thinning::Linear
+            } else {
+                Thinning::None
+            };
+            let text = r.to_motion3(thin, false);
+            let d = &mut self.slots[i].doc;
+            if d.anim.is_some() {
+                let tmp = std::env::temp_dir().join(format!(
+                    "keyform-api-recording-{}.motion3.json",
+                    std::process::id()
+                ));
+                if std::fs::write(&tmp, &text).is_ok() {
+                    match d.import_motion(&tmp) {
+                        Ok(_) => self
+                            .log
+                            .info("Recording added to the animation as a new scene."),
+                        Err(e) => self.log.warn(e),
+                    }
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            } else if let Some(p) = rfd::FileDialog::new()
+                .add_filter("motion3.json", &["json"])
+                .set_file_name("recording.motion3.json")
+                .save_file()
+            {
+                match std::fs::write(&p, text) {
+                    Ok(()) => self.log.info(format!("recording saved to {}", p.display())),
+                    Err(e) => self.log.warn(e.to_string()),
+                }
+            }
+        }
+    }
+
     /// Runs the external application API: starts / stops the server with
     /// the setting, answers requests, sends edit-mode events.
     fn external_api(&mut self, ctx: &egui::Context) {
@@ -544,7 +606,9 @@ impl KeyformApp {
             &mut self.settings.api_port,
             running,
             &mut self.plugins,
+            &mut self.api_recording,
         );
+        self.api_record_step(ctx);
         if s.api_enabled
             && self
                 .api_server

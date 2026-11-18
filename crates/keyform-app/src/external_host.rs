@@ -242,6 +242,17 @@ impl Host for AppHost<'_> {
 
 /// The settings window: enable (off by default; 127.0.0.1 only), port,
 /// and the registered applications with approval.
+/// Recording from external input (external-api.md §5).
+#[derive(Default)]
+pub struct ApiRecording {
+    pub on: bool,
+    pub fps: f32,
+    /// 0 none, 1 drop collinear keys.
+    pub thinning: u8,
+    pub recorder: Option<keyform_anim::recorder::Recorder>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn settings_window(
     ctx: &egui::Context,
     open: &mut bool,
@@ -249,6 +260,7 @@ pub fn settings_window(
     port: &mut u16,
     running: Option<(u16, usize)>,
     plugins: &mut Plugins,
+    rec: &mut ApiRecording,
 ) {
     if !*open {
         return;
@@ -265,6 +277,35 @@ pub fn settings_window(
                 Some((p, n)) => ui.label(format!("Listening on 127.0.0.1:{p} — {n} connected")),
                 None => ui.weak(crate::i18n::tr("Not running")),
             };
+            ui.separator();
+            // TODO(Q-0045): the reference's thinning types.
+            ui.horizontal(|ui| {
+                ui.checkbox(
+                    &mut rec.on,
+                    crate::i18n::tr("Record motion and generate animation data"),
+                );
+                if rec.fps <= 0.0 {
+                    rec.fps = 30.0;
+                }
+                ui.add(
+                    egui::DragValue::new(&mut rec.fps)
+                        .range(1.0..=120.0)
+                        .suffix(" fps"),
+                );
+                let label = |t: u8| {
+                    if t == 0 {
+                        crate::i18n::tr("No thinning")
+                    } else {
+                        crate::i18n::tr("Remove redundant keys")
+                    }
+                };
+                egui::ComboBox::from_id_salt("api-thin")
+                    .selected_text(label(rec.thinning))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut rec.thinning, 0, label(0));
+                        ui.selectable_value(&mut rec.thinning, 1, label(1));
+                    });
+            });
             ui.separator();
             let mut remove = None;
             egui::Grid::new("ext-apps")

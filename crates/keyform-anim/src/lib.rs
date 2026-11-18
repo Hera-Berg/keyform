@@ -14,6 +14,7 @@ pub mod motionsync;
 pub mod param_ctrl;
 pub mod player;
 pub mod pose;
+pub mod recorder;
 pub mod scene;
 pub mod tracking;
 

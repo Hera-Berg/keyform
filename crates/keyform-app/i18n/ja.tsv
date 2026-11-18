@@ -208,3 +208,16 @@ Adjust Face Motion	顔の動きの調整
 Movement level	移動量
 Deformation level	変形量
 Match movement level of eyebrows to eyes	眉の移動量を目に合わせる
+Playlist:	プレイリスト:
+Playback/Stop	再生/停止
+Repeat	リピート
+Record	録画
+Recording Settings	録画設定
+Create a new animation file	新しいアニメーションファイルを作成
+Add to the current animation file	現在のアニメーションファイルに追加
+Fading:	フェード:
+Linear	リニア
+Easing	イージング
+Record motion and generate animation data	モーションを記録してアニメーションデータを生成
+No thinning	間引きなし
+Remove redundant keys	冗長なキーを削除
