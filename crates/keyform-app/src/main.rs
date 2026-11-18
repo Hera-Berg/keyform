@@ -20,6 +20,7 @@ mod form_dialogs;
 mod form_edit;
 mod generators_ui;
 mod glue_tool;
+mod i18n;
 mod icons;
 mod inspector;
 mod log;
@@ -57,6 +58,7 @@ fn main() -> eframe::Result<()> {
     let mut tab = None;
     let mut parts_settings = false;
     let mut physics = false;
+    let mut lang = None;
     let mut glue_tool = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -70,6 +72,7 @@ fn main() -> eframe::Result<()> {
             "--tab" => tab = args.next(),
             "--parts-settings" => parts_settings = true,
             "--physics" => physics = true,
+            "--lang" => lang = args.next(),
             "--glue-tool" => {
                 use keyform_edit::glue_brush::GlueBrush;
                 glue_tool = match args.next().as_deref() {
@@ -138,6 +141,9 @@ fn main() -> eframe::Result<()> {
             a.palettes.open_parts_settings = parts_settings;
             if physics {
                 a.open_physics();
+            }
+            if lang.as_deref() == Some("ja") {
+                crate::i18n::set(crate::i18n::Lang::Ja);
             }
             a.initial_glue_tool = glue_tool;
             Ok(Box::new(a))

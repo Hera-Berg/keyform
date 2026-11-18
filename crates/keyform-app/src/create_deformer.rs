@@ -98,7 +98,7 @@ pub fn dialog(
             egui::Grid::new("create-deformer")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.label("Name");
+                    ui.label(crate::i18n::tr("Name"));
                     ui.add(
                         egui::TextEdit::singleline(&mut st.name).hint_text(match kind {
                             Kind::Warp => "Untitled Deformer",
@@ -106,7 +106,7 @@ pub fn dialog(
                         }),
                     );
                     ui.end_row();
-                    ui.label("Add To");
+                    ui.label(crate::i18n::tr("Add To"));
                     let m = &doc.model;
                     let label = |p: Option<usize>| {
                         p.and_then(|p| m.parts.get(p))
@@ -137,15 +137,15 @@ pub fn dialog(
             if kind == Kind::Warp {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Warp Division");
+                    ui.label(crate::i18n::tr("Warp Division"));
                     ui.add(egui::DragValue::new(&mut st.cols).range(2..=100));
-                    ui.label("×");
+                    ui.label(crate::i18n::tr("×"));
                     ui.add(egui::DragValue::new(&mut st.rows).range(2..=100));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Bezier Division");
+                    ui.label(crate::i18n::tr("Bezier Division"));
                     ui.add(egui::DragValue::new(&mut st.bezier.0).range(1..=100));
-                    ui.label("×");
+                    ui.label(crate::i18n::tr("×"));
                     ui.add(egui::DragValue::new(&mut st.bezier.1).range(1..=100));
                 });
                 if st.bezier.0 > 9 || st.bezier.1 > 9 {
@@ -157,9 +157,9 @@ pub fn dialog(
             }
             ui.separator();
             ui.horizontal(|ui| {
-                ui.checkbox(&mut st.keep_open, "Continuous creation");
-                create = ui.button("Create").clicked();
-                close = ui.button("Close").clicked();
+                ui.checkbox(&mut st.keep_open, crate::i18n::tr("Continuous creation"));
+                create = ui.button(crate::i18n::tr("Create")).clicked();
+                close = ui.button(crate::i18n::tr("Close")).clicked();
             });
         });
     if !open || close {

@@ -153,32 +153,32 @@ pub fn dialog(
         .open(&mut open)
         .show(ctx, |ui| {
             egui::Grid::new("param-dialog").num_columns(2).show(ui, |ui| {
-                ui.label("Name");
+                ui.label(crate::i18n::tr("Name"));
                 ui.text_edit_singleline(&mut st.name);
                 ui.end_row();
-                ui.label("ID");
+                ui.label(crate::i18n::tr("ID"));
                 ui.text_edit_singleline(&mut st.id)
-                    .on_hover_text("Letters, numbers and underscores; up to 63 characters; not starting with a number.");
+                    .on_hover_text(crate::i18n::tr("Letters, numbers and underscores; up to 63 characters; not starting with a number."));
                 ui.end_row();
-                ui.label("Minimum");
+                ui.label(crate::i18n::tr("Minimum"));
                 ui.add(egui::DragValue::new(&mut st.min).speed(0.1));
                 ui.end_row();
-                ui.label("Default");
+                ui.label(crate::i18n::tr("Default"));
                 ui.add(egui::DragValue::new(&mut st.default).speed(0.1));
                 ui.end_row();
-                ui.label("Maximum");
+                ui.label(crate::i18n::tr("Maximum"));
                 ui.add(egui::DragValue::new(&mut st.max).speed(0.1));
                 ui.end_row();
-                ui.label("Repeat");
-                ui.checkbox(&mut st.repeat, "");
+                ui.label(crate::i18n::tr("Repeat"));
+                ui.checkbox(&mut st.repeat, crate::i18n::tr(""));
                 ui.end_row();
-                ui.label("Blend Shape");
+                ui.label(crate::i18n::tr("Blend Shape"));
                 ui.add_enabled(
                     editing.is_none(),
                     egui::Checkbox::without_text(&mut st.blend),
                 );
                 ui.end_row();
-                ui.label("Description");
+                ui.label(crate::i18n::tr("Description"));
                 ui.text_edit_multiline(&mut st.description);
                 ui.end_row();
             });
@@ -205,7 +205,7 @@ pub fn dialog(
                 ok = ui
                     .add_enabled(issue.is_none(), egui::Button::new(if st.confirm_range { "Continue" } else { "OK" }))
                     .clicked();
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if !open || cancel {
@@ -296,13 +296,15 @@ fn delete_confirmation(
         ui.set_width(360.0);
         ui.label(format!("Would you like to delete {}?", param.name));
         if physics {
-            ui.label("Related physics setting will also be deleted.");
+            ui.label(crate::i18n::tr(
+                "Related physics setting will also be deleted.",
+            ));
         }
         ui.horizontal(|ui| {
-            if ui.button("OK").clicked() {
+            if ui.button(crate::i18n::tr("OK")).clicked() {
                 choice = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("Cancel")).clicked() {
                 choice = Some(false);
             }
         });

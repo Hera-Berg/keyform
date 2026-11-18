@@ -46,19 +46,19 @@ pub fn dialog(
         return;
     };
     let mut open = true;
-    egui::Window::new("Apply Model Template")
+    egui::Window::new(crate::i18n::tr("Apply Model Template"))
         .default_size([640.0, 560.0])
         .open(&mut open)
         .show(ctx, |ui| {
             if !st.noted {
                 ui.label(NOTE);
-                if ui.button("OK").clicked() {
+                if ui.button(crate::i18n::tr("OK")).clicked() {
                     st.noted = true;
                 }
                 return;
             }
             ui.horizontal(|ui| {
-                if ui.button("Select Model Template…").clicked() {
+                if ui.button(crate::i18n::tr("Select Model Template…")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Model (*.cmo3)", &["cmo3"]).pick_file() {
                         match std::fs::read(&p)
                             .map_err(|e| e.to_string())
@@ -81,15 +81,15 @@ pub fn dialog(
             });
             let Some((_, tpl)) = &st.template else { return };
             ui.separator();
-            ui.label(RichText::new("Layout").strong());
+            ui.label(RichText::new(crate::i18n::tr("Layout")).strong());
             ui.horizontal(|ui| {
-                ui.label("Scale");
+                ui.label(crate::i18n::tr("Scale"));
                 ui.add(egui::DragValue::new(&mut st.layout.scale).speed(0.005).range(0.01..=100.0));
-                ui.label("Offset X");
+                ui.label(crate::i18n::tr("Offset X"));
                 ui.add(egui::DragValue::new(&mut st.layout.offset[0]).speed(1.0));
-                ui.label("Y");
+                ui.label(crate::i18n::tr("Y"));
                 ui.add(egui::DragValue::new(&mut st.layout.offset[1]).speed(1.0));
-                if ui.button("Center").clicked() {
+                if ui.button(crate::i18n::tr("Center")).clicked() {
                     // Centre the template canvas on the model canvas.
                     let (tw, th) = (tpl.canvas.width as f32, tpl.canvas.height as f32);
                     let (dw, dh) = (doc.model.canvas.width as f32, doc.model.canvas.height as f32);
@@ -97,26 +97,26 @@ pub fn dialog(
                 }
             });
             ui.separator();
-            ui.label(RichText::new("Mapping").strong());
+            ui.label(RichText::new(crate::i18n::tr("Mapping")).strong());
             ui.horizontal(|ui| {
-                ui.radio_value(&mut st.names, true, "Prioritize duplicate names");
-                ui.radio_value(&mut st.names, false, "Adjust to position and shape");
-                if ui.button("Automatic mapping").clicked() || st.mapping.len() != doc.model.art_meshes.len() {
+                ui.radio_value(&mut st.names, true, crate::i18n::tr("Prioritize duplicate names"));
+                ui.radio_value(&mut st.names, false, crate::i18n::tr("Adjust to position and shape"));
+                if ui.button(crate::i18n::tr("Automatic mapping")).clicked() || st.mapping.len() != doc.model.art_meshes.len() {
                     let (w, h) = (doc.model.canvas.width as f32, doc.model.canvas.height as f32);
                     st.mapping = tp::auto_match(&tp::mesh_infos(&doc.model), &tp::mesh_infos(tpl), &st.layout, w.hypot(h), st.names, &[]);
                 }
             });
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 egui::Grid::new("tpl-map").num_columns(2).striped(true).show(ui, |ui| {
-                    ui.label(RichText::new("Target").strong());
-                    ui.label(RichText::new("Template").strong());
+                    ui.label(RichText::new(crate::i18n::tr("Target")).strong());
+                    ui.label(RichText::new(crate::i18n::tr("Template")).strong());
                     ui.end_row();
                     for (i, a) in doc.model.art_meshes.iter().enumerate() {
                         ui.label(a.info.display_name());
                         let cur = st.mapping.get(i).copied().flatten();
                         let text = cur.and_then(|t| tpl.art_meshes.get(t)).map_or("—".to_owned(), |t| t.info.display_name().to_owned());
                         egui::ComboBox::from_id_salt(("tpl-pair", i)).selected_text(text).height(300.0).show_ui(ui, |ui| {
-                            if ui.selectable_label(cur.is_none(), "—").clicked() {
+                            if ui.selectable_label(cur.is_none(), crate::i18n::tr("—")).clicked() {
                                 st.mapping[i] = None;
                             }
                             for (t, m) in tpl.art_meshes.iter().enumerate() {
@@ -130,20 +130,20 @@ pub fn dialog(
                 });
             });
             ui.separator();
-            ui.label(RichText::new("Apply settings").strong());
+            ui.label(RichText::new(crate::i18n::tr("Apply settings")).strong());
             ui.horizontal(|ui| {
-                ui.label("Draw order:");
-                ui.radio_value(&mut st.options.draw_order, DrawOrderMode::AdjustToTemplate, "Adjust to template");
-                ui.radio_value(&mut st.options.draw_order, DrawOrderMode::DontChange, "Don't change");
+                ui.label(crate::i18n::tr("Draw order:"));
+                ui.radio_value(&mut st.options.draw_order, DrawOrderMode::AdjustToTemplate, crate::i18n::tr("Adjust to template"));
+                ui.radio_value(&mut st.options.draw_order, DrawOrderMode::DontChange, crate::i18n::tr("Don't change"));
             });
             ui.horizontal(|ui| {
-                ui.label("Also apply:");
-                ui.checkbox(&mut st.options.mask, "Mask");
-                ui.checkbox(&mut st.options.culling, "Culling");
-                ui.checkbox(&mut st.options.color_blend, "Color Blend");
-                ui.checkbox(&mut st.options.alpha_blend, "Alpha Blend");
+                ui.label(crate::i18n::tr("Also apply:"));
+                ui.checkbox(&mut st.options.mask, crate::i18n::tr("Mask"));
+                ui.checkbox(&mut st.options.culling, crate::i18n::tr("Culling"));
+                ui.checkbox(&mut st.options.color_blend, crate::i18n::tr("Color Blend"));
+                ui.checkbox(&mut st.options.alpha_blend, crate::i18n::tr("Alpha Blend"));
             });
-            if ui.button("Apply").clicked() {
+            if ui.button(crate::i18n::tr("Apply")).clicked() {
                 let pairs: Vec<(usize, usize)> =
                     st.mapping.iter().enumerate().filter_map(|(d, t)| t.map(|t| (d, t))).collect();
                 let (layout, options) = (st.layout, st.options);

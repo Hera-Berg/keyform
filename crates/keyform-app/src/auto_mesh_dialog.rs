@@ -122,7 +122,7 @@ pub fn dialog(
     }
     let mut open = true;
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Automatic Mesh Generator")
+    egui::Window::new(crate::i18n::tr("Automatic Mesh Generator"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -173,15 +173,17 @@ pub fn dialog(
                     0..=254,
                 );
             });
-            ui.weak("Intervals and margins are pixel values after re-sizing to 1024.");
+            ui.weak(crate::i18n::tr(
+                "Intervals and margins are pixel values after re-sizing to 1024.",
+            ));
             if changed {
                 st.preset = None;
                 st.dirty = true;
             }
             ui.separator();
             ui.horizontal(|ui| {
-                ok = ui.button("OK").clicked();
-                cancel = ui.button("Cancel").clicked();
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if !open {

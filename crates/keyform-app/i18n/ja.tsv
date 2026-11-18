@@ -1,0 +1,171 @@
+# Keyform UI — Japanese (Keyform's own translations).
+# English<TAB>Japanese; missing strings show English.
+File	ファイル
+Edit	編集
+Show	表示
+Modeling	モデリング
+Animation	アニメーション
+Window	ウィンドウ
+Help	ヘルプ
+New	新規作成
+New Model…	新規モデル…
+Open	開く
+Open…	開く…
+Recent Files	最近使ったファイル
+Save as…	名前を付けて保存…
+Close	閉じる
+Close all	すべて閉じる
+Exit	終了
+Undo	元に戻す
+Redo	やり直し
+Deselect	選択解除
+OK	OK
+Cancel	キャンセル
+Yes	はい
+No	いいえ
+Apply	適用
+Delete	削除
+Clear	クリア
+Name	名前
+ID	ID
+Add	追加
+Add…	追加…
+Edit…	編集…
+Rename…	名前を変更…
+Duplicate	複製
+Duplicate…	複製…
+Stop	停止
+Play	再生
+Up	上へ
+Down	下へ
+Export For Runtime	組み込み用ファイル書き出し
+Export as moc3 file…	moc3 ファイルとして書き出し…
+Export motion files (motion3.json)…	モーションファイルを書き出し (motion3.json)…
+Export expression files (exp3.json)…	表情ファイルを書き出し (exp3.json)…
+Export Image/Video	画像・動画の書き出し
+Image…	画像…
+Image sequence / GIF / Video…	連番画像 / GIF / 動画…
+Fit to View	ビューに合わせる
+Zoom In	拡大
+Zoom Out	縮小
+Reset Rotation	回転をリセット
+Dark Theme	ダークテーマ
+Reset Current Layout	現在のレイアウトをリセット
+Deformer	デフォーマ
+Create Warp Deformer…	ワープデフォーマを作成…
+Create rotation deformer…	回転デフォーマを作成…
+ArtMesh	アートメッシュ
+Mesh edit	メッシュ編集
+Mesh Edit	メッシュ編集
+Automatic Mesh generator…	メッシュの自動生成…
+Finish Mesh editing	メッシュ編集を終了
+Glue	グルー
+Part	パーツ
+New Part	新規パーツ
+Create new part	新しいパーツを作成
+Part Settings…	パーツ設定…
+Parameter	パラメータ
+Reset to default values	既定値に戻す
+Reset parameters	パラメータをリセット
+Edit Form	フォーム編集
+Copy Form	フォームをコピー
+Paste Form	フォームを貼り付け
+Blend Form…	フォームをブレンド…
+Synthesize corners…	四隅を合成…
+Motion Mirroring…	モーションの反転…
+Batch Reflect…	一括反転…
+Extended Interpolation…	拡張補間…
+Texture Atlas	テクスチャアトラス
+Edit Texture Atlas…	テクスチャアトラスを編集…
+Model Template	モデルテンプレート
+Apply Model Template…	モデルテンプレートを適用…
+Physics Settings…	物理演算設定…
+Motion-sync Settings…	モーションシンク設定…
+Auto Generation of Sway Motion…	揺れの自動生成…
+Set Random Pose	ランダムポーズを設定
+Apply Physics	物理演算を適用
+Breath	呼吸
+Track cursor	カーソル追従
+Automatic Eye-Blinking	自動まばたき
+Idle Motion	アイドルモーション
+Motion-sync	モーションシンク
+Mirror Edit	ミラー編集
+Subtools	サブツール
+Lock	ロック
+Model	モデル
+Viewer	ビューア
+Keyform	キーフォーム
+No model	モデルがありません
+No documents open.	開いているドキュメントはありません。
+External Application Integration Settings…	外部アプリケーション連携設定…
+External Application Integration Settings	外部アプリケーション連携設定
+Enable external application integration	外部アプリケーション連携を有効にする
+Not running	停止中
+Approved	承認済み
+Remove	削除
+Physics Settings	物理演算設定
+Physics	物理演算
+Import Physics Settings…	物理演算設定を読み込み…
+Export Physics settings…	物理演算設定を書き出し…
+Initialize Calculate FPS	演算 FPS を初期化
+Copy output lines	出力行をコピー
+Paste output lines	出力行を貼り付け
+Group editing…	グループ編集…
+Enable	有効
+Input settings	入力設定
+Output Settings	出力設定
+Input normalization	入力の正規化
+Pendulum settings	振り子の設定
+Edit Physics Group	物理演算グループの編集
+Increase priority	優先度を上げる
+Decrease priority	優先度を下げる
+Increase Output	出力を増やす
+Decrease Output	出力を減らす
+Reset Magnification	倍率をリセット
+Reset Output Maximum	出力最大値をリセット
+Auto-update maximum of output	出力最大値を自動更新
+Motion-sync Settings	モーションシンク設定
+Load Audio…	音声を読み込み…
+Mapping Settings	マッピング設定
+Audio Elements	音声要素
+Add Motion-sync Settings	モーションシンク設定を追加
+Please add motion-sync settings.	モーションシンク設定を追加してください。
+Auto Generation of Sway Motion	揺れの自動生成
+Select a warp deformer.	ワープデフォーマを選択してください。
+Flip sway horizontally	揺れを左右反転
+Synchronize left and right side setting values	左右の設定値を同期
+Left side keyform	左側のキーフォーム
+Right side keyform	右側のキーフォーム
+Update keyform	キーフォームを更新
+Apply Model Template	モデルテンプレートを適用
+Select Model Template…	モデルテンプレートを選択…
+Prioritize duplicate names	同名を優先
+Adjust to position and shape	位置と形状に合わせる
+Automatic mapping	自動マッピング
+Adjust to template	テンプレートに合わせる
+Don't change	変更しない
+Mask	マスク
+Culling	カリング
+Color Blend	カラーブレンド
+Alpha Blend	アルファブレンド
+Language	言語
+Home	ホーム
+Parts	パーツ
+Inspector	インスペクタ
+Log	ログ
+Project	プロジェクト
+Model Settings	モデル設定
+Tool Details	ツール詳細
+Always show warnings regarding masks	マスクに関する警告を常に表示
+Layout	レイアウト
+Mapping	マッピング
+Apply settings	適用設定
+Target	対象
+Template	テンプレート
+Parameter name	パラメータ名
+Value	値
+Audio element	音声要素
+Scale	スケール
+Enabled	有効
+Damper	ダンパー
+Smooth	スムーズ

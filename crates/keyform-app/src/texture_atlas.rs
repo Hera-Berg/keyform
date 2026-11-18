@@ -156,7 +156,7 @@ pub fn dialog(
     let mut open = true;
     let (mut add, mut run_layout) = (false, false);
     let mut lock = None;
-    egui::Window::new("Texture Atlas")
+    egui::Window::new(crate::i18n::tr("Texture Atlas"))
         .collapsible(false)
         .default_width(560.0)
         .open(&mut open)
@@ -170,7 +170,7 @@ pub fn dialog(
                             ui.selectable_value(&mut st.page, k, &t.name);
                         }
                     });
-                add = ui.button("Add texture…").clicked();
+                add = ui.button(crate::i18n::tr("Add texture…")).clicked();
             });
             let tex = m.textures[st.page].clone();
             ui.label(format!(
@@ -182,7 +182,9 @@ pub fn dialog(
             let mut locked = tex.locked;
             if ui
                 .checkbox(&mut locked, "Lock texture")
-                .on_hover_text("Use the stored page image as is; it is not re-rendered")
+                .on_hover_text(crate::i18n::tr(
+                    "Use the stored page image as is; it is not re-rendered",
+                ))
                 .changed()
             {
                 lock = Some(locked);
@@ -203,12 +205,12 @@ pub fn dialog(
                     );
                 }
                 None => {
-                    ui.weak("(no page image)");
+                    ui.weak(crate::i18n::tr("(no page image)"));
                 }
             }
             ui.separator();
             ui.add_enabled_ui(!tex.locked, |ui| {
-                if ui.button("Auto Layout…").clicked() {
+                if ui.button(crate::i18n::tr("Auto Layout…")).clicked() {
                     st.layout_open = !st.layout_open;
                 }
             });
@@ -216,22 +218,25 @@ pub fn dialog(
                 egui::Grid::new("atlas-auto-layout")
                     .num_columns(2)
                     .show(ui, |ui| {
-                        ui.label("Margin (px)");
+                        ui.label(crate::i18n::tr("Margin (px)"));
                         ui.add(egui::DragValue::new(&mut st.layout.margin).range(0.0..=256.0));
                         ui.end_row();
-                        ui.label("Rotation");
-                        ui.checkbox(&mut st.layout.rotate, "Allow 90° rotation");
+                        ui.label(crate::i18n::tr("Rotation"));
+                        ui.checkbox(&mut st.layout.rotate, crate::i18n::tr("Allow 90° rotation"));
                         ui.end_row();
-                        ui.label("Layout");
+                        ui.label(crate::i18n::tr("Layout"));
                         ui.checkbox(
                             &mut st.model_image_layout,
                             "Whole model images (not only the mesh bounds)",
                         );
                         ui.end_row();
-                        ui.label("Scale");
+                        ui.label(crate::i18n::tr("Scale"));
                         ui.horizontal(|ui| {
                             let mut auto = st.layout.scale <= 0.0;
-                            if ui.checkbox(&mut auto, "Automatic").changed() {
+                            if ui
+                                .checkbox(&mut auto, crate::i18n::tr("Automatic"))
+                                .changed()
+                            {
                                 st.layout.scale = if auto { 0.0 } else { 1.0 };
                             }
                             if !auto {
@@ -244,7 +249,7 @@ pub fn dialog(
                         });
                         ui.end_row();
                     });
-                run_layout = ui.button("Run Auto Layout").clicked();
+                run_layout = ui.button(crate::i18n::tr("Run Auto Layout")).clicked();
             }
         });
     if !open {
@@ -278,7 +283,7 @@ fn create_dialog(ctx: &egui::Context, st: &mut AtlasWindow, doc: &mut Document, 
     let Some(f) = st.create.as_mut() else { return };
     let mut open = true;
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Create texture atlas")
+    egui::Window::new(crate::i18n::tr("Create texture atlas"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -286,27 +291,35 @@ fn create_dialog(ctx: &egui::Context, st: &mut AtlasWindow, doc: &mut Document, 
             egui::Grid::new("atlas-create")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.label("Name");
+                    ui.label(crate::i18n::tr("Name"));
                     ui.text_edit_singleline(&mut f.name);
                     ui.end_row();
-                    ui.label("Width");
+                    ui.label(crate::i18n::tr("Width"));
                     size_combo(ui, "atlas-w", &mut f.width);
                     ui.end_row();
-                    ui.label("Height");
+                    ui.label(crate::i18n::tr("Height"));
                     size_combo(ui, "atlas-h", &mut f.height);
                     ui.end_row();
-                    ui.label("Insert");
+                    ui.label(crate::i18n::tr("Insert"));
                     ui.vertical(|ui| {
-                        ui.radio_value(&mut f.insert, Insert::Visible, "Visible model images");
-                        ui.radio_value(&mut f.insert, Insert::All, "All model images");
-                        ui.radio_value(&mut f.insert, Insert::None, "None");
+                        ui.radio_value(
+                            &mut f.insert,
+                            Insert::Visible,
+                            crate::i18n::tr("Visible model images"),
+                        );
+                        ui.radio_value(
+                            &mut f.insert,
+                            Insert::All,
+                            crate::i18n::tr("All model images"),
+                        );
+                        ui.radio_value(&mut f.insert, Insert::None, crate::i18n::tr("None"));
                     });
                     ui.end_row();
                 });
             ui.separator();
             ui.horizontal(|ui| {
-                ok = ui.button("OK").clicked();
-                cancel = ui.button("Cancel").clicked();
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if !open || cancel {

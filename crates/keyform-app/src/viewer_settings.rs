@@ -45,12 +45,12 @@ pub fn settings_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if runtime {
             ui.horizontal(|ui| {
-                if ui.button("Save model3.json").on_hover_text("Ctrl+S").clicked() {
+                if ui.button(crate::i18n::tr("Save model3.json")).on_hover_text(crate::i18n::tr("Ctrl+S")).clicked() {
                     save(doc, log);
                 }
             });
         } else {
-            ui.weak("Viewer settings are edited on runtime models (.model3.json). Playback works for projects too.");
+            ui.weak(crate::i18n::tr("Viewer settings are edited on runtime models (.model3.json). Playback works for projects too."));
         }
         motions_ui(ui, doc, st, log, runtime);
         expressions_ui(ui, doc, st, runtime);
@@ -85,7 +85,7 @@ fn motions_ui(
         .default_open(true)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut doc.looping, "Loop");
+                ui.checkbox(&mut doc.looping, crate::i18n::tr("Loop"));
                 if icons::icon_button(ui, Icon::Stop, "Stop motion").clicked() {
                     doc.motion_player.stop();
                 }
@@ -113,10 +113,14 @@ fn motions_ui(
                             .label(
                                 RichText::new(&m.reference.file).color(ui.visuals().error_fg_color),
                             )
-                            .on_hover_text("could not be loaded"),
+                            .on_hover_text(crate::i18n::tr("could not be loaded")),
                     };
                     label.context_menu(|ui| {
-                        if editable && ui.button("Remove from model3.json").clicked() {
+                        if editable
+                            && ui
+                                .button(crate::i18n::tr("Remove from model3.json"))
+                                .clicked()
+                        {
                             remove = Some(i);
                             ui.close();
                         }
@@ -144,13 +148,13 @@ fn motions_ui(
                             .hint_text("Group (e.g. Idle)")
                             .desired_width(110.0),
                     );
-                    if ui.button("Add motions…").clicked() {
+                    if ui.button(crate::i18n::tr("Add motions…")).clicked() {
                         add_motions(doc, st, log);
                     }
                 });
             }
             if doc.motions.is_empty() && !editable {
-                ui.weak("No motions.");
+                ui.weak(crate::i18n::tr("No motions."));
             }
         });
 }
@@ -231,7 +235,9 @@ fn expressions_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState,
             if let Some(i) = apply {
                 doc.play_expression(i);
             }
-            if !doc.expressions.is_empty() && ui.button("Reset expression").clicked() {
+            if !doc.expressions.is_empty()
+                && ui.button(crate::i18n::tr("Reset expression")).clicked()
+            {
                 doc.expression_player.reset();
             }
             if editable {
@@ -245,7 +251,7 @@ fn expressions_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState,
                     if ui
                         .add_enabled(
                             !name.is_empty(),
-                            egui::Button::new("New from current values"),
+                            egui::Button::new(crate::i18n::tr("New from current values")),
                         )
                         .clicked()
                     {
@@ -314,7 +320,7 @@ fn expression_editor(ui: &mut egui::Ui, doc: &mut Document, i: usize, st: &mut S
     egui::Frame::group(ui.style()).show(ui, |ui| {
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label("Name");
+            ui.label(crate::i18n::tr("Name"));
             changed |= ui.text_edit_singleline(&mut e.name).changed();
         });
         ui.horizontal(|ui| {
@@ -356,7 +362,7 @@ fn expression_editor(ui: &mut egui::Ui, doc: &mut Document, i: usize, st: &mut S
                             .speed(0.01)
                             .max_decimals(3),
                     )
-                    .on_hover_text("Target value")
+                    .on_hover_text(crate::i18n::tr("Target value"))
                     .changed()
                 {
                     p.value = stored_from_target(p.blend, target, default);
@@ -382,7 +388,7 @@ fn expression_editor(ui: &mut egui::Ui, doc: &mut Document, i: usize, st: &mut S
                         ui.selectable_value(&mut st.add_param, k, *id);
                     }
                 });
-            if ui.button("Add parameter").clicked() {
+            if ui.button(crate::i18n::tr("Add parameter")).clicked() {
                 if let Some(p) = params.get(st.add_param) {
                     if !e.expression.params.iter().any(|x| x.id == p.id) {
                         e.expression.params.push(ExpParam {
@@ -463,7 +469,7 @@ fn pose_editor(ui: &mut egui::Ui, doc: &mut Document) {
         if let Some(gi) = remove_group {
             pose.groups.remove(gi);
         }
-        if ui.button("Add group").clicked() {
+        if ui.button(crate::i18n::tr("Add group")).clicked() {
             pose.groups.push(Vec::new());
         }
         let mut fade = pose.fade_in;
@@ -501,7 +507,7 @@ fn hit_areas_ui(ui: &mut egui::Ui, doc: &mut Document) {
             doc.hit_areas.remove(i);
         }
         // Art meshes whose IDs start with "HitArea" are pre-filled (viewer.md §1.3).
-        if ui.button("Add HitArea meshes").clicked() {
+        if ui.button(crate::i18n::tr("Add HitArea meshes")).clicked() {
             for a in &doc.model.art_meshes {
                 if a.info.id.starts_with("HitArea")
                     && !doc.hit_areas.iter().any(|(i, _)| *i == a.info.id)
@@ -549,8 +555,8 @@ fn physics_ui(ui: &mut egui::Ui, doc: &mut Document) {
         .default_open(true)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.weak("On/off: Animation ▸ Apply Physics");
-                if ui.button("Reset").clicked() {
+                ui.weak(crate::i18n::tr("On/off: Animation ▸ Apply Physics"));
+                if ui.button(crate::i18n::tr("Reset")).clicked() {
                     doc.sim.reset(&doc.model.physics);
                 }
             });

@@ -117,14 +117,14 @@ pub fn dialog(
     let mut open = true;
     let mut go = false;
     let mut cancel = false;
-    egui::Window::new("Image Output Settings")
+    egui::Window::new(crate::i18n::tr("Image Output Settings"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Number of Pixels");
+            ui.label(crate::i18n::tr("Number of Pixels"));
             ui.horizontal(|ui| {
-                ui.label("Magnification");
+                ui.label(crate::i18n::tr("Magnification"));
                 ui.add(
                     egui::DragValue::new(&mut st.percent)
                         .range(0.0..=10000.0)
@@ -152,7 +152,7 @@ pub fn dialog(
                 MAX_BYTES / 1024 / 1024
             ));
             ui.horizontal(|ui| {
-                ui.label("JPEG quality");
+                ui.label(crate::i18n::tr("JPEG quality"));
                 ui.add(egui::Slider::new(&mut st.jpeg_quality, 0..=100));
             });
             if w > LARGE_SIDE || h > LARGE_SIDE {
@@ -166,9 +166,9 @@ pub fn dialog(
             ui.separator();
             ui.horizontal(|ui| {
                 go = ui
-                    .add_enabled(size_ok(w, h), egui::Button::new("OK"))
+                    .add_enabled(size_ok(w, h), egui::Button::new(crate::i18n::tr("OK")))
                     .clicked();
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if !open || cancel {

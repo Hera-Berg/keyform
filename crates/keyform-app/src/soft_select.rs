@@ -212,7 +212,7 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
     egui::Grid::new("soft-select")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("Weight");
+            ui.label(crate::i18n::tr("Weight"));
             let mut level = p.level * 100.0;
             if ui
                 .add(
@@ -226,7 +226,7 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
                 p.level = level / 100.0;
             }
             ui.end_row();
-            ui.label("Brush shape");
+            ui.label(crate::i18n::tr("Brush shape"));
             egui::ComboBox::from_id_salt("soft-shape")
                 .selected_text(format!("{:?}", p.shape))
                 .show_ui(ui, |ui| {
@@ -236,14 +236,14 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
                     }
                 });
             ui.end_row();
-            ui.label("Size");
+            ui.label(crate::i18n::tr("Size"));
             ui.add(
                 egui::DragValue::new(&mut p.size)
                     .range(0.1..=10000.0)
                     .suffix(" px"),
             );
             ui.end_row();
-            ui.label("Angle");
+            ui.label(crate::i18n::tr("Angle"));
             ui.add(
                 egui::DragValue::new(&mut p.angle)
                     .range(-180.0..=180.0)
@@ -251,7 +251,7 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
                     .suffix("°"),
             );
             ui.end_row();
-            ui.label("Hardness");
+            ui.label(crate::i18n::tr("Hardness"));
             let mut h = p.hardness * 100.0;
             if ui
                 .add(
@@ -266,7 +266,7 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
             }
             ui.end_row();
         });
-    ui.weak("Drag to paint the selection weight of the selected objects' points; Shift adds, Ctrl+Shift subtracts. B / C / V + drag: size / angle / hardness.");
+    ui.weak(crate::i18n::tr("Drag to paint the selection weight of the selected objects' points; Shift adds, Ctrl+Shift subtracts. B / C / V + drag: size / angle / hardness."));
 }
 
 #[cfg(test)]

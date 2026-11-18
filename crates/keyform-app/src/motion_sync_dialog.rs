@@ -167,21 +167,23 @@ pub fn dialog(
     let mut list = doc.model.motion_sync.clone();
     let before = list.clone();
     let mut open = true;
-    egui::Window::new("Motion-sync Settings")
+    egui::Window::new(crate::i18n::tr("Motion-sync Settings"))
         .default_size([620.0, 600.0])
         .open(&mut open)
         .show(ctx, |ui| {
             if doc.model.target_version != 0 && doc.model.target_version < MIN_TARGET {
                 ui.label(
-                    RichText::new("Motion-sync is only available in Cubism5.0 or later")
-                        .color(ui.visuals().warn_fg_color),
+                    RichText::new(crate::i18n::tr(
+                        "Motion-sync is only available in Cubism5.0 or later",
+                    ))
+                    .color(ui.visuals().warn_fg_color),
                 );
                 return;
             }
             audio_row(ui, st, doc, log);
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Setting:");
+                ui.label(crate::i18n::tr("Setting:"));
                 let name = list
                     .get(st.setting)
                     .map_or(String::new(), |s| s.name.clone());
@@ -193,15 +195,15 @@ pub fn dialog(
                             ui.selectable_value(&mut st.setting, i, &s.name);
                         }
                     });
-                if ui.button("Add…").clicked() {
+                if ui.button(crate::i18n::tr("Add…")).clicked() {
                     st.add = Some((String::new(), 0));
                 }
-                ui.menu_button("Edit…", |ui| {
-                    if ui.button("Rename…").clicked() {
+                ui.menu_button(crate::i18n::tr("Edit…"), |ui| {
+                    if ui.button(crate::i18n::tr("Rename…")).clicked() {
                         st.rename = list.get(st.setting).map(|s| s.name.clone());
                         ui.close();
                     }
-                    if ui.button("Duplicate").clicked() {
+                    if ui.button(crate::i18n::tr("Duplicate")).clicked() {
                         if let Some(s) = list.get(st.setting).cloned() {
                             let mut m2 = doc.model.clone();
                             m2.motion_sync = list.clone();
@@ -224,7 +226,7 @@ pub fn dialog(
                         }
                         ui.close();
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.button(crate::i18n::tr("Delete")).clicked() {
                         if st.setting < list.len() {
                             list.remove(st.setting);
                             st.setting = st.setting.saturating_sub(1);
@@ -236,15 +238,15 @@ pub fn dialog(
             if let Some(mut name) = st.rename.take() {
                 let mut done = false;
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    ui.label(crate::i18n::tr("Name:"));
                     ui.text_edit_singleline(&mut name);
-                    if ui.button("OK").clicked() {
+                    if ui.button(crate::i18n::tr("OK")).clicked() {
                         if let Some(s) = list.get_mut(st.setting) {
                             s.name = name.clone();
                         }
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::i18n::tr("Cancel")).clicked() {
                         done = true;
                     }
                 });
@@ -254,20 +256,20 @@ pub fn dialog(
             }
             let Some(s) = list.get_mut(st.setting) else {
                 ui.label(
-                    RichText::new("Please add motion-sync settings.")
+                    RichText::new(crate::i18n::tr("Please add motion-sync settings."))
                         .color(ui.visuals().warn_fg_color),
                 );
                 return;
             };
             egui::Grid::new("ms-post").num_columns(2).show(ui, |ui| {
-                ui.label("Sample Rate:");
+                ui.label(crate::i18n::tr("Sample Rate:"));
                 ui.add(
                     egui::DragValue::new(&mut s.sample_rate)
                         .range(1.0..=120.0)
                         .speed(0.5),
                 );
                 ui.end_row();
-                ui.label("Blending Ratio:");
+                ui.label(crate::i18n::tr("Blending Ratio:"));
                 ui.add(
                     egui::DragValue::new(&mut s.blend)
                         .range(0.0..=1.0)
@@ -275,18 +277,22 @@ pub fn dialog(
                         .fixed_decimals(2),
                 );
                 ui.end_row();
-                ui.label("Smoothing:");
+                ui.label(crate::i18n::tr("Smoothing:"));
                 ui.add(egui::DragValue::new(&mut s.smoothing).range(0..=100));
                 ui.end_row();
-                ui.label("Audio analysis type:");
-                ui.label("Lip-sync (Keyform analyser)");
+                ui.label(crate::i18n::tr("Audio analysis type:"));
+                ui.label(crate::i18n::tr("Lip-sync (Keyform analyser)"));
                 ui.end_row();
             });
             ui.separator();
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut st.tab, Tab::Mapping, "Mapping Settings");
-                ui.selectable_value(&mut st.tab, Tab::Audio, "Audio Elements");
-                ui.selectable_value(&mut st.tab, Tab::Parameter, "Parameter");
+                ui.selectable_value(
+                    &mut st.tab,
+                    Tab::Mapping,
+                    crate::i18n::tr("Mapping Settings"),
+                );
+                ui.selectable_value(&mut st.tab, Tab::Audio, crate::i18n::tr("Audio Elements"));
+                ui.selectable_value(&mut st.tab, Tab::Parameter, crate::i18n::tr("Parameter"));
             });
             let mut missing = false;
             match st.tab {
@@ -341,7 +347,7 @@ fn mapping_tab(
     missing: &mut bool,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Audio Elements:");
+        ui.label(crate::i18n::tr("Audio Elements:"));
         let name = s
             .audio
             .get(st.element)
@@ -372,8 +378,8 @@ fn mapping_tab(
         .num_columns(2)
         .striped(true)
         .show(ui, |ui| {
-            ui.label(RichText::new("Parameter name").strong());
-            ui.label(RichText::new("Value").strong());
+            ui.label(RichText::new(crate::i18n::tr("Parameter name")).strong());
+            ui.label(RichText::new(crate::i18n::tr("Value")).strong());
             ui.end_row();
             for c in &cubism {
                 let t = RichText::new(&c.name);
@@ -398,7 +404,7 @@ fn mapping_tab(
                         );
                     }
                     None => {
-                        if ui.small_button("Set").clicked() {
+                        if ui.small_button(crate::i18n::tr("Set")).clicked() {
                             mapping.targets.push((c.parameter_id.clone(), 0.0));
                         }
                     }
@@ -425,7 +431,7 @@ fn audio_tab(ui: &mut egui::Ui, s: &mut MotionSyncSetting) {
                         .speed(0.05)
                         .fixed_decimals(2),
                 );
-                ui.checkbox(&mut a.enabled, "");
+                ui.checkbox(&mut a.enabled, crate::i18n::tr(""));
                 ui.end_row();
             }
         });
@@ -457,8 +463,8 @@ fn parameter_tab(ui: &mut egui::Ui, m: &Model, s: &mut MotionSyncSetting, missin
                         .fixed_decimals(3),
                 );
                 ui.add(egui::DragValue::new(&mut c.smooth).range(0..=100));
-                ui.label("");
-                if ui.small_button("Delete").clicked() {
+                ui.label(crate::i18n::tr(""));
+                if ui.small_button(crate::i18n::tr("Delete")).clicked() {
                     remove = Some(k);
                 }
                 ui.end_row();
@@ -470,7 +476,7 @@ fn parameter_tab(ui: &mut egui::Ui, m: &Model, s: &mut MotionSyncSetting, missin
             x.targets.retain(|(p, _)| *p != id);
         }
     }
-    ui.menu_button("Add parameter…", |ui| {
+    ui.menu_button(crate::i18n::tr("Add parameter…"), |ui| {
         egui::ScrollArea::vertical()
             .max_height(300.0)
             .show(ui, |ui| {
@@ -509,17 +515,17 @@ fn add_dialog(
         return;
     };
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Add Motion-sync Settings")
+    egui::Window::new(crate::i18n::tr("Add Motion-sync Settings"))
         .collapsible(false)
         .show(ctx, |ui| {
             egui::Grid::new("ms-add").num_columns(2).show(ui, |ui| {
-                ui.label("Setting name:");
+                ui.label(crate::i18n::tr("Setting name:"));
                 ui.text_edit_singleline(name);
                 ui.end_row();
-                ui.label("Audio analysis type:");
-                ui.label("Lip-sync");
+                ui.label(crate::i18n::tr("Audio analysis type:"));
+                ui.label(crate::i18n::tr("Lip-sync"));
                 ui.end_row();
-                ui.label("Setting preset:");
+                ui.label(crate::i18n::tr("Setting preset:"));
                 egui::ComboBox::from_id_salt("ms-preset")
                     .selected_text(PRESETS[*preset].0)
                     .show_ui(ui, |ui| {
@@ -531,9 +537,12 @@ fn add_dialog(
             });
             ui.horizontal(|ui| {
                 ok = ui
-                    .add_enabled(!name.trim().is_empty(), egui::Button::new("OK"))
+                    .add_enabled(
+                        !name.trim().is_empty(),
+                        egui::Button::new(crate::i18n::tr("OK")),
+                    )
                     .clicked();
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if ok {
@@ -550,7 +559,7 @@ fn add_dialog(
 /// "Load Audio…" and play / stop of the audio preview.
 fn audio_row(ui: &mut egui::Ui, st: &mut MotionSyncDialog, doc: &mut Document, log: &mut Log) {
     ui.horizontal(|ui| {
-        if ui.button("Load Audio…").clicked() {
+        if ui.button(crate::i18n::tr("Load Audio…")).clicked() {
             if let Some(p) = rfd::FileDialog::new()
                 .add_filter("WAV", &["wav"])
                 .pick_file()
@@ -574,10 +583,13 @@ fn audio_row(ui: &mut egui::Ui, st: &mut MotionSyncDialog, doc: &mut Document, l
         );
         let can = st.pcm.is_some() && doc.model.motion_sync.get(st.setting).is_some();
         if st.preview.is_some() {
-            if ui.button("Stop").clicked() {
+            if ui.button(crate::i18n::tr("Stop")).clicked() {
                 stop_preview(st, doc);
             }
-        } else if ui.add_enabled(can, egui::Button::new("Play")).clicked() {
+        } else if ui
+            .add_enabled(can, egui::Button::new(crate::i18n::tr("Play")))
+            .clicked()
+        {
             start_preview(st, doc);
         }
     });

@@ -130,7 +130,7 @@ pub fn window(
     let mut rig = doc.model.physics.clone();
     let editable = doc.editable();
     let mut open = true;
-    egui::Window::new("Physics Settings")
+    egui::Window::new(crate::i18n::tr("Physics Settings"))
         .default_size([760.0, 640.0])
         .open(&mut open)
         .show(ctx, |ui| {
@@ -139,13 +139,17 @@ pub fn window(
                 ui.separator();
                 header(ui, st, &mut rig);
                 if rig.settings.is_empty() {
-                    ui.weak("No physics groups. Add one to start.");
+                    ui.weak(crate::i18n::tr("No physics groups. Add one to start."));
                     return;
                 }
                 st.group = st.group.min(rig.settings.len() - 1);
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut st.tab, Tab::Input, "Input settings");
-                    ui.selectable_value(&mut st.tab, Tab::Output, "Output Settings");
+                    ui.selectable_value(&mut st.tab, Tab::Input, crate::i18n::tr("Input settings"));
+                    ui.selectable_value(
+                        &mut st.tab,
+                        Tab::Output,
+                        crate::i18n::tr("Output Settings"),
+                    );
                 });
                 ui.separator();
                 match st.tab {
@@ -206,43 +210,52 @@ fn menus(
     log: &mut Log,
 ) {
     egui::MenuBar::new().ui(ui, |ui| {
-        ui.menu_button("Edit", |ui| {
-            if ui.button("Undo").clicked() {
+        ui.menu_button(crate::i18n::tr("Edit"), |ui| {
+            if ui.button(crate::i18n::tr("Undo")).clicked() {
                 st.base = None;
                 doc.undo();
                 *rig = doc.model.physics.clone();
                 ui.close();
             }
-            if ui.button("Redo").clicked() {
+            if ui.button(crate::i18n::tr("Redo")).clicked() {
                 st.base = None;
                 doc.redo();
                 *rig = doc.model.physics.clone();
                 ui.close();
             }
             ui.separator();
-            if ui.button("Copy output lines").clicked() {
+            if ui.button(crate::i18n::tr("Copy output lines")).clicked() {
                 if let Some(s) = rig.settings.get(st.group) {
                     st.clipboard = s.outputs.clone();
                     st.message = Some("Copied".into());
                 }
                 ui.close();
             }
-            if ui.button("Paste output lines").clicked() {
+            if ui.button(crate::i18n::tr("Paste output lines")).clicked() {
                 paste_outputs(st, rig);
                 ui.close();
             }
         });
-        ui.menu_button("Physics", |ui| {
-            if ui.button("Import Physics Settings…").clicked() {
+        ui.menu_button(crate::i18n::tr("Physics"), |ui| {
+            if ui
+                .button(crate::i18n::tr("Import Physics Settings…"))
+                .clicked()
+            {
                 ui.close();
                 import(st, doc, rig, log);
             }
-            if ui.button("Export Physics settings…").clicked() {
+            if ui
+                .button(crate::i18n::tr("Export Physics settings…"))
+                .clicked()
+            {
                 ui.close();
                 export(st, doc, rig, log);
             }
             ui.separator();
-            if ui.button("Initialize Calculate FPS").clicked() {
+            if ui
+                .button(crate::i18n::tr("Initialize Calculate FPS"))
+                .clicked()
+            {
                 st.fps_list = vec![15, 30, 60, 120];
                 rig.fps = Some(60.0);
                 ui.close();
@@ -318,7 +331,7 @@ fn export(st: &mut PhysicsEditor, doc: &Document, rig: &PhysicsRig, log: &mut Lo
 /// §2 Calculate FPS and §3 the group row.
 fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
     ui.horizontal(|ui| {
-        ui.label("Calculate FPS:");
+        ui.label(crate::i18n::tr("Calculate FPS:"));
         let mut fps = rig.fps.map_or(60, |f| f.round() as u32);
         let before = fps;
         egui::ComboBox::from_id_salt("physics-fps")
@@ -340,7 +353,7 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
         }
     });
     ui.horizontal(|ui| {
-        ui.label("Group:");
+        ui.label(crate::i18n::tr("Group:"));
         let name = rig
             .settings
             .get(st.group)
@@ -353,11 +366,14 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
                     ui.selectable_value(&mut st.group, i, &s.name);
                 }
             });
-        if ui.button("Add…").clicked() {
+        if ui.button(crate::i18n::tr("Add…")).clicked() {
             st.add_name = Some((String::new(), false));
         }
         if ui
-            .add_enabled(!rig.settings.is_empty(), egui::Button::new("Duplicate…"))
+            .add_enabled(
+                !rig.settings.is_empty(),
+                egui::Button::new(crate::i18n::tr("Duplicate…")),
+            )
             .clicked()
         {
             if let Some(i) = pe::duplicate(rig, st.group) {
@@ -365,9 +381,9 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
             }
         }
         if let Some(s) = rig.settings.get_mut(st.group) {
-            ui.checkbox(&mut s.enabled, "Enable");
+            ui.checkbox(&mut s.enabled, crate::i18n::tr("Enable"));
         }
-        if ui.button("Group editing…").clicked() {
+        if ui.button(crate::i18n::tr("Group editing…")).clicked() {
             st.groups = Some(rig.clone());
         }
     });
@@ -377,14 +393,14 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
 fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut PhysicsRig) {
     let g = st.group;
     let s = &mut rig.settings[g];
-    ui.label(RichText::new("Input normalization").strong());
+    ui.label(RichText::new(crate::i18n::tr("Input normalization")).strong());
     egui::Grid::new("physics-norm")
         .num_columns(4)
         .show(ui, |ui| {
-            ui.label("");
-            ui.label("Minimum");
-            ui.label("Center");
-            ui.label("Maximum");
+            ui.label(crate::i18n::tr(""));
+            ui.label(crate::i18n::tr("Minimum"));
+            ui.label(crate::i18n::tr("Center"));
+            ui.label(crate::i18n::tr("Maximum"));
             ui.end_row();
             for (label, n, lim) in [
                 ("Angle:", &mut s.angle, 180.0f32),
@@ -415,7 +431,7 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
         });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.menu_button("Add…", |ui| {
+        ui.menu_button(crate::i18n::tr("Add…"), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(320.0)
                 .show(ui, |ui| {
@@ -429,7 +445,9 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
                     }
                 });
         });
-        ui.weak("Input parameter can be added by right clicking on menu.");
+        ui.weak(crate::i18n::tr(
+            "Input parameter can be added by right clicking on menu.",
+        ));
     });
     let mut action = None;
     egui::Grid::new("physics-inputs")
@@ -446,8 +464,16 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
                     .selected_text(kind_label(inp.kind))
                     .show_ui(ui, |ui| {
                         // Y is not offered (§5.1).
-                        ui.selectable_value(&mut inp.kind, PhysicsKind::X, "Position X");
-                        ui.selectable_value(&mut inp.kind, PhysicsKind::Angle, "Angle");
+                        ui.selectable_value(
+                            &mut inp.kind,
+                            PhysicsKind::X,
+                            crate::i18n::tr("Position X"),
+                        );
+                        ui.selectable_value(
+                            &mut inp.kind,
+                            PhysicsKind::Angle,
+                            crate::i18n::tr("Angle"),
+                        );
                     });
                 let mut w = inp.weight.round() as i32;
                 if ui
@@ -456,16 +482,16 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
                 {
                     inp.weight = w as f32;
                 }
-                ui.checkbox(&mut inp.reflect, "");
+                ui.checkbox(&mut inp.reflect, crate::i18n::tr(""));
                 ui.horizontal(|ui| {
-                    if ui.small_button("Up").clicked() {
+                    if ui.small_button(crate::i18n::tr("Up")).clicked() {
                         action = Some(("up", k));
                     }
-                    if ui.small_button("Down").clicked() {
+                    if ui.small_button(crate::i18n::tr("Down")).clicked() {
                         action = Some(("down", k));
                     }
                 });
-                if ui.small_button("Delete").clicked() {
+                if ui.small_button(crate::i18n::tr("Delete")).clicked() {
                     action = Some(("del", k));
                 }
                 ui.end_row();
@@ -496,7 +522,7 @@ fn outputs(
     let g = st.group;
     if rig.settings[g].vertices.len() < 2 {
         ui.label(
-            RichText::new("The pendulum has not been set. Please add a pendulum in the Physics model settings.")
+            RichText::new(crate::i18n::tr("The pendulum has not been set. Please add a pendulum in the Physics model settings."))
                 .color(warn),
         );
     }
@@ -514,7 +540,7 @@ fn outputs(
         [f32::INFINITY, f32::NEG_INFINITY],
     );
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Add").clicked() {
+        if ui.button(crate::i18n::tr("Add")).clicked() {
             let s = &mut rig.settings[g];
             let p = s.outputs.last().map_or(0, |o| o.parameter);
             let o = pe::new_output(s, p);
@@ -523,49 +549,59 @@ fn outputs(
         }
         let mut adjust = None;
         if ui
-            .button("Increase Output")
-            .on_hover_text("Adjust all output magnification of objects which are under 100%")
+            .button(crate::i18n::tr("Increase Output"))
+            .on_hover_text(crate::i18n::tr(
+                "Adjust all output magnification of objects which are under 100%",
+            ))
             .clicked()
         {
             adjust = Some(Adjust::Increase);
         }
         if ui
-            .button("Decrease Output")
-            .on_hover_text("Adjust all output magnification of objects which are over 100%")
+            .button(crate::i18n::tr("Decrease Output"))
+            .on_hover_text(crate::i18n::tr(
+                "Adjust all output magnification of objects which are over 100%",
+            ))
             .clicked()
         {
             adjust = Some(Adjust::Decrease);
         }
-        if ui.button("Fit to parameter range").clicked() {
+        if ui
+            .button(crate::i18n::tr("Fit to parameter range"))
+            .clicked()
+        {
             adjust = Some(Adjust::Fit);
         }
         if let Some(a) = adjust {
             pe::adjust_outputs(&mut rig.settings[g], &mut extremes, &params, a);
         }
-        if ui.button("Reset Magnification").clicked() {
+        if ui.button(crate::i18n::tr("Reset Magnification")).clicked() {
             for o in &mut rig.settings[g].outputs {
                 pe::set_scale(o, 1.0);
             }
         }
         if ui
-            .button("Reset Output Maximum")
-            .on_hover_text("Set output maximum by 0%")
+            .button(crate::i18n::tr("Reset Output Maximum"))
+            .on_hover_text(crate::i18n::tr("Set output maximum by 0%"))
             .clicked()
         {
             extremes.iter_mut().for_each(|e| *e = [0.0, 0.0]);
         }
-        if ui.button("Copy").clicked() {
+        if ui.button(crate::i18n::tr("Copy")).clicked() {
             st.clipboard = rig.settings[g].outputs.clone();
             st.message = Some("Copied".into());
         }
-        if ui.button("Paste").clicked() {
+        if ui.button(crate::i18n::tr("Paste")).clicked() {
             paste_outputs(st, rig);
             extremes.resize(
                 rig.settings[g].outputs.len(),
                 [f32::INFINITY, f32::NEG_INFINITY],
             );
         }
-        ui.checkbox(&mut st.auto_max, "Auto-update maximum of output");
+        ui.checkbox(
+            &mut st.auto_max,
+            crate::i18n::tr("Auto-update maximum of output"),
+        );
     });
     let n_pend = pe::pendulum_count(&rig.settings[g]);
     let s = &mut rig.settings[g];
@@ -608,8 +644,16 @@ fn outputs(
                             .selected_text(kind_label(kind))
                             .show_ui(ui, |ui| {
                                 // TODO(Q-0038): output types the reference offers.
-                                ui.selectable_value(&mut kind, PhysicsKind::X, "Position X");
-                                ui.selectable_value(&mut kind, PhysicsKind::Angle, "Angle");
+                                ui.selectable_value(
+                                    &mut kind,
+                                    PhysicsKind::X,
+                                    crate::i18n::tr("Position X"),
+                                );
+                                ui.selectable_value(
+                                    &mut kind,
+                                    PhysicsKind::Angle,
+                                    crate::i18n::tr("Angle"),
+                                );
                             });
                         if kind != o.kind {
                             // The scale carries over to the new type's field.
@@ -624,7 +668,7 @@ fn outputs(
                         {
                             o.weight = w as f32;
                         }
-                        ui.checkbox(&mut o.reflect, "");
+                        ui.checkbox(&mut o.reflect, crate::i18n::tr(""));
                         let old = o.scale();
                         let mut sc = old;
                         if ui
@@ -650,18 +694,18 @@ fn outputs(
                                 ui.label(if v > 100.0 { t.color(warn) } else { t });
                             }
                             None => {
-                                ui.weak("—");
+                                ui.weak(crate::i18n::tr("—"));
                             }
                         }
                         ui.horizontal(|ui| {
-                            if ui.small_button("Up").clicked() {
+                            if ui.small_button(crate::i18n::tr("Up")).clicked() {
                                 action = Some(("up", k));
                             }
-                            if ui.small_button("Down").clicked() {
+                            if ui.small_button(crate::i18n::tr("Down")).clicked() {
                                 action = Some(("down", k));
                             }
                         });
-                        if ui.small_button("Delete").clicked() {
+                        if ui.small_button(crate::i18n::tr("Delete")).clicked() {
                             action = Some(("del", k));
                         }
                         ui.end_row();
@@ -698,12 +742,14 @@ fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
     let g = st.group;
     let s = &mut rig.settings[g];
     let before = s.vertices.clone();
-    ui.label(RichText::new("Pendulum settings").strong());
-    ui.weak("When a multi-stage pendulum is set, it will be numbered in order from the top.");
+    ui.label(RichText::new(crate::i18n::tr("Pendulum settings")).strong());
+    ui.weak(crate::i18n::tr(
+        "When a multi-stage pendulum is set, it will be numbered in order from the top.",
+    ));
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                if ui.button("Add").clicked() {
+                if ui.button(crate::i18n::tr("Add")).clicked() {
                     s.vertices.push(pe::default_pendulum());
                 }
             });
@@ -734,18 +780,18 @@ fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
                     ui.add(egui::DragValue::new(&mut v.delay).speed(0.01).fixed_decimals(2).range(pe::DELAY.0..=pe::DELAY.1));
                     ui.add(egui::DragValue::new(&mut v.acceleration).speed(0.01).fixed_decimals(2).range(pe::ACCELERATION.0..=pe::ACCELERATION.1));
                     ui.horizontal(|ui| {
-                        if ui.small_button("Up").clicked() && k > 1 {
+                        if ui.small_button(crate::i18n::tr("Up")).clicked() && k > 1 {
                             action = Some(("up", k));
                         }
-                        if ui.small_button("Down").clicked() {
+                        if ui.small_button(crate::i18n::tr("Down")).clicked() {
                             action = Some(("down", k));
                         }
                     });
                     ui.horizontal(|ui| {
-                        if ui.small_button("Duplicate").clicked() {
+                        if ui.small_button(crate::i18n::tr("Duplicate")).clicked() {
                             action = Some(("dup", k));
                         }
-                        if ui.small_button("Delete").clicked() {
+                        if ui.small_button(crate::i18n::tr("Delete")).clicked() {
                             action = Some(("del", k));
                         }
                     });
@@ -837,12 +883,12 @@ fn group_dialog(
             }
         })
     };
-    egui::Window::new("Edit Physics Group").collapsible(false).default_width(760.0).show(ctx, |ui| {
+    egui::Window::new(crate::i18n::tr("Edit Physics Group")).collapsible(false).default_width(760.0).show(ctx, |ui| {
         ui.horizontal(|ui| {
-            ui.radio_value(&mut st.groups_show_ids, false, "Show parameter name and effectiveness in tooltip");
-            ui.radio_value(&mut st.groups_show_ids, true, "Show parameter ID and effectiveness in tooltip");
+            ui.radio_value(&mut st.groups_show_ids, false, crate::i18n::tr("Show parameter name and effectiveness in tooltip"));
+            ui.radio_value(&mut st.groups_show_ids, true, crate::i18n::tr("Show parameter ID and effectiveness in tooltip"));
         });
-        ui.weak("Pay caution to the input and output parameters when the background of the table cell is colored.");
+        ui.weak(crate::i18n::tr("Pay caution to the input and output parameters when the background of the table cell is colored."));
         ui.horizontal_top(|ui| {
             egui::Grid::new("physics-groups").num_columns(7).striped(true).show(ui, |ui| {
                 for h in ["Enable", "Priority", "Group name", "Number of pendulums", "Input parameters (positionX)", "Input parameters (angle)", "Output parameter"] {
@@ -851,7 +897,7 @@ fn group_dialog(
                 ui.end_row();
                 for (i, s) in rig.settings.iter_mut().enumerate() {
                     let c = &caution[i];
-                    ui.checkbox(&mut s.enabled, "");
+                    ui.checkbox(&mut s.enabled, crate::i18n::tr(""));
                     ui.label((i + 1).to_string());
                     if ui.selectable_label(st.group == i, &s.name).clicked() {
                         st.group = i;
@@ -899,28 +945,28 @@ fn group_dialog(
                 }
             });
             ui.vertical(|ui| {
-                if ui.button("Add…").clicked() {
+                if ui.button(crate::i18n::tr("Add…")).clicked() {
                     st.add_name = Some((String::new(), false));
                 }
-                if ui.button("Duplicate…").clicked() {
+                if ui.button(crate::i18n::tr("Duplicate…")).clicked() {
                     if let Some(i) = pe::duplicate(rig, st.group) {
                         st.group = i;
                     }
                 }
-                if ui.button("Rename…").clicked() {
+                if ui.button(crate::i18n::tr("Rename…")).clicked() {
                     st.rename = rig.settings.get(st.group).map(|s| s.name.clone());
                 }
                 ui.separator();
-                if ui.button("Increase priority").clicked() && st.group > 0 && st.group < rig.settings.len() {
+                if ui.button(crate::i18n::tr("Increase priority")).clicked() && st.group > 0 && st.group < rig.settings.len() {
                     rig.settings.swap(st.group, st.group - 1);
                     st.group -= 1;
                 }
-                if ui.button("Decrease priority").clicked() && st.group + 1 < rig.settings.len() {
+                if ui.button(crate::i18n::tr("Decrease priority")).clicked() && st.group + 1 < rig.settings.len() {
                     rig.settings.swap(st.group, st.group + 1);
                     st.group += 1;
                 }
                 ui.separator();
-                if ui.button("Delete").clicked() && st.group < rig.settings.len() {
+                if ui.button(crate::i18n::tr("Delete")).clicked() && st.group < rig.settings.len() {
                     rig.settings.remove(st.group);
                     st.group = st.group.saturating_sub(1);
                 }
@@ -929,9 +975,9 @@ fn group_dialog(
         if let Some(mut name) = st.rename.take() {
             let mut done = false;
             ui.horizontal(|ui| {
-                ui.label("Group name:");
+                ui.label(crate::i18n::tr("Group name:"));
                 ui.text_edit_singleline(&mut name);
-                if ui.button("Rename").clicked() {
+                if ui.button(crate::i18n::tr("Rename")).clicked() {
                     if let Some(s) = rig.settings.get_mut(st.group) {
                         s.name = name.clone();
                     }
@@ -944,8 +990,8 @@ fn group_dialog(
         }
         ui.separator();
         ui.horizontal(|ui| {
-            ok = ui.button("OK").clicked();
-            cancel = ui.button("Cancel").clicked();
+            ok = ui.button(crate::i18n::tr("OK")).clicked();
+            cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
         });
     });
     if cancel {
@@ -964,18 +1010,21 @@ fn add_dialog(ctx: &egui::Context, st: &mut PhysicsEditor, rig: &mut PhysicsRig)
         return;
     };
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Add Physics Group")
+    egui::Window::new(crate::i18n::tr("Add Physics Group"))
         .collapsible(false)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Name:");
+                ui.label(crate::i18n::tr("Name:"));
                 ui.text_edit_singleline(name);
             });
             ui.horizontal(|ui| {
                 ok = ui
-                    .add_enabled(!name.trim().is_empty(), egui::Button::new("OK"))
+                    .add_enabled(
+                        !name.trim().is_empty(),
+                        egui::Button::new(crate::i18n::tr("OK")),
+                    )
                     .clicked();
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if ok {
@@ -994,16 +1043,18 @@ fn similar_dialog(ctx: &egui::Context, st: &mut PhysicsEditor, rig: &mut Physics
         return;
     };
     let (mut yes, mut no) = (false, false);
-    egui::Window::new("Similar changes")
+    egui::Window::new(crate::i18n::tr("Similar changes"))
         .collapsible(false)
         .show(ctx, |ui| {
-            ui.label("Similar change candidates exist. Change them as well?");
+            ui.label(crate::i18n::tr(
+                "Similar change candidates exist. Change them as well?",
+            ));
             for (k, p) in list {
                 ui.label(format!("Output {}: → parameter #{p}", k + 1));
             }
             ui.horizontal(|ui| {
-                yes = ui.button("Yes").clicked();
-                no = ui.button("No").clicked();
+                yes = ui.button(crate::i18n::tr("Yes")).clicked();
+                no = ui.button(crate::i18n::tr("No")).clicked();
             });
         });
     if yes {

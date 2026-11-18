@@ -29,21 +29,21 @@ pub fn dialog(ctx: &egui::Context, st: &mut NewModelDialog) -> Option<(u32, u32)
     }
     let mut open = true;
     let mut create = false;
-    egui::Window::new("New Model")
+    egui::Window::new(crate::i18n::tr("New Model"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Create with specified size");
+            ui.label(crate::i18n::tr("Create with specified size"));
             let (w0, h0) = (st.width, st.height);
             egui::Grid::new("new-model").num_columns(3).show(ui, |ui| {
-                ui.label("Width");
+                ui.label(crate::i18n::tr("Width"));
                 ui.add(egui::DragValue::new(&mut st.width).range(1..=16384));
-                ui.label("pixel");
+                ui.label(crate::i18n::tr("pixel"));
                 ui.end_row();
-                ui.label("Height");
+                ui.label(crate::i18n::tr("Height"));
                 ui.add(egui::DragValue::new(&mut st.height).range(1..=16384));
-                ui.label("pixel");
+                ui.label(crate::i18n::tr("pixel"));
                 ui.end_row();
             });
             if st.fix_aspect && w0 > 0 && h0 > 0 {
@@ -53,11 +53,11 @@ pub fn dialog(ctx: &egui::Context, st: &mut NewModelDialog) -> Option<(u32, u32)
                     st.width = ((st.height as f64 * w0 as f64 / h0 as f64).round() as u32).max(1);
                 }
             }
-            ui.checkbox(&mut st.fix_aspect, "Fix Aspect Ratio");
+            ui.checkbox(&mut st.fix_aspect, crate::i18n::tr("Fix Aspect Ratio"));
             ui.separator();
             ui.horizontal(|ui| {
-                create = ui.button("Create").clicked();
-                if ui.button("Cancel").clicked() {
+                create = ui.button(crate::i18n::tr("Create")).clicked();
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
                     st.open = false;
                 }
             });

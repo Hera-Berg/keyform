@@ -1290,7 +1290,7 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
     };
     let mut open = true;
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Scene settings")
+    egui::Window::new(crate::i18n::tr("Scene settings"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -1298,17 +1298,17 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
             egui::Grid::new("scene-settings")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.label("Scene Name");
+                    ui.label(crate::i18n::tr("Scene Name"));
                     ui.text_edit_singleline(&mut s.name);
                     ui.end_row();
-                    ui.label("Size");
+                    ui.label(crate::i18n::tr("Size"));
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::DragValue::new(&mut s.canvas.0)
                                 .range(16..=16384)
                                 .suffix(" px"),
                         );
-                        ui.label("×");
+                        ui.label(crate::i18n::tr("×"));
                         ui.add(
                             egui::DragValue::new(&mut s.canvas.1)
                                 .range(16..=16384)
@@ -1316,40 +1316,43 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
                         );
                     });
                     ui.end_row();
-                    ui.label("Frame rate");
+                    ui.label(crate::i18n::tr("Frame rate"));
                     ui.add(
                         egui::DragValue::new(&mut s.fps)
                             .range(1.0..=240.0)
                             .suffix(" fps"),
                     );
                     ui.end_row();
-                    ui.label("Last frame");
+                    ui.label(crate::i18n::tr("Last frame"));
                     ui.add(egui::DragValue::new(&mut s.duration).range(1..=100_000));
                     ui.end_row();
-                    ui.label("Work area");
+                    ui.label(crate::i18n::tr("Work area"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut s.work_start).range(0..=s.duration));
-                        ui.label("–");
+                        ui.label(crate::i18n::tr("–"));
                         ui.add(egui::DragValue::new(&mut s.work_end).range(0..=s.duration));
                     });
                     ui.end_row();
-                    ui.label("Fade in / out (ms, −1 = unset)");
+                    ui.label(crate::i18n::tr("Fade in / out (ms, −1 = unset)"));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut s.fade_in_ms).range(-1..=60_000));
                         ui.add(egui::DragValue::new(&mut s.fade_out_ms).range(-1..=60_000));
                     });
                     ui.end_row();
-                    ui.label("");
-                    ui.checkbox(&mut s.loop_motion, "Loop motion");
+                    ui.label(crate::i18n::tr(""));
+                    ui.checkbox(&mut s.loop_motion, crate::i18n::tr("Loop motion"));
                     ui.end_row();
-                    ui.label("");
+                    ui.label(crate::i18n::tr(""));
                     ui.checkbox(
                         &mut s.bezier_restricted,
                         "Restriction for SDK (handles move vertically only)",
                     );
                     ui.end_row();
-                    ui.label("");
-                    ui.checkbox(&mut s.export_motion, "Include in motion export");
+                    ui.label(crate::i18n::tr(""));
+                    ui.checkbox(
+                        &mut s.export_motion,
+                        crate::i18n::tr("Include in motion export"),
+                    );
                     ui.end_row();
                     let ct = |ui: &mut egui::Ui, id: &str, v: &mut CurveType| {
                         egui::ComboBox::from_id_salt(id)
@@ -1360,13 +1363,13 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
                                 }
                             });
                     };
-                    ui.label("New parameter keys");
+                    ui.label(crate::i18n::tr("New parameter keys"));
                     ct(ui, "set-param-curve", &mut s.default_param_curve);
                     ui.end_row();
-                    ui.label("New part keys");
+                    ui.label(crate::i18n::tr("New part keys"));
                     ct(ui, "set-part-curve", &mut s.default_part_curve);
                     ui.end_row();
-                    ui.label("Target");
+                    ui.label(crate::i18n::tr("Target"));
                     let label = match s.target.as_str() {
                         "FOR_VIDEO" => "Video",
                         "FOR_UNITY_SDK" => "SDK (Unity)",
@@ -1389,8 +1392,8 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
                 });
             ui.separator();
             ui.horizontal(|ui| {
-                ok = ui.button("OK").clicked();
-                cancel = ui.button("Cancel").clicked();
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     s.work_end = s.work_end.min(s.duration).max(s.work_start);
@@ -1431,17 +1434,17 @@ fn physics_bake_dialog(ctx: &egui::Context, st: &mut AnimState) -> Option<SceneO
     let mut open = true;
     let mut op = None;
     let mut close = false;
-    egui::Window::new("Settings of Baking Animation from Physics")
+    egui::Window::new(crate::i18n::tr("Settings of Baking Animation from Physics"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label("Parameters to apply physics to:");
+            ui.label(crate::i18n::tr("Parameters to apply physics to:"));
             ui.horizontal(|ui| {
-                if ui.button("Select all").clicked() {
+                if ui.button(crate::i18n::tr("Select all")).clicked() {
                     d.params.iter_mut().for_each(|p| p.2 = true);
                 }
-                if ui.button("Unselect all").clicked() {
+                if ui.button(crate::i18n::tr("Unselect all")).clicked() {
                     d.params.iter_mut().for_each(|p| p.2 = false);
                 }
             });
@@ -1453,25 +1456,31 @@ fn physics_bake_dialog(ctx: &egui::Context, st: &mut AnimState) -> Option<SceneO
                     }
                 });
             ui.separator();
-            ui.label("Keyframe Insertion Method");
+            ui.label(crate::i18n::tr("Keyframe Insertion Method"));
             ui.radio_value(
                 &mut d.every_frame,
                 false,
                 "Automatically create optimal curves",
             );
-            ui.radio_value(&mut d.every_frame, true, "Insert key to every frame");
-            ui.label("Frame rate used for baking: the scene frame rate.");
+            ui.radio_value(
+                &mut d.every_frame,
+                true,
+                crate::i18n::tr("Insert key to every frame"),
+            );
+            ui.label(crate::i18n::tr(
+                "Frame rate used for baking: the scene frame rate.",
+            ));
             ui.separator();
             ui.horizontal(|ui| {
                 let chosen: Vec<usize> = d.params.iter().filter(|p| p.2).map(|p| p.0).collect();
                 if ui
-                    .add_enabled(!chosen.is_empty(), egui::Button::new("OK"))
+                    .add_enabled(!chosen.is_empty(), egui::Button::new(crate::i18n::tr("OK")))
                     .clicked()
                 {
                     op = Some(SceneOp::BakePhysics(chosen, d.every_frame));
                     close = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
                     close = true;
                 }
             });
@@ -1494,23 +1503,23 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
         .collect();
     if let Some(st) = doc.anim.as_mut() {
         ui.horizontal(|ui| {
-            ui.menu_button("Scene", |ui| {
-                if ui.button("Scene settings…").clicked() {
+            ui.menu_button(crate::i18n::tr("Scene"), |ui| {
+                if ui.button(crate::i18n::tr("Scene settings…")).clicked() {
                     st.settings = st.scene().map(|s| Scene { tracks: Vec::new(), ..s.clone() });
                     ui.close();
                 }
-                if ui.button("Create new scene").clicked() {
+                if ui.button(crate::i18n::tr("Create new scene")).clicked() {
                     op = Some(SceneOp::Add);
                     ui.close();
                 }
-                if ui.button("Rename…").clicked() {
+                if ui.button(crate::i18n::tr("Rename…")).clicked() {
                     st.rename = st.scene().map(|s| s.name.clone());
                     ui.close();
                 }
                 if ui
                     .add_enabled(
                         st.doc.animation.scenes.len() > 1,
-                        egui::Button::new("Delete scene"),
+                        egui::Button::new(crate::i18n::tr("Delete scene")),
                     )
                     .clicked()
                 {
@@ -1518,13 +1527,13 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Add model track").clicked() {
+                if ui.button(crate::i18n::tr("Add model track")).clicked() {
                     op = Some(SceneOp::AddTrack);
                     ui.close();
                 }
                 if ui
-                    .button("Add sound track (WAV)…")
-                    .on_hover_text("Currently only wav files are supported (16 bit or less PCM, 44100 Hz recommended). Use Bake Lip-sync to drive the mouth from it.")
+                    .button(crate::i18n::tr("Add sound track (WAV)…"))
+                    .on_hover_text(crate::i18n::tr("Currently only wav files are supported (16 bit or less PCM, 44100 Hz recommended). Use Bake Lip-sync to drive the mouth from it."))
                     .clicked()
                 {
                     ui.close();
@@ -1542,7 +1551,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     .map(|(i, s)| (i, s.name.clone()))
                     .collect();
                 ui.add_enabled_ui(!others.is_empty(), |ui| {
-                    ui.menu_button("Add scene track", |ui| {
+                    ui.menu_button(crate::i18n::tr("Add scene track"), |ui| {
                         for (i, name) in &others {
                             if ui.button(name).clicked() {
                                 op = Some(SceneOp::AddSceneTrack(*i));
@@ -1551,13 +1560,13 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                         }
                     });
                 });
-                if ui.button("Add image track…").clicked() {
+                if ui.button(crate::i18n::tr("Add image track…")).clicked() {
                     ui.close();
                     if let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png"]).pick_file() {
                         op = Some(SceneOp::AddImage(p));
                     }
                 }
-                if ui.button("Import motion3.json…").clicked() {
+                if ui.button(crate::i18n::tr("Import motion3.json…")).clicked() {
                     ui.close();
                     if let Some(p) = rfd::FileDialog::new().add_filter("Motion", &["json"]).pick_file() {
                         op = Some(SceneOp::ImportMotion(p));
@@ -1575,13 +1584,13 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                             .collect()
                     })
                     .unwrap_or_default();
-                if ui.button("Bake Animation from Physics…").clicked() {
+                if ui.button(crate::i18n::tr("Bake Animation from Physics…")).clicked() {
                     op = Some(SceneOp::OpenPhysicsBake);
                     ui.close();
                 }
                 let ms_settings = &doc_motion_sync_names;
                 ui.add_enabled_ui(!sound_tracks.is_empty() && !ms_settings.is_empty(), |ui| {
-                    ui.menu_button("Bake Animation from Motion-sync", |ui| {
+                    ui.menu_button(crate::i18n::tr("Bake Animation from Motion-sync"), |ui| {
                         for (si, sname) in ms_settings.iter().enumerate() {
                             for (i, name) in &sound_tracks {
                                 if ui.button(format!("{sname} ← {name}")).clicked() {
@@ -1593,9 +1602,9 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     });
                 });
                 ui.add_enabled_ui(!sound_tracks.is_empty(), |ui| {
-                    ui.menu_button("Bake Lip-sync", |ui| {
+                    ui.menu_button(crate::i18n::tr("Bake Lip-sync"), |ui| {
                         for (i, name) in &sound_tracks {
-                            if ui.button(name).on_hover_text("Write this sound's level as keys on the lip-sync volume").clicked() {
+                            if ui.button(name).on_hover_text(crate::i18n::tr("Write this sound's level as keys on the lip-sync volume")).clicked() {
                                 op = Some(SceneOp::BakeLipSync(*i));
                                 ui.close();
                             }
@@ -1610,17 +1619,17 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             };
             if let (Some(ti), Some((mut local, mut apply))) = (ti, mode) {
                 ui.toggle_value(&mut st.form_tool, "Form Edit")
-                    .on_hover_text("Drag art mesh vertices on the canvas to make a form key at the playhead");
+                    .on_hover_text(crate::i18n::tr("Drag art mesh vertices on the canvas to make a form key at the playhead"));
                 let (l0, a0) = (local, apply);
                 egui::ComboBox::from_id_salt("form_mode")
                     .selected_text(if local { "Adjustment Mode 2" } else { "Adjustment Mode 1" })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut local, false, "Adjustment Mode 1")
-                            .on_hover_text("Added to the final form");
-                        ui.selectable_value(&mut local, true, "Adjustment Mode 2")
-                            .on_hover_text("Added to the local form; the deformer still moves it");
+                        ui.selectable_value(&mut local, false, crate::i18n::tr("Adjustment Mode 1"))
+                            .on_hover_text(crate::i18n::tr("Added to the final form"));
+                        ui.selectable_value(&mut local, true, crate::i18n::tr("Adjustment Mode 2"))
+                            .on_hover_text(crate::i18n::tr("Added to the local form; the deformer still moves it"));
                     });
-                ui.checkbox(&mut apply, "Apply form edit");
+                ui.checkbox(&mut apply, crate::i18n::tr("Apply form edit"));
                 if (local, apply) != (l0, a0) {
                     let before = st.doc.animation.clone();
                     let s = st.scene;
@@ -1633,17 +1642,17 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     st.dirty = true;
                 }
                 if let Some(mi) = st.form_mesh {
-                    if ui.button("Delete Form Edit").clicked() {
+                    if ui.button(crate::i18n::tr("Delete Form Edit")).clicked() {
                         op = Some(SceneOp::DeleteFormEdit(mi));
                     }
                 }
             }
-            ui.menu_button("Controllers", |ui| {
+            ui.menu_button(crate::i18n::tr("Controllers"), |ui| {
                 if let Some(o) = crate::param_ctrl_ui::menu(ui, st, &param_ids) {
                     ctrl_op = Some(o);
                 }
             });
-            ui.menu_button("Events", |ui| {
+            ui.menu_button(crate::i18n::tr("Events"), |ui| {
                 let f = st.frame.round() as i32;
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text("event text").desired_width(140.0));
@@ -1654,11 +1663,11 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 });
                 let events = st.model_track().map(|(ti, _)| st.scene().map(|s| s.tracks[ti].user_data.clone()).unwrap_or_default()).unwrap_or_default();
                 if events.is_empty() {
-                    ui.weak("No events.");
+                    ui.weak(crate::i18n::tr("No events."));
                 }
                 for (ef, text) in events {
                     ui.horizontal(|ui| {
-                        if ui.small_button("✕").on_hover_text("Delete Event").clicked() {
+                        if ui.small_button(crate::i18n::tr("✕")).on_hover_text(crate::i18n::tr("Delete Event")).clicked() {
                             st.set_event(ef, None);
                         }
                         if ui.link(format!("{ef}: {text}")).clicked() {
@@ -1670,12 +1679,12 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             });
             if let Some(name) = st.rename.as_mut() {
                 let r = ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
-                if ui.button("OK").clicked()
+                if ui.button(crate::i18n::tr("OK")).clicked()
                     || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     op = Some(SceneOp::Rename(name.clone()));
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
                     st.rename = None;
                 }
             }
@@ -1831,20 +1840,20 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             });
         if ui
             .button(if st.playing { "⏸" } else { "▶" })
-            .on_hover_text("Play / Pause (Space)")
+            .on_hover_text(crate::i18n::tr("Play / Pause (Space)"))
             .clicked()
         {
             st.playing = !st.playing;
         }
         if ui
-            .button("⏹")
-            .on_hover_text("Stop: back to the work area start")
+            .button(crate::i18n::tr("⏹"))
+            .on_hover_text(crate::i18n::tr("Stop: back to the work area start"))
             .clicked()
         {
             st.playing = false;
             st.frame = st.scene().map_or(0.0, |s| f64::from(s.work_start));
         }
-        ui.checkbox(&mut st.looping, "Loop");
+        ui.checkbox(&mut st.looping, crate::i18n::tr("Loop"));
         let mut f = st.frame.round() as i32;
         let max = st.scene().map_or(0, |s| s.duration);
         if ui
@@ -1863,14 +1872,14 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 s.work_end
             ));
         }
-        ui.checkbox(&mut st.keyed_only, "Keyed only");
+        ui.checkbox(&mut st.keyed_only, crate::i18n::tr("Keyed only"));
         ui.add(egui::Slider::new(&mut st.px_per_frame, 1.0..=40.0).text("zoom"));
     });
     let Some(scene) = st.scene().cloned() else {
         return;
     };
     let Some((ti, m)) = st.model_track().map(|(i, m)| (i, m.clone())) else {
-        ui.weak("This scene has no model track.");
+        ui.weak(crate::i18n::tr("This scene has no model track."));
         return;
     };
     let rows: Vec<(AttrRef, &Attr)> = m
@@ -2044,7 +2053,9 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
     use keyform_model::animation::CurveType;
     let Some(st) = doc.anim.as_mut() else { return };
     let Some(a) = st.attr().cloned() else {
-        ui.weak("Select an attribute in the timeline to edit its curve.");
+        ui.weak(crate::i18n::tr(
+            "Select an attribute in the timeline to edit its curve.",
+        ));
         return;
     };
     let Some(scene) = st.scene().cloned() else {
@@ -2057,7 +2068,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
     ui.horizontal(|ui| {
         ui.strong(if a.name.is_empty() { &a.id } else { &a.name });
         ui.weak(format!("range {} … {}", a.range.0, a.range.1));
-        if ui.button("Add key at playhead").clicked() {
+        if ui.button(crate::i18n::tr("Add key at playhead")).clicked() {
             let v = eval_curve(&a.curve, st.frame);
             st.edit("Add key", |c, f| {
                 set_key(c, f as i32, v, default_type);
@@ -2073,7 +2084,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
                     }
                 });
             }
-            if ui.button("Delete key").clicked() {
+            if ui.button(crate::i18n::tr("Delete key")).clicked() {
                 st.edit("Delete key", |c, _| delete_key(c, k));
                 st.key = None;
             }
@@ -2203,7 +2214,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
     }
     resp.context_menu(|ui| {
         let Some(k) = st.key else {
-            ui.weak("Click a key first.");
+            ui.weak(crate::i18n::tr("Click a key first."));
             return;
         };
         for (name, t) in [
@@ -2223,7 +2234,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
             }
         }
         ui.separator();
-        if ui.button("Delete key").clicked() {
+        if ui.button(crate::i18n::tr("Delete key")).clicked() {
             st.edit("Delete key", |c, _| delete_key(c, k));
             st.key = None;
             ui.close();

@@ -116,7 +116,7 @@ pub fn dialog(
     };
     let mut open = true;
     let (mut ok, mut cancel) = (false, false);
-    egui::Window::new("Parts Settings")
+    egui::Window::new(crate::i18n::tr("Parts Settings"))
         .collapsible(false)
         .default_height(420.0)
         .open(&mut open)
@@ -145,14 +145,15 @@ pub fn dialog(
                             }
                         });
                 });
-            ui.weak("ID naming rules (hover)").on_hover_text(
-                "Only letters, numbers and underscores; at most 63 characters; \
+            ui.weak(crate::i18n::tr("ID naming rules (hover)"))
+                .on_hover_text(
+                    "Only letters, numbers and underscores; at most 63 characters; \
                      the first character must not be a number.",
-            );
+                );
             ui.separator();
             ui.horizontal(|ui| {
-                ok = ui.button("OK").clicked();
-                cancel = ui.button("Cancel").clicked();
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if ok {
@@ -168,15 +169,17 @@ pub fn dialog(
     if st.ask_save {
         let mut answer = None;
         egui::Modal::new(egui::Id::new("parts-settings-save")).show(ctx, |ui| {
-            ui.label("Would you like to save the changes to your part settings?");
+            ui.label(crate::i18n::tr(
+                "Would you like to save the changes to your part settings?",
+            ));
             ui.horizontal(|ui| {
-                if ui.button("Yes").clicked() {
+                if ui.button(crate::i18n::tr("Yes")).clicked() {
                     answer = Some(Some(true));
                 }
-                if ui.button("No").clicked() {
+                if ui.button(crate::i18n::tr("No")).clicked() {
                     answer = Some(Some(false));
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
                     answer = Some(None);
                 }
             });
@@ -197,7 +200,9 @@ pub fn dialog(
     if let Some(r) = st.replaced.clone() {
         let mut answer = None;
         egui::Modal::new(egui::Id::new("parts-settings-replaced")).show(ctx, |ui| {
-            ui.label("The following IDs were replaced with other parts:");
+            ui.label(crate::i18n::tr(
+                "The following IDs were replaced with other parts:",
+            ));
             for id in &r {
                 ui.monospace(id);
             }
@@ -209,10 +214,10 @@ pub fn dialog(
                 );
             });
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() {
+                if ui.button(crate::i18n::tr("OK")).clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
                     answer = Some(false);
                 }
             });

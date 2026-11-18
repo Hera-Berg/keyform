@@ -580,8 +580,12 @@ pub fn menu(
 ) -> Option<CtrlFileOp> {
     let mut op = None;
     let t = &mut st.ctrl_tool;
-    ui.selectable_value(t, CtrlTool::Drag, "Select/Edit Controller");
-    ui.selectable_value(t, CtrlTool::AddSingle, "Add Single Point Controller");
+    ui.selectable_value(t, CtrlTool::Drag, crate::i18n::tr("Select/Edit Controller"));
+    ui.selectable_value(
+        t,
+        CtrlTool::AddSingle,
+        crate::i18n::tr("Add Single Point Controller"),
+    );
     if ui
         .selectable_label(
             matches!(t, CtrlTool::AddLine(_)),
@@ -591,12 +595,14 @@ pub fn menu(
     {
         *t = CtrlTool::AddLine(None);
     }
-    ui.selectable_value(t, CtrlTool::Off, "No controller tool");
+    ui.selectable_value(t, CtrlTool::Off, crate::i18n::tr("No controller tool"));
     ui.separator();
-    ui.checkbox(&mut st.ctrl_follow, "Target follow")
-        .on_hover_text("During playback, controllers with a target follow it");
+    ui.checkbox(&mut st.ctrl_follow, crate::i18n::tr("Target follow"))
+        .on_hover_text(crate::i18n::tr(
+            "During playback, controllers with a target follow it",
+        ));
     if ui
-        .button("Bake Animation from Parameter Controller")
+        .button(crate::i18n::tr("Bake Animation from Parameter Controller"))
         .clicked()
     {
         op = Some(CtrlFileOp::Bake);
@@ -625,7 +631,7 @@ pub fn menu(
                         }
                     }
                 });
-            if ui.button("Delete Controller").clicked() {
+            if ui.button(crate::i18n::tr("Delete Controller")).clicked() {
                 delete = Some(i);
                 ui.close();
             }
@@ -642,7 +648,10 @@ pub fn menu(
         st.dirty = true;
     }
     ui.separator();
-    if ui.button("Export Parameter Controller…").clicked() {
+    if ui
+        .button(crate::i18n::tr("Export Parameter Controller…"))
+        .clicked()
+    {
         ui.close();
         op = rfd::FileDialog::new()
             .add_filter("Parameter controller", &["json"])
@@ -650,7 +659,10 @@ pub fn menu(
             .save_file()
             .map(CtrlFileOp::Export);
     }
-    if ui.button("Import Parameter Controller…").clicked() {
+    if ui
+        .button(crate::i18n::tr("Import Parameter Controller…"))
+        .clicked()
+    {
         ui.close();
         op = rfd::FileDialog::new()
             .add_filter("Parameter controller", &["json"])

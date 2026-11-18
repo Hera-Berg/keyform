@@ -216,7 +216,7 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
             .num_columns(2)
             .show(ui, |ui| {
                 if let Some(mut d) = c.draw_order {
-                    ui.weak("Draw Order");
+                    ui.weak(crate::i18n::tr("Draw Order"));
                     ui.horizontal(|ui| {
                         let mut dv = ui.add_enabled(
                             editable,
@@ -226,15 +226,17 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
                                 .max_decimals(0),
                         );
                         if mixed(Field::DrawOrder(0.0)) {
-                            dv = dv.on_hover_text("The selected objects differ");
-                            ui.weak("(mixed)");
+                            dv = dv.on_hover_text(crate::i18n::tr("The selected objects differ"));
+                            ui.weak(crate::i18n::tr("(mixed)"));
                         }
                         if dv.changed() {
                             edited = Some(Field::DrawOrder(d.round()));
                         }
                         if ui
-                            .add_enabled(editable, egui::Button::new("Bulk Set"))
-                            .on_hover_text("Bulk Set Draw Order: all keyforms of this object")
+                            .add_enabled(editable, egui::Button::new(crate::i18n::tr("Bulk Set")))
+                            .on_hover_text(crate::i18n::tr(
+                                "Bulk Set Draw Order: all keyforms of this object",
+                            ))
                             .clicked()
                         {
                             ui.data_mut(|m| m.insert_temp(pending_id.with("all"), d));
@@ -243,7 +245,7 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
                     ui.end_row();
                 }
                 let mut o = c.opacity;
-                ui.weak("Transparency");
+                ui.weak(crate::i18n::tr("Transparency"));
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(editable, egui::Slider::new(&mut o, 0.0..=1.0))
@@ -252,23 +254,23 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
                         edited = Some(Field::Opacity(o));
                     }
                     if mixed(Field::Opacity(0.0)) {
-                        ui.weak("(mixed)");
+                        ui.weak(crate::i18n::tr("(mixed)"));
                     }
                 });
                 ui.end_row();
                 let (mut mc, mut sc) = (c.multiply, c.screen);
-                ui.weak("Multiply Color");
+                ui.weak(crate::i18n::tr("Multiply Color"));
                 if color_edit(ui, &mut mc, editable && colors_ok) {
                     edited = Some(Field::Multiply(mc));
                 }
                 ui.end_row();
-                ui.weak("Screen Color");
+                ui.weak(crate::i18n::tr("Screen Color"));
                 if color_edit(ui, &mut sc, editable && colors_ok) {
                     edited = Some(Field::Screen(sc));
                 }
                 ui.end_row();
                 if let Some(mut a) = c.angle {
-                    ui.weak("Angle");
+                    ui.weak(crate::i18n::tr("Angle"));
                     if ui
                         .add_enabled(
                             editable,
@@ -282,10 +284,14 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
                 }
             });
         if !colors_ok {
-            ui.weak("Multiply and screen colors need SDK 4.2 or later as the target version.");
+            ui.weak(crate::i18n::tr(
+                "Multiply and screen colors need SDK 4.2 or later as the target version.",
+            ));
         }
     } else if !matches!(s, Selection::Glue(_)) {
-        ui.weak("There is no keyform to edit at the current parameter values.");
+        ui.weak(crate::i18n::tr(
+            "There is no keyform to edit at the current parameter values.",
+        ));
     }
 
     // Multi-selection: ask before overwriting differing values.
@@ -310,10 +316,10 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
         egui::Modal::new(pending_id.with("modal")).show(&ctx, |ui| {
             ui.label(f.question(kind_name(s)));
             ui.horizontal(|ui| {
-                if ui.button("Yes").clicked() {
+                if ui.button(crate::i18n::tr("Yes")).clicked() {
                     answer = Some(true);
                 }
-                if ui.button("No").clicked() {
+                if ui.button(crate::i18n::tr("No")).clicked() {
                     answer = Some(false);
                 }
             });
@@ -333,13 +339,13 @@ pub fn fields_ui(ui: &mut egui::Ui, doc: &mut Document) {
         let mut answer = None;
         egui::Modal::new(pending_id.with("all-modal")).show(&ctx, |ui| {
             ui.label(
-                "Would you like to overwrite the draw order of all forms linked to this object with the current value?",
+                crate::i18n::tr("Would you like to overwrite the draw order of all forms linked to this object with the current value?"),
             );
             ui.horizontal(|ui| {
-                if ui.button("Yes").clicked() {
+                if ui.button(crate::i18n::tr("Yes")).clicked() {
                     answer = Some(true);
                 }
-                if ui.button("No").clicked() {
+                if ui.button(crate::i18n::tr("No")).clicked() {
                     answer = Some(false);
                 }
             });
@@ -419,7 +425,7 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
             let x = &doc.model.art_meshes[i];
             let blend = (x.color_composition, x.alpha_composition);
             ui.horizontal(|ui| {
-                ui.weak("Blend mode");
+                ui.weak(crate::i18n::tr("Blend mode"));
                 if let Some((c, a)) = blend_combos(ui, ("mesh", i), blend, editable, target) {
                     doc.edit("Change Blend Mode", |m| {
                         let x = Arc::make_mut(&mut m.art_meshes[i]);
@@ -454,7 +460,7 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
             }
             if off {
                 ui.horizontal(|ui| {
-                    ui.weak("Blend mode");
+                    ui.weak(crate::i18n::tr("Blend mode"));
                     if let Some((c, a)) = blend_combos(ui, ("part", p), blend, editable, target) {
                         doc.edit("Change Blend Mode", |m| {
                             let x = Arc::make_mut(&mut m.parts[p]);
@@ -471,13 +477,13 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
                 egui::Grid::new(("rotation-source", d))
                     .num_columns(2)
                     .show(ui, |ui| {
-                        ui.weak("Handle length");
+                        ui.weak(crate::i18n::tr("Handle length"));
                         let a = ui.add_enabled(
                             editable,
                             egui::DragValue::new(&mut h).range(5.0..=4000.0),
                         );
                         ui.end_row();
-                        ui.weak("Circle radius");
+                        ui.weak(crate::i18n::tr("Circle radius"));
                         let b = ui.add_enabled(
                             editable,
                             egui::DragValue::new(&mut c).range(10.0..=1000.0),
@@ -498,7 +504,9 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
         }
         Selection::Glue(g) => {
             let Ok(cell) = current_cell(&doc.model, s, &doc.values) else {
-                ui.weak("There is no keyform to edit at the current parameter values.");
+                ui.weak(crate::i18n::tr(
+                    "There is no keyform to edit at the current parameter values.",
+                ));
                 return;
             };
             let Some(mut v) = doc.model.glues[g]
@@ -510,7 +518,7 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
                 return;
             };
             ui.horizontal(|ui| {
-                ui.weak("Intensity");
+                ui.weak(crate::i18n::tr("Intensity"));
                 if ui
                     .add_enabled(editable, egui::Slider::new(&mut v, 0.0..=1.0))
                     .changed()

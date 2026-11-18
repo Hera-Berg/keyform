@@ -187,8 +187,8 @@ fn yes_no(ui: &mut egui::Ui) -> (bool, bool) {
     let mut r = (false, false);
     ui.separator();
     ui.horizontal(|ui| {
-        r.0 = ui.button("OK").clicked();
-        r.1 = ui.button("Cancel").clicked();
+        r.0 = ui.button(crate::i18n::tr("OK")).clicked();
+        r.1 = ui.button(crate::i18n::tr("Cancel")).clicked();
     });
     r
 }
@@ -232,17 +232,17 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
     let current = targets.iter().find_map(|&o| extended_settings(m, o, p));
     let choices: Vec<usize> = (0..m.parameters.len()).collect();
     let mut change: Option<(K, i32, f32)> = None;
-    egui::Window::new("Extended Interpolation")
+    egui::Window::new(crate::i18n::tr("Extended Interpolation"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Parameter");
+                ui.label(crate::i18n::tr("Parameter"));
                 param_combo(ui, "ext-param", m, &choices, &mut p);
             });
             let Some((kind, n, s, keys)) = current else {
-                ui.weak("Select an object with keys on this parameter.");
+                ui.weak(crate::i18n::tr("Select an object with keys on this parameter."));
                 return;
             };
             let enabled = doc.editable() && keys >= 3;
@@ -265,7 +265,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                 let (mut n2, mut s2) = (n, s);
                 ui.add_enabled_ui(kind != K::Linear, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Points:");
+                        ui.label(crate::i18n::tr("Points:"));
                         egui::ComboBox::from_id_salt("ext-points")
                             .selected_text(n.to_string())
                             .show_ui(ui, |ui| {
@@ -276,7 +276,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                     });
                     ui.add_enabled_ui(kind == K::Ellipse, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label("Scale");
+                            ui.label(crate::i18n::tr("Scale"));
                             ui.add(egui::DragValue::new(&mut s2).speed(0.01).range(0.1..=1000.0));
                         });
                     });
@@ -290,7 +290,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                 }
             });
             if keys < 3 {
-                ui.weak("This parameter has fewer than 3 keys on the object.");
+                ui.weak(crate::i18n::tr("This parameter has fewer than 3 keys on the object."));
             }
             if kind == K::Ellipse {
                 let legal = targets.iter().all(|&o| {
@@ -336,16 +336,16 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
     }
     if st.ext_notice_open {
         let mut keep = true;
-        egui::Window::new("About Number of Keys for Extended Interpolation")
+        egui::Window::new(crate::i18n::tr("About Number of Keys for Extended Interpolation"))
             .collapsible(false)
             .resizable(false)
             .open(&mut keep)
             .show(ctx, |ui| {
                 ui.label(
-                    "Extended interpolation requires at least 3 keyforms.\nWhen setting extended interpolation and changing to 2 keyforms or less, please select Linear Interpolation.",
+                    crate::i18n::tr("Extended interpolation requires at least 3 keyforms.\nWhen setting extended interpolation and changing to 2 keyforms or less, please select Linear Interpolation."),
                 );
-                ui.checkbox(&mut st.ext_dont_show, "Don't show again.");
-                if ui.button("OK").clicked() {
+                ui.checkbox(&mut st.ext_dont_show, crate::i18n::tr("Don't show again."));
+                if ui.button(crate::i18n::tr("OK")).clicked() {
                     st.ext_notice_open = false;
                 }
             });
@@ -394,21 +394,21 @@ fn mirror_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, 
     let choices: Vec<usize> = (0..m.parameters.len())
         .filter(|&p| !m.parameters[p].repeat)
         .collect();
-    egui::Window::new("Motion Mirroring")
+    egui::Window::new(crate::i18n::tr("Motion Mirroring"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Source parameter");
+                ui.label(crate::i18n::tr("Source parameter"));
                 param_combo(ui, "mirror-param", m, &choices, &mut d.p);
             });
             ui.strong("Basic Settings");
-            ui.checkbox(&mut d.horizontal, "Flip horizontally");
-            ui.checkbox(&mut d.vertical, "Flip vertically");
+            ui.checkbox(&mut d.horizontal, crate::i18n::tr("Flip horizontally"));
+            ui.checkbox(&mut d.vertical, crate::i18n::tr("Flip vertically"));
             ui.strong("Mirror Axis Settings");
             ui.add_enabled_ui(!all_deformers, |ui| {
-                ui.radio_value(&mut d.axis, None, "Use Center of Canvas");
+                ui.radio_value(&mut d.axis, None, crate::i18n::tr("Use Center of Canvas"));
                 ui.horizontal(|ui| {
                     let mut use_rot = d.axis.is_some();
                     if ui
@@ -537,12 +537,14 @@ fn pairing_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
         .iter()
         .map(|c| object_label(doc, c.object))
         .collect();
-    egui::Window::new("Paste Form: pair copies with targets")
+    egui::Window::new(crate::i18n::tr("Paste Form: pair copies with targets"))
         .collapsible(false)
         .resizable(true)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Several copied forms fit these objects. Choose the form to paste into each:");
+            ui.label(crate::i18n::tr(
+                "Several copied forms fit these objects. Choose the form to paste into each:",
+            ));
             egui::ScrollArea::vertical()
                 .max_height(320.0)
                 .show(ui, |ui| {
@@ -560,7 +562,7 @@ fn pairing_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
                                 egui::ComboBox::from_id_salt(("paste-pair", k))
                                     .selected_text(text)
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(cur, None, "(none)");
+                                        ui.selectable_value(cur, None, crate::i18n::tr("(none)"));
                                         for &c in cands {
                                             ui.selectable_value(cur, Some(c), &copy_names[c]);
                                         }
@@ -569,7 +571,7 @@ fn pairing_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
                             }
                         });
                 });
-            ui.checkbox(&mut dont_show, "Don't show again");
+            ui.checkbox(&mut dont_show, crate::i18n::tr("Don't show again"));
             (ok, cancel) = yes_no(ui);
         });
     st.pairing_dont_show = dont_show;
@@ -588,13 +590,13 @@ fn blend_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, l
     };
     let mut open = true;
     let (mut ok, mut cancel, mut changed) = (false, false, false);
-    egui::Window::new("Blend Form")
+    egui::Window::new(crate::i18n::tr("Blend Form"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Apply Rate");
+                ui.label(crate::i18n::tr("Apply Rate"));
                 changed |= ui
                     .add(
                         egui::DragValue::new(&mut rate)
@@ -604,7 +606,9 @@ fn blend_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, l
                     )
                     .changed();
             });
-            changed |= ui.checkbox(&mut preview, "Preview").changed();
+            changed |= ui
+                .checkbox(&mut preview, crate::i18n::tr("Preview"))
+                .changed();
             (ok, cancel) = yes_no(ui);
         });
     let restore = |doc: &mut Document, base: &Option<Model>| {
@@ -666,26 +670,34 @@ fn special_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &Document) {
         doc.model.canvas.width as f32,
         doc.model.canvas.height as f32,
     );
-    egui::Window::new("Options for Paste Form Special")
+    egui::Window::new(crate::i18n::tr("Options for Paste Form Special"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.checkbox(&mut st.special_h.0, "Flip horizontally about x =");
+                ui.checkbox(
+                    &mut st.special_h.0,
+                    crate::i18n::tr("Flip horizontally about x ="),
+                );
                 ui.add(egui::DragValue::new(&mut st.special_h.1));
-                if ui.small_button("Centre").clicked() {
+                if ui.small_button(crate::i18n::tr("Centre")).clicked() {
                     st.special_h.1 = cw / 2.0;
                 }
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut st.special_v.0, "Flip vertically about y =");
+                ui.checkbox(
+                    &mut st.special_v.0,
+                    crate::i18n::tr("Flip vertically about y ="),
+                );
                 ui.add(egui::DragValue::new(&mut st.special_v.1));
-                if ui.small_button("Centre").clicked() {
+                if ui.small_button(crate::i18n::tr("Centre")).clicked() {
                     st.special_v.1 = ch / 2.0;
                 }
             });
-            ui.weak("Paste Form and Blend Form mirror the copied shape first.");
+            ui.weak(crate::i18n::tr(
+                "Paste Form and Blend Form mirror the copied shape first.",
+            ));
         });
     st.special = PasteMirror {
         horizontal: st.special_h.0.then_some(st.special_h.1),
@@ -702,14 +714,14 @@ fn flip_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, lo
     let mut open = true;
     let (mut ok, mut cancel) = (false, false);
     let m = &doc.model;
-    egui::Window::new("Flip")
+    egui::Window::new(crate::i18n::tr("Flip"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             ui.strong("Flip");
-            ui.checkbox(&mut s.horizontal, "Flip horizontally");
-            ui.checkbox(&mut s.vertical, "Flip vertically");
+            ui.checkbox(&mut s.horizontal, crate::i18n::tr("Flip horizontally"));
+            ui.checkbox(&mut s.vertical, crate::i18n::tr("Flip vertically"));
             ui.checkbox(
                 &mut s.all_keyforms,
                 "All keyforms (not only the current one)",
@@ -735,7 +747,10 @@ fn flip_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, lo
                 &mut s.flip_rotation_position,
                 "Flip rotation deformer position",
             );
-            ui.checkbox(&mut s.keep_culling, "Cancel auto-adjusted culling");
+            ui.checkbox(
+                &mut s.keep_culling,
+                crate::i18n::tr("Cancel auto-adjusted culling"),
+            );
             (ok, cancel) = yes_no(ui);
         });
     if cancel || !open {
@@ -768,7 +783,7 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
     let (mut ok, mut cancel) = (false, false);
     let choices = corner_parameters(&doc.model);
     let m = &doc.model;
-    egui::Window::new("Synthesize corners")
+    egui::Window::new(crate::i18n::tr("Synthesize corners"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -777,37 +792,60 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
             egui::Grid::new("corner-params")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.label("Parameter 1");
+                    ui.label(crate::i18n::tr("Parameter 1"));
                     param_combo(ui, "corner-p1", m, &choices, &mut d.p1);
                     ui.end_row();
-                    ui.label("Parameter 2");
+                    ui.label(crate::i18n::tr("Parameter 2"));
                     param_combo(ui, "corner-p2", m, &choices, &mut d.p2);
                     ui.end_row();
                 });
             ui.strong("Parameter Value to Reference");
-            ui.radio_value(&mut d.centre, false, "Default value");
-            ui.radio_value(&mut d.centre, true, "Centre (min + max) / 2");
+            ui.radio_value(&mut d.centre, false, crate::i18n::tr("Default value"));
+            ui.radio_value(
+                &mut d.centre,
+                true,
+                crate::i18n::tr("Centre (min + max) / 2"),
+            );
             ui.strong("Keys to Overwrite");
             egui::Grid::new("corner-keys")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.checkbox(&mut d.corners[0], "Top left");
-                    ui.checkbox(&mut d.corners[1], "Top right");
+                    ui.checkbox(&mut d.corners[0], crate::i18n::tr("Top left"));
+                    ui.checkbox(&mut d.corners[1], crate::i18n::tr("Top right"));
                     ui.end_row();
-                    ui.checkbox(&mut d.corners[2], "Bottom left");
-                    ui.checkbox(&mut d.corners[3], "Bottom right");
+                    ui.checkbox(&mut d.corners[2], crate::i18n::tr("Bottom left"));
+                    ui.checkbox(&mut d.corners[3], crate::i18n::tr("Bottom right"));
                     ui.end_row();
                 });
             ui.strong("Target");
             ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut d.target, CornerTarget::All, "All objects");
-                ui.radio_value(&mut d.target, CornerTarget::Drawables, "All drawables");
-                ui.radio_value(&mut d.target, CornerTarget::Deformers, "All deformers");
-                ui.radio_value(&mut d.target, CornerTarget::Selected, "Selected objects");
+                ui.radio_value(
+                    &mut d.target,
+                    CornerTarget::All,
+                    crate::i18n::tr("All objects"),
+                );
+                ui.radio_value(
+                    &mut d.target,
+                    CornerTarget::Drawables,
+                    crate::i18n::tr("All drawables"),
+                );
+                ui.radio_value(
+                    &mut d.target,
+                    CornerTarget::Deformers,
+                    crate::i18n::tr("All deformers"),
+                );
+                ui.radio_value(
+                    &mut d.target,
+                    CornerTarget::Selected,
+                    crate::i18n::tr("Selected objects"),
+                );
             });
             ui.strong("Option");
-            ui.checkbox(&mut d.skip_locked, "Skip locked objects");
-            ui.checkbox(&mut d.skip_invisible, "Skip invisible objects");
+            ui.checkbox(&mut d.skip_locked, crate::i18n::tr("Skip locked objects"));
+            ui.checkbox(
+                &mut d.skip_invisible,
+                crate::i18n::tr("Skip invisible objects"),
+            );
             (ok, cancel) = yes_no(ui);
         });
     if cancel || !open {
@@ -875,11 +913,13 @@ fn batch_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, l
     let (mut ok, mut cancel) = (false, false);
     let m = &doc.model;
     chosen.resize(m.parameters.len(), false);
-    egui::Window::new("Batch Reflect")
+    egui::Window::new(crate::i18n::tr("Batch Reflect"))
         .collapsible(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.label("Select the parameters for batch reflection.");
+            ui.label(crate::i18n::tr(
+                "Select the parameters for batch reflection.",
+            ));
             egui::ScrollArea::vertical()
                 .max_height(260.0)
                 .show(ui, |ui| {

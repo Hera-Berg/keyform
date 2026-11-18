@@ -775,28 +775,33 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
         }
     });
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Add control point").clicked() {
+        if ui.button(crate::i18n::tr("Add control point")).clicked() {
             doc.path_prefs.sub = PathSub::AddPoint;
         }
-        if ui.button("Delete control point").clicked() {
+        if ui.button(crate::i18n::tr("Delete control point")).clicked() {
             doc.path_delete_selected_points();
         }
-        if ui.button("Delete path").clicked() {
+        if ui.button(crate::i18n::tr("Delete path")).clicked() {
             doc.path_delete_selected_curves();
         }
-        if ui.button("Fold line").clicked() {
+        if ui.button(crate::i18n::tr("Fold line")).clicked() {
             doc.path_fold_selected();
         }
     });
     if ui
-        .button("Delete deform paths for current edit level")
+        .button(crate::i18n::tr(
+            "Delete deform paths for current edit level",
+        ))
         .clicked()
     {
         doc.path_delete_level();
     }
-    ui.checkbox(&mut doc.path_prefs.auto_line, "add line automatically");
+    ui.checkbox(
+        &mut doc.path_prefs.auto_line,
+        crate::i18n::tr("add line automatically"),
+    );
     ui.horizontal(|ui| {
-        ui.label("maxBindCount");
+        ui.label(crate::i18n::tr("maxBindCount"));
         let mut n = doc.path_prefs.max_bind;
         if ui.add(egui::DragValue::new(&mut n).range(1..=10)).changed() {
             doc.path_set_max_bind(n);
@@ -818,13 +823,13 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
         {
             let (mut w, mut h) = (cv.width, cv.hardness);
             egui::Grid::new("path-curve").num_columns(2).show(ui, |ui| {
-                ui.label("Deform Path width");
+                ui.label(crate::i18n::tr("Deform Path width"));
                 let wc = ui.add(egui::DragValue::new(&mut w).range(1.0..=10000.0)).changed();
                 ui.end_row();
-                ui.label("Deform Path hardness");
+                ui.label(crate::i18n::tr("Deform Path hardness"));
                 let hc = ui
                     .add(egui::Slider::new(&mut h, 0.0..=100.0).step_by(1.0).suffix(" %"))
-                    .on_hover_text("Path range reduction: 0 reduces the range gradually, 100 lets the path greatly affect the surroundings")
+                    .on_hover_text(crate::i18n::tr("Path range reduction: 0 reduces the range gradually, 100 lets the path greatly affect the surroundings"))
                     .changed();
                 ui.end_row();
                 if wc || hc {
@@ -833,7 +838,7 @@ pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
             });
         }
     }
-    ui.weak("Click to add points to the selected ArtMesh's path; drag points to deform. Alt deletes a point, Ctrl+Alt toggles a fold point, Shift keeps the selection.");
+    ui.weak(crate::i18n::tr("Click to add points to the selected ArtMesh's path; drag points to deform. Alt deletes a point, Ctrl+Alt toggles a fold point, Shift keeps the selection."));
 }
 
 // ------------------------------------------------------- temporary path §6
@@ -1197,12 +1202,12 @@ pub fn temp_draw(
 
 pub fn temp_controls(ui: &mut egui::Ui, doc: &mut Document) {
     ui.strong("Temporary path");
-    ui.label("Click to add points to the line; drag them to bend the selected points. Alt+click deletes a point; Shift constrains a drag.");
+    ui.label(crate::i18n::tr("Click to add points to the line; drag them to bend the selected points. Alt+click deletes a point; Shift constrains a drag."));
     ui.horizontal(|ui| {
-        if ui.button("Confirm (Enter)").clicked() {
+        if ui.button(crate::i18n::tr("Confirm (Enter)")).clicked() {
             doc.temp_path_confirm();
         }
-        if ui.button("Cancel (Esc)").clicked() {
+        if ui.button(crate::i18n::tr("Cancel (Esc)")).clicked() {
             doc.temp_path_cancel();
         }
     });

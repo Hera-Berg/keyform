@@ -253,17 +253,17 @@ pub fn settings_window(
     if !*open {
         return;
     }
-    egui::Window::new("External Application Integration Settings")
+    egui::Window::new(crate::i18n::tr("External Application Integration Settings"))
         .open(open)
         .show(ctx, |ui| {
             ui.checkbox(enabled, "Enable external application integration");
             ui.horizontal(|ui| {
-                ui.label("Port (127.0.0.1 only):");
+                ui.label(crate::i18n::tr("Port (127.0.0.1 only):"));
                 ui.add_enabled(!*enabled, egui::DragValue::new(port).range(1024..=65535));
             });
             match running {
                 Some((p, n)) => ui.label(format!("Listening on 127.0.0.1:{p} — {n} connected")),
-                None => ui.weak("Not running"),
+                None => ui.weak(crate::i18n::tr("Not running")),
             };
             ui.separator();
             let mut remove = None;
@@ -274,7 +274,7 @@ pub fn settings_window(
                     for (i, (name, _, ok)) in plugins.list.iter_mut().enumerate() {
                         ui.label(name.as_str());
                         ui.checkbox(ok, "Approved");
-                        if ui.small_button("Remove").clicked() {
+                        if ui.small_button(crate::i18n::tr("Remove")).clicked() {
                             remove = Some(i);
                         }
                         ui.end_row();

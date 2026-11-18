@@ -117,11 +117,13 @@ pub fn parts_ui(
                 .desired_width(ui.available_width() - 60.0),
         );
         ui.toggle_value(show_deformers, "D")
-            .on_hover_text("Show/hide Warp Deformers and Rotation Deformers");
-        ui.menu_button("☰", |ui| {
+            .on_hover_text(crate::i18n::tr(
+                "Show/hide Warp Deformers and Rotation Deformers",
+            ));
+        ui.menu_button(crate::i18n::tr("☰"), |ui| {
             if ui
-                .button("New part")
-                .on_hover_text("Create new part")
+                .button(crate::i18n::tr("New part"))
+                .on_hover_text(crate::i18n::tr("Create new part"))
                 .clicked()
             {
                 let parent = match doc.primary() {
@@ -136,7 +138,7 @@ pub fn parts_ui(
                 }
                 ui.close();
             }
-            if ui.button("Part Settings…").clicked() {
+            if ui.button(crate::i18n::tr("Part Settings…")).clicked() {
                 open_settings = true;
                 ui.close();
             }
@@ -148,11 +150,11 @@ pub fn parts_ui(
             }
         })
         .response
-        .on_hover_text("Show palette menu");
+        .on_hover_text(crate::i18n::tr("Show palette menu"));
     });
     ui.separator();
     let Some(root) = doc.model.root_part else {
-        ui.label("(no part tree)");
+        ui.label(crate::i18n::tr("(no part tree)"));
         return open_settings;
     };
     let filter = filter.to_lowercase();
@@ -412,14 +414,19 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     }
                     r.context_menu(|ui| {
                         if ui
-                            .add_enabled(t.editable, egui::Button::new("Move Here"))
-                            .on_hover_text("Move the selected objects into this part")
+                            .add_enabled(
+                                t.editable,
+                                egui::Button::new(crate::i18n::tr("Move Here")),
+                            )
+                            .on_hover_text(crate::i18n::tr(
+                                "Move the selected objects into this part",
+                            ))
                             .clicked()
                         {
                             *t.move_here = Some(p);
                             ui.close();
                         }
-                        if ui.button("Part Settings…").clicked() {
+                        if ui.button(crate::i18n::tr("Part Settings…")).clicked() {
                             *t.open_settings = true;
                             ui.close();
                         }
@@ -463,10 +470,10 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     }
                     r.context_menu(|ui| {
                         if ui
-                            .button("Reverse Clipping ID Lookup")
-                            .on_hover_text(
+                            .button(crate::i18n::tr("Reverse Clipping ID Lookup"))
+                            .on_hover_text(crate::i18n::tr(
                                 "Select the ArtMeshes that use this one as a clipping mask",
-                            )
+                            ))
                             .clicked()
                         {
                             *t.reverse_lookup = Some(a);
@@ -622,8 +629,8 @@ pub fn parameter_ui(
                 .desired_width(ui.available_width() - 90.0),
         );
         if ui
-            .button("Reset")
-            .on_hover_text("Reset to default values")
+            .button(crate::i18n::tr("Reset"))
+            .on_hover_text(crate::i18n::tr("Reset to default values"))
             .clicked()
         {
             doc.reset_parameters();
@@ -741,7 +748,8 @@ fn param_row(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if param.kind == keyform_model::ParameterKind::BlendShape {
-                    icons::icon(ui, Icon::BlendShape).on_hover_text("Blend Shape parameter");
+                    icons::icon(ui, Icon::BlendShape)
+                        .on_hover_text(crate::i18n::tr("Blend Shape parameter"));
                 }
                 ui.label(&param.name)
                     .on_hover_text(&param.id)
@@ -895,7 +903,7 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
     egui::Grid::new("inspector-common")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.weak("Name");
+            ui.weak(crate::i18n::tr("Name"));
             if let Some(name) = commit_text(ui, ("insp-name", s), &info.name, editable) {
                 doc.edit("Change Name", |m| {
                     if let Some(i) = info_mut(m, s) {
@@ -904,7 +912,7 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
                 });
             }
             ui.end_row();
-            ui.weak("ID");
+            ui.weak(crate::i18n::tr("ID"));
             if let Some(id) = commit_text(ui, ("insp-id", s), &info.id, editable) {
                 match id_problem(&doc.model, s, &id) {
                     Some(p) => log.warn(p),
@@ -919,7 +927,7 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
             }
             ui.end_row();
             let (mut visible, mut locked) = (info.visible, info.locked);
-            ui.weak("Draw");
+            ui.weak(crate::i18n::tr("Draw"));
             if ui
                 .add_enabled(editable, egui::Checkbox::without_text(&mut visible))
                 .changed()
@@ -931,7 +939,7 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
                 });
             }
             ui.end_row();
-            ui.weak("Lock");
+            ui.weak(crate::i18n::tr("Lock"));
             if ui
                 .add_enabled(editable, egui::Checkbox::without_text(&mut locked))
                 .changed()
@@ -975,7 +983,7 @@ fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Lo
     let missing = x.clip_missing;
     let mut new_ids = None;
     ui.horizontal(|ui| {
-        ui.weak("Clipping");
+        ui.weak(crate::i18n::tr("Clipping"));
         if let Some(t) = commit_text(ui, ("insp-clip", a), &text, editable) {
             new_ids = Some(
                 t.split([',', ' ', ';'])
@@ -993,8 +1001,8 @@ fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Lo
         );
     }
     ui.add_enabled_ui(editable, |ui| {
-        ui.menu_button("Add mask…", |ui| {
-            ui.weak("Select the clipping mask objects.");
+        ui.menu_button(crate::i18n::tr("Add mask…"), |ui| {
+            ui.weak(crate::i18n::tr("Select the clipping mask objects."));
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
@@ -1068,7 +1076,9 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
     };
     match doc.primary() {
         None => {
-            ui.weak("Select an object in the Parts or Deformer palette.");
+            ui.weak(crate::i18n::tr(
+                "Select an object in the Parts or Deformer palette.",
+            ));
             row(ui, "Model", m.name.clone());
             row(
                 ui,
@@ -1158,7 +1168,7 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
 
 pub fn log_ui(ui: &mut egui::Ui, log: &mut Log, tokens: &Tokens) {
     ui.horizontal(|ui| {
-        if ui.button("Clear").clicked() {
+        if ui.button(crate::i18n::tr("Clear")).clicked() {
             log.entries.clear();
         }
     });
@@ -1221,7 +1231,7 @@ pub fn project_ui(
                 });
             }
             if docs.is_empty() {
-                ui.weak("No documents open.");
+                ui.weak(crate::i18n::tr("No documents open."));
             }
         });
     pick
@@ -1278,7 +1288,9 @@ fn project_model(ui: &mut egui::Ui, d: &Document, di: usize, pick: &mut Option<P
                                             if ui
                                                 .add_enabled(
                                                     editable,
-                                                    egui::Button::new("Create ArtMesh"),
+                                                    egui::Button::new(crate::i18n::tr(
+                                                        "Create ArtMesh",
+                                                    )),
                                                 )
                                                 .clicked()
                                             {
@@ -1297,7 +1309,7 @@ fn project_model(ui: &mut egui::Ui, d: &Document, di: usize, pick: &mut Option<P
                         match &img.tree {
                             Some(t) => level(ui, t, &used, d.editable(), (di, li), pick),
                             None => {
-                                ui.weak("(layers not loaded)");
+                                ui.weak(crate::i18n::tr("(layers not loaded)"));
                             }
                         }
                     });

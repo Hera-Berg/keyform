@@ -65,19 +65,19 @@ pub fn sway_dialog(
     let mut open = true;
     let mut run = false;
     let before = st.settings;
-    egui::Window::new("Auto Generation of Sway Motion")
+    egui::Window::new(crate::i18n::tr("Auto Generation of Sway Motion"))
         .default_width(420.0)
         .open(&mut open)
         .show(ctx, |ui| {
             // TODO(Q-0040): settings are not stored with the deformer
             // (`CAutoYureConfigExtension`) yet.
             let Some(d) = selected_warp(doc) else {
-                ui.label("Select a warp deformer.");
+                ui.label(crate::i18n::tr("Select a warp deformer."));
                 return;
             };
             ui.label(format!("Deformer: {}", doc.model.deformers[d].info.name));
             ui.horizontal(|ui| {
-                ui.label("Parameter:");
+                ui.label(crate::i18n::tr("Parameter:"));
                 let name = st
                     .param
                     .and_then(|p| doc.model.parameters.get(p))
@@ -95,9 +95,11 @@ pub fn sway_dialog(
             let Some(p) = st.param else { return };
             let keys = keyform_edit::keys_of(&doc.model, Selection::Deformer(d), p);
             if keys.len() != 3 {
-                ui.label("The parameter needs exactly 3 keys (minimum, default, maximum).");
+                ui.label(crate::i18n::tr(
+                    "The parameter needs exactly 3 keys (minimum, default, maximum).",
+                ));
                 if ui
-                    .button("Delete the existing keys and add 3 keys")
+                    .button(crate::i18n::tr("Delete the existing keys and add 3 keys"))
                     .clicked()
                 {
                     doc.select(Some(Selection::Deformer(d)));
@@ -109,7 +111,7 @@ pub fn sway_dialog(
                 return;
             }
             ui.horizontal(|ui| {
-                ui.label("Pivot position:");
+                ui.label(crate::i18n::tr("Pivot position:"));
                 for (v, l) in [
                     (Pivot::Top, "Top"),
                     (Pivot::Right, "Right"),
@@ -119,21 +121,24 @@ pub fn sway_dialog(
                     ui.radio_value(&mut st.settings.pivot, v, l);
                 }
             });
-            ui.checkbox(&mut st.settings.flip, "Flip sway horizontally");
+            ui.checkbox(
+                &mut st.settings.flip,
+                crate::i18n::tr("Flip sway horizontally"),
+            );
             ui.checkbox(
                 &mut st.sync,
                 "Synchronize left and right side setting values",
             );
-            ui.label(egui::RichText::new("Left side keyform").strong());
+            ui.label(egui::RichText::new(crate::i18n::tr("Left side keyform")).strong());
             side_ui(ui, "sway-left", &mut st.settings.left);
             if st.sync {
                 st.settings.right = st.settings.left;
             } else {
-                ui.label(egui::RichText::new("Right side keyform").strong());
+                ui.label(egui::RichText::new(crate::i18n::tr("Right side keyform")).strong());
                 side_ui(ui, "sway-right", &mut st.settings.right);
             }
             ui.horizontal(|ui| {
-                run = ui.button("Update keyform").clicked();
+                run = ui.button(crate::i18n::tr("Update keyform")).clicked();
                 ui.checkbox(
                     &mut st.auto,
                     "Automatically update the keyform when the setting value changes",

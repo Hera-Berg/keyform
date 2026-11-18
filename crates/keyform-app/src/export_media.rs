@@ -336,13 +336,13 @@ pub fn dialog(ctx: &egui::Context, st: &mut MediaState, doc: Option<&Document>, 
         .as_ref()
         .and_then(|a| a.scene())
         .map_or(30.0, |s| s.fps);
-    egui::Window::new("Image/Video Output Settings")
+    egui::Window::new(crate::i18n::tr("Image/Video Output Settings"))
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
             egui::Grid::new("media").num_columns(2).show(ui, |ui| {
-                ui.label("Output");
+                ui.label(crate::i18n::tr("Output"));
                 egui::ComboBox::from_id_salt("media-kind")
                     .selected_text(match st.kind {
                         MediaKind::Png => "Still images (PNG)",
@@ -351,20 +351,44 @@ pub fn dialog(ctx: &egui::Context, st: &mut MediaState, doc: Option<&Document>, 
                         MediaKind::Video => "Video (MP4)",
                     })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut st.kind, MediaKind::Png, "Still images (PNG)");
-                        ui.selectable_value(&mut st.kind, MediaKind::Jpeg, "Still images (JPEG)");
-                        ui.selectable_value(&mut st.kind, MediaKind::Gif, "GIF");
-                        ui.selectable_value(&mut st.kind, MediaKind::Video, "Video (MP4)");
+                        ui.selectable_value(
+                            &mut st.kind,
+                            MediaKind::Png,
+                            crate::i18n::tr("Still images (PNG)"),
+                        );
+                        ui.selectable_value(
+                            &mut st.kind,
+                            MediaKind::Jpeg,
+                            crate::i18n::tr("Still images (JPEG)"),
+                        );
+                        ui.selectable_value(&mut st.kind, MediaKind::Gif, crate::i18n::tr("GIF"));
+                        ui.selectable_value(
+                            &mut st.kind,
+                            MediaKind::Video,
+                            crate::i18n::tr("Video (MP4)"),
+                        );
                     });
                 ui.end_row();
-                ui.label("Range");
+                ui.label(crate::i18n::tr("Range"));
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut st.range, FrameRange::All, "Output All");
-                    ui.radio_value(&mut st.range, FrameRange::WorkArea, "Output Work Area");
-                    ui.radio_value(&mut st.range, FrameRange::Current, "Selected frame");
+                    ui.radio_value(
+                        &mut st.range,
+                        FrameRange::All,
+                        crate::i18n::tr("Output All"),
+                    );
+                    ui.radio_value(
+                        &mut st.range,
+                        FrameRange::WorkArea,
+                        crate::i18n::tr("Output Work Area"),
+                    );
+                    ui.radio_value(
+                        &mut st.range,
+                        FrameRange::Current,
+                        crate::i18n::tr("Selected frame"),
+                    );
                 });
                 ui.end_row();
-                ui.label("Size");
+                ui.label(crate::i18n::tr("Size"));
                 ui.add(
                     egui::DragValue::new(&mut st.percent)
                         .range(1.0..=400.0)
@@ -372,7 +396,7 @@ pub fn dialog(ctx: &egui::Context, st: &mut MediaState, doc: Option<&Document>, 
                 );
                 ui.end_row();
                 if matches!(st.kind, MediaKind::Gif | MediaKind::Video) {
-                    ui.label("Frame rate");
+                    ui.label(crate::i18n::tr("Frame rate"));
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::DragValue::new(&mut st.fps)
@@ -380,33 +404,36 @@ pub fn dialog(ctx: &egui::Context, st: &mut MediaState, doc: Option<&Document>, 
                                 .suffix(" fps"),
                         );
                         if st.kind == MediaKind::Gif {
-                            ui.weak("(16 fps or less recommended)");
-                        } else if ui.small_button("scene").clicked() {
+                            ui.weak(crate::i18n::tr("(16 fps or less recommended)"));
+                        } else if ui.small_button(crate::i18n::tr("scene")).clicked() {
                             st.fps = scene_fps;
                         }
                     });
                     ui.end_row();
                 }
                 if matches!(st.kind, MediaKind::Png | MediaKind::Gif) {
-                    ui.label("");
-                    ui.checkbox(&mut st.transparent, "Make Background Transparent");
+                    ui.label(crate::i18n::tr(""));
+                    ui.checkbox(
+                        &mut st.transparent,
+                        crate::i18n::tr("Make Background Transparent"),
+                    );
                     ui.end_row();
                 }
                 if st.kind == MediaKind::Gif {
-                    ui.label("");
-                    ui.checkbox(&mut st.looping, "Loop");
+                    ui.label(crate::i18n::tr(""));
+                    ui.checkbox(&mut st.looping, crate::i18n::tr("Loop"));
                     ui.end_row();
                 }
                 if st.kind == MediaKind::Jpeg {
-                    ui.label("JPEG quality");
+                    ui.label(crate::i18n::tr("JPEG quality"));
                     ui.add(egui::Slider::new(&mut st.jpeg_quality, 0..=100));
                     ui.end_row();
                 }
             });
             ui.separator();
             ui.horizontal(|ui| {
-                go = ui.button("OK").clicked();
-                cancel = ui.button("Cancel").clicked();
+                go = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
             });
         });
     if cancel || !open {

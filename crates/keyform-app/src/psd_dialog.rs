@@ -89,18 +89,20 @@ pub fn dialog(
     // The preview resolution prompt of a new model.
     if let Some((legacy, choices, sel)) = p.resolution.as_mut() {
         let (mut ok, mut cancel) = (false, false);
-        egui::Window::new("Confirm")
+        egui::Window::new(crate::i18n::tr("Confirm"))
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label("Please select the resolution for displaying the model image");
+                ui.label(crate::i18n::tr(
+                    "Please select the resolution for displaying the model image",
+                ));
                 for (k, c) in choices.iter().enumerate() {
                     ui.radio_value(sel, k, &c.label);
                 }
                 ui.horizontal(|ui| {
-                    ok = ui.button("OK").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    ok = ui.button(crate::i18n::tr("OK")).clicked();
+                    cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
                 });
             });
         if !ok && !cancel && open {
@@ -115,91 +117,98 @@ pub fn dialog(
     }
     match p.target {
         None => {
-            egui::Window::new("Select an action or a model to integrate PSD")
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.label(format!(
-                        "{name}: {} × {} px, {} layers",
-                        p.size.0, p.size.1, p.layers
-                    ));
-                    ui.separator();
-                    for (label, legacy) in [
-                        ("< Create new model from PSD file >", false),
-                        (
-                            "< Create new model from PSD file (Blend mode before 5.3) >",
-                            true,
-                        ),
-                    ] {
-                        if ui.add(egui::Button::selectable(false, label)).clicked() {
-                            new_model = Some(legacy);
-                        }
+            egui::Window::new(crate::i18n::tr(
+                "Select an action or a model to integrate PSD",
+            ))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{name}: {} × {} px, {} layers",
+                    p.size.0, p.size.1, p.layers
+                ));
+                ui.separator();
+                for (label, legacy) in [
+                    ("< Create new model from PSD file >", false),
+                    (
+                        "< Create new model from PSD file (Blend mode before 5.3) >",
+                        true,
+                    ),
+                ] {
+                    if ui.add(egui::Button::selectable(false, label)).clicked() {
+                        new_model = Some(legacy);
                     }
-                    for (uid, d) in docs.iter() {
-                        let ok = d.editable();
-                        let b = egui::Button::selectable(
-                            false,
-                            egui::RichText::new(&d.title).color(ui.visuals().hyperlink_color),
-                        );
-                        if ui.add_enabled(ok, b).clicked() {
-                            p.target = Some(*uid);
-                        }
+                }
+                for (uid, d) in docs.iter() {
+                    let ok = d.editable();
+                    let b = egui::Button::selectable(
+                        false,
+                        egui::RichText::new(&d.title).color(ui.visuals().hyperlink_color),
+                    );
+                    if ui.add_enabled(ok, b).clicked() {
+                        p.target = Some(*uid);
                     }
-                    ui.separator();
-                    if ui.button("Cancel").clicked() {
-                        outcome = Outcome::Cancel;
-                    }
-                });
+                }
+                ui.separator();
+                if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                    outcome = Outcome::Cancel;
+                }
+            });
         }
         Some(uid) => {
             let Some((_, doc)) = docs.iter_mut().find(|(u, _)| *u == uid) else {
                 return Outcome::Cancel;
             };
             let mut ok = false;
-            egui::Window::new("Select an action or an existing PSD file to replace")
-                .collapsible(false)
-                .resizable(false)
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.label(format!("{name} → {}", doc.title));
-                    ui.separator();
-                    ui.checkbox(&mut p.add_layers, "< Add all layers as new ArtMesh >");
-                    ui.checkbox(
-                        &mut p.register_only,
-                        "< Register PSD file without adding ArtMeshes >",
+            egui::Window::new(crate::i18n::tr(
+                "Select an action or an existing PSD file to replace",
+            ))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("{name} → {}", doc.title));
+                ui.separator();
+                ui.checkbox(
+                    &mut p.add_layers,
+                    crate::i18n::tr("< Add all layers as new ArtMesh >"),
+                );
+                ui.checkbox(
+                    &mut p.register_only,
+                    "< Register PSD file without adding ArtMeshes >",
+                );
+                // Existing PSDs, newest first: Replace (§7).
+                for (k, li) in doc.model.layered_images.iter().enumerate().rev() {
+                    let label = format!(
+                        "Replace [ {} ]{}",
+                        li.name,
+                        if li.replaced { " (replaced)" } else { "" }
                     );
-                    // Existing PSDs, newest first: Replace (§7).
-                    for (k, li) in doc.model.layered_images.iter().enumerate().rev() {
-                        let label = format!(
-                            "Replace [ {} ]{}",
-                            li.name,
-                            if li.replaced { " (replaced)" } else { "" }
-                        );
-                        let mut on = p.replace.contains(&k);
-                        if ui.checkbox(&mut on, label).changed() {
-                            if on {
-                                p.replace.push(k);
-                                p.add_layers = false;
-                                p.register_only = false;
-                            } else {
-                                p.replace.retain(|x| *x != k);
-                            }
+                    let mut on = p.replace.contains(&k);
+                    if ui.checkbox(&mut on, label).changed() {
+                        if on {
+                            p.replace.push(k);
+                            p.add_layers = false;
+                            p.register_only = false;
+                        } else {
+                            p.replace.retain(|x| *x != k);
                         }
                     }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ok = ui
-                            .add_enabled(
-                                p.add_layers || p.register_only || !p.replace.is_empty(),
-                                egui::Button::new("OK"),
-                            )
-                            .clicked();
-                        if ui.button("Cancel").clicked() {
-                            outcome = Outcome::Cancel;
-                        }
-                    });
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ok = ui
+                        .add_enabled(
+                            p.add_layers || p.register_only || !p.replace.is_empty(),
+                            egui::Button::new(crate::i18n::tr("OK")),
+                        )
+                        .clicked();
+                    if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                        outcome = Outcome::Cancel;
+                    }
                 });
+            });
             if ok {
                 let o = ImportOptions {
                     path: p.path.to_string_lossy().to_string(),
