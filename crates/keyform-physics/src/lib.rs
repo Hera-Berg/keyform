@@ -5,6 +5,7 @@
 
 pub mod edit;
 pub mod json3;
+pub mod presets;
 pub mod sim;
 
 pub use sim::PhysicsSim;

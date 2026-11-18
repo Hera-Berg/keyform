@@ -43,6 +43,12 @@ pub struct PhysicsEditor {
     held: Option<(usize, Vec<[f32; 2]>)>,
     message: Option<String>,
     verified: bool,
+    /// User presets (`physics_preset40.xml`), loaded on first use.
+    user_presets: Option<Vec<keyform_physics::presets::Preset>>,
+    /// Selected preset per kind (input, model) by name.
+    preset_sel: [Option<String>; 2],
+    /// "Add a preset" name being typed, per kind.
+    preset_add: [Option<String>; 2],
 }
 
 impl PhysicsEditor {
@@ -157,7 +163,7 @@ pub fn window(
                     Tab::Output => outputs(ui, st, doc, &mut rig, warn),
                 }
                 ui.separator();
-                pendulums(ui, st, &mut rig);
+                pendulums(ui, st, doc, &mut rig);
             });
             if let Some(m) = &st.message {
                 ui.separator();
@@ -396,9 +402,119 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
 }
 
 /// §5.1 Input settings.
+fn presets_path() -> std::path::PathBuf {
+    crate::template_list::templates_dir()
+        .parent()
+        .map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        )
+        .join(keyform_physics::presets::USER_FILE)
+}
+
+/// The preset row (§5.1 / §6): built-in and user presets of one kind,
+/// Reflect (apply), Add (save the current settings), Delete (user only).
+fn preset_row(
+    ui: &mut egui::Ui,
+    st: &mut PhysicsEditor,
+    doc: &Document,
+    s: &mut keyform_model::PhysicsSetting,
+    input: bool,
+) {
+    use keyform_physics::presets::{self as pp, Preset};
+    let user = st.user_presets.get_or_insert_with(|| {
+        std::fs::read_to_string(presets_path())
+            .map(|t| pp::parse(&t))
+            .unwrap_or_default()
+    });
+    let k = usize::from(!input);
+    let all: Vec<(Preset, bool)> = pp::builtin()
+        .into_iter()
+        .map(|p| (p, false))
+        .chain(user.iter().cloned().map(|p| (p, true)))
+        .filter(|(p, _)| p.is_input() == input)
+        .collect();
+    let mut save = false;
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr("Preset"));
+        let sel = st.preset_sel[k].clone().unwrap_or_default();
+        egui::ComboBox::from_id_salt(("phys-preset", k)).selected_text(&sel).width(180.0).show_ui(ui, |ui| {
+            for (p, _) in &all {
+                if ui.selectable_label(sel == p.name(), p.name()).clicked() {
+                    st.preset_sel[k] = Some(p.name().to_owned());
+                }
+            }
+        });
+        let chosen = all.iter().find(|(p, _)| Some(p.name()) == st.preset_sel[k].as_deref());
+        if ui.add_enabled(chosen.is_some(), egui::Button::new(crate::i18n::tr("Reflect"))).clicked() {
+            if let Some((p, _)) = chosen {
+                if input {
+                    let missing = pp::apply_input(s, p, &doc.model.parameters);
+                    if !missing.is_empty() {
+                        st.message = Some(format!(
+                            "The following parameters were not found in the model. Only existing parameters will be applied.\n{}",
+                            missing.join(", ")
+                        ));
+                    }
+                } else {
+                    pp::apply_model(s, p);
+                }
+            }
+        }
+        if ui.button(crate::i18n::tr("Add…")).clicked() {
+            st.preset_add[k] = Some(String::new());
+        }
+        let deletable = chosen.is_some_and(|c| c.1);
+        if ui.add_enabled(deletable, egui::Button::new(crate::i18n::tr("Delete"))).clicked() {
+            if let Some(name) = st.preset_sel[k].take() {
+                user.retain(|p| !(p.name() == name && p.is_input() == input));
+                save = true;
+            }
+        }
+    });
+    if let Some(mut name) = st.preset_add[k].take() {
+        let mut keep = true;
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Name:"));
+            ui.text_edit_singleline(&mut name);
+            if ui.button(crate::i18n::tr("OK")).clicked() && !name.trim().is_empty() {
+                let p = if input {
+                    pp::input_from(name.trim(), s, &doc.model.parameters)
+                } else {
+                    Preset::Model {
+                        name: name.trim().to_owned(),
+                        vertices: s.vertices.clone(),
+                    }
+                };
+                user.retain(|q| !(q.name() == p.name() && q.is_input() == input));
+                user.push(p);
+                st.preset_sel[k] = Some(name.trim().to_owned());
+                save = true;
+                keep = false;
+            }
+            if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                keep = false;
+            }
+        });
+        if keep {
+            st.preset_add[k] = Some(name);
+        }
+    }
+    if save {
+        let path = presets_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, pp::write(user)) {
+            st.message = Some(format!("{}: {e}", path.display()));
+        }
+    }
+}
+
 fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut PhysicsRig) {
     let g = st.group;
     let s = &mut rig.settings[g];
+    preset_row(ui, st, doc, s, true);
     ui.label(RichText::new(crate::i18n::tr("Input normalization")).strong());
     egui::Grid::new("physics-norm")
         .num_columns(4)
@@ -744,10 +860,11 @@ fn outputs(
 }
 
 /// §6 Physics model settings: the pendulum table and a preview.
-fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
+fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut PhysicsRig) {
     let g = st.group;
     let s = &mut rig.settings[g];
     let before = s.vertices.clone();
+    preset_row(ui, st, doc, s, false);
     ui.label(RichText::new(crate::i18n::tr("Pendulum settings")).strong());
     ui.weak(crate::i18n::tr(
         "When a multi-stage pendulum is set, it will be numbered in order from the top.",
