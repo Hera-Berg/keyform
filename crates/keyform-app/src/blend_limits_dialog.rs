@@ -9,6 +9,9 @@ use keyform_model::ParameterKind;
 use crate::document::{Document, Selection};
 use crate::i18n::tr;
 
+/// A pending change: constraint parameter and its new points (`None` deletes).
+type GraphChange = (usize, Option<Vec<(f32, f32)>>);
+
 #[derive(Default)]
 pub struct BlendLimitsDialog {
     pub open: bool,
@@ -56,7 +59,7 @@ pub fn dialog(ctx: &egui::Context, st: &mut BlendLimitsDialog, doc: Option<&mut 
         st.blend = blends.first().copied();
     }
     let mut open = true;
-    let mut apply: Option<(usize, Option<Vec<(f32, f32)>>)> = None;
+    let mut apply: Option<GraphChange> = None;
     egui::Window::new(tr("Limit Settings for Blend Shape Weights"))
         .open(&mut open)
         .default_width(600.0)
@@ -243,7 +246,7 @@ fn edit_graph(
     doc: &Document,
     _b: usize,
     q: usize,
-    apply: &mut Option<(usize, Option<Vec<(f32, f32)>>)>,
+    apply: &mut Option<GraphChange>,
 ) {
     let Some(rows) = &mut st.editing else { return };
     let p = &doc.model.parameters[q];
