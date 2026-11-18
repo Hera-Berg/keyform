@@ -149,6 +149,10 @@ pub struct KeyformApp {
     atlas: crate::texture_atlas::AtlasWindow,
     new_model: crate::new_model_dialog::NewModelDialog,
     parts_settings: crate::parts_settings::PartsSettings,
+    api_server: Option<crate::external_server::Server>,
+    plugins: crate::external_host::Plugins,
+    api_window: bool,
+    api_mode: &'static str,
     physics_editor: crate::physics_editor::PhysicsEditor,
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     sway: crate::generators_ui::SwayDialog,
@@ -168,6 +172,10 @@ pub struct Settings {
     pub mask_warnings: bool,
     /// The mask dialog's "do not show again" (export time).
     pub mask_dialog_suppressed: bool,
+    /// External application integration (off by default; 127.0.0.1 only).
+    /// spec: 70-advanced/external-api.md §1
+    pub api_enabled: bool,
+    pub api_port: u16,
 }
 
 impl Default for Settings {
@@ -175,11 +183,14 @@ impl Default for Settings {
         Self {
             mask_warnings: true,
             mask_dialog_suppressed: false,
+            api_enabled: false,
+            api_port: crate::external_api::DEFAULT_PORT,
         }
     }
 }
 
 const SETTINGS_KEY: &str = "keyform.settings";
+const PLUGINS_KEY: &str = "keyform.external_apps";
 const EXPORT_IMAGE_KEY: &str = "keyform.export_image";
 
 /// `targetVersionNo` of "SDK(N/A)/Latest Cubism" (cmo3.md §2): no mask hint.
@@ -265,7 +276,15 @@ impl KeyformApp {
             .storage
             .and_then(|s| eframe::get_value::<Settings>(s, SETTINGS_KEY))
             .unwrap_or_default();
+        let plugins = cc
+            .storage
+            .and_then(|s| eframe::get_value::<crate::external_host::Plugins>(s, PLUGINS_KEY))
+            .unwrap_or_default();
         let mut app = Self {
+            api_server: None,
+            plugins,
+            api_window: false,
+            api_mode: "Modeling",
             settings,
             mask_dialog: false,
             create_deformer: Default::default(),
@@ -494,6 +513,69 @@ impl KeyformApp {
     fn cancel_closing(&mut self) {
         self.closing.clear();
         self.quit_after_closing = false;
+    }
+
+    /// Runs the external application API: starts / stops the server with
+    /// the setting, answers requests, sends edit-mode events.
+    fn external_api(&mut self, ctx: &egui::Context) {
+        let s = self.settings;
+        let running = self.api_server.as_ref().map(|x| (x.port, x.connections()));
+        crate::external_host::settings_window(
+            ctx,
+            &mut self.api_window,
+            &mut self.settings.api_enabled,
+            &mut self.settings.api_port,
+            running,
+            &mut self.plugins,
+        );
+        if s.api_enabled
+            && self
+                .api_server
+                .as_ref()
+                .is_none_or(|x| x.port != s.api_port)
+        {
+            match crate::external_server::Server::start(s.api_port) {
+                Ok(x) => {
+                    self.log.info(format!(
+                        "External application API on 127.0.0.1:{}",
+                        s.api_port
+                    ));
+                    self.api_server = Some(x);
+                }
+                Err(e) => {
+                    self.log.warn(format!("External application API: {e}"));
+                    self.settings.api_enabled = false;
+                }
+            }
+        } else if !s.api_enabled && self.api_server.is_some() {
+            self.api_server = None;
+        }
+        let Some(server) = self.api_server.as_mut() else {
+            return;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let mut host = crate::external_host::AppHost {
+            slots: &mut self.slots,
+            active: self.active,
+            log: &mut self.log,
+            plugins: &mut self.plugins,
+        };
+        server.poll(&mut host, now);
+        let mode = crate::external_api::Host::edit_mode(&host);
+        if mode != self.api_mode {
+            self.api_mode = mode;
+            server.event(
+                "NotifyChangeEditMode",
+                &serde_json::json!({ "EditMode": mode }),
+                now,
+            );
+        }
+        // Keep polling while clients are connected.
+        if server.connections() > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
     }
 
     /// Opens the Physics Settings window (also `--physics`).
@@ -761,6 +843,13 @@ impl KeyformApp {
                     &mut self.settings.mask_warnings,
                     "Always show warnings regarding masks",
                 );
+                if ui
+                    .button("External Application Integration Settings…")
+                    .clicked()
+                {
+                    self.api_window = true;
+                    ui.close();
+                }
                 ui.separator();
                 let has = self.active.is_some();
                 if ui
@@ -2305,6 +2394,7 @@ impl eframe::App for KeyformApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.shortcuts(&ctx);
+        self.external_api(&ctx);
         if !self.initial_values.is_empty() {
             for (id, v) in std::mem::take(&mut self.initial_values) {
                 for s in &mut self.slots {
@@ -2602,6 +2692,11 @@ impl eframe::App for KeyformApp {
         eframe::set_value(storage, LAYOUT_VERSION_KEY, &LAYOUT_VERSION);
         eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        // Only approved applications are remembered.
+        let kept = crate::external_host::Plugins {
+            list: self.plugins.list.iter().filter(|p| p.2).cloned().collect(),
+        };
+        eframe::set_value(storage, PLUGINS_KEY, &kept);
         eframe::set_value(storage, EXPORT_IMAGE_KEY, &self.export_image);
     }
 }

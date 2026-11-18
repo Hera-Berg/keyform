@@ -348,6 +348,9 @@ pub struct Document {
     saved_revision: u64,
     /// Mesh edit mode on one art mesh (main-window.md §6).
     pub mesh_edit: Option<crate::mesh_edit::MeshEdit>,
+    /// Parameter values pushed by an external application (they override
+    /// the sliders until cleared). spec: external-api.md §4, §5
+    pub external: Vec<(usize, f32)>,
     /// Mesh editor settings kept between mesh-edit sessions.
     mesh_prefs: Option<crate::mesh_edit::MeshPrefs>,
     /// Glue weight brush tool, when active (canvas-and-tools.md "Glue").
@@ -695,6 +698,7 @@ impl Document {
             }),
             saved_revision: 0,
             mesh_edit: None,
+            external: Vec::new(),
             mesh_prefs: None,
             glue_tool: None,
             glue_prefs: Default::default(),
@@ -2136,6 +2140,8 @@ impl Document {
                 },
                 ..Default::default()
             };
+            let mut opts = opts;
+            opts.values.extend(self.external.iter().copied());
             let f = self.anim_frame_opts(at, &opts).unwrap_or_else(|| {
                 let ov = Overrides {
                     part_opacity: vec![None; self.model.parts.len()],
@@ -2152,6 +2158,7 @@ impl Document {
         if self.mode == Mode::Modeling {
             // The model exactly at the slider values, nothing animated.
             self.live.clone_from(&self.values);
+            self.apply_external();
             let ov = Overrides {
                 part_opacity: vec![None; self.model.parts.len()],
                 model_opacity: 1.0,
@@ -2249,8 +2256,18 @@ impl Document {
                 keyform_anim::motionsync::apply(frames, *rate, t * 1e6, &mut p);
             }
         }
+        self.apply_external();
         let ev = Evaluator::new(&self.model);
         self.frame = Some(ev.evaluate_full(&self.live, EvalOptions::default(), &ov));
+    }
+
+    /// Pushed external values win over everything else.
+    fn apply_external(&mut self) {
+        for &(i, v) in &self.external {
+            if let Some(x) = self.live.get_mut(i) {
+                *x = v;
+            }
+        }
     }
 }
 

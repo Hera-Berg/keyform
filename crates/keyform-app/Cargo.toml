@@ -24,6 +24,8 @@ jpeg-encoder = "0.6"
 gif = "0.13"
 cpal = "0.15"
 serde = { workspace = true }
+serde_json.workspace = true
+tungstenite = "0.26"
 wgpu = "30"
 
 [lints]
