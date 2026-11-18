@@ -18,6 +18,7 @@ const USAGE: &str = "usage:
                                    export for runtime: a .moc3 path writes only the
                                    moc3, a folder gets the full file set
   kf diffmoc <a.moc3> <b.moc3>     compare two moc3 files section by section
+  kf mocsec <file.moc3> <section>  print one section
   kf automesh <in.cmo3> <out.cmo3> [--preset NAME] [--preview DIR] MESH_ID ...
                                    automatic mesh generation (auto-mesh.md); the preview
                                    draws each new mesh over its model image
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
             Err(_) => Err("version must be 1…6".into()),
         },
         ["diffmoc", a, b] => diffmoc(Path::new(a), Path::new(b)),
+        ["mocsec", a, name] => mocsec(Path::new(a), name),
         ["automesh", input, output, rest @ ..] => {
             automesh::run(Path::new(input), Path::new(output), rest)
         }
@@ -267,6 +269,21 @@ fn export(input: &Path, output: &Path, version: Option<u8>) -> R {
         rep.glues.len(),
         rep.textures
     );
+    Ok(())
+}
+
+/// Prints one section of a moc3 file (debug aid).
+fn mocsec(a: &Path, name: &str) -> R {
+    use keyform_formats::moc3::{Moc3Raw, SectionData};
+    let r = Moc3Raw::read(&std::fs::read(a)?)?;
+    match r.sections.get(name) {
+        Some(SectionData::I32(v)) => println!("{v:?}"),
+        Some(SectionData::F32(v)) => println!("{v:?}"),
+        Some(SectionData::I16(v)) => println!("{v:?}"),
+        Some(SectionData::U8(v)) => println!("{v:?}"),
+        Some(SectionData::Ids(v)) => println!("{v:?}"),
+        _ => println!("no such section"),
+    }
     Ok(())
 }
 

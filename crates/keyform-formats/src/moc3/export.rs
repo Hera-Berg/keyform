@@ -114,6 +114,24 @@ impl Pools {
 /// Appends `positions` to the pool, zero-padded so the next block starts on a
 /// 16-float boundary (§8.3). Returns the block's float index.
 /// Blend-shape bindings being built (moc3.md §8.4).
+/// Whether a rotation deformer with parent `target` is the first rotation
+/// on its chain (moc3.md §8.10: it carries the 1/ppu compensation).
+fn first_rotation_on_chain(m: &Model, target: Option<usize>, nd: usize) -> bool {
+    let mut t = target;
+    let mut steps = 0;
+    while let Some(p) = t.filter(|&p| p < nd) {
+        if matches!(m.deformers[p].kind, DeformerKind::Rotation(_)) {
+            return false;
+        }
+        steps += 1;
+        if steps > nd {
+            break;
+        }
+        t = m.deformers[p].target;
+    }
+    true
+}
+
 #[derive(Default)]
 struct BsBuild {
     /// (export parameter index, keys, base key index).
@@ -136,7 +154,7 @@ impl BsBuild {
         param_pos: &HashMap<usize, usize>,
         grid: &KeyformGrid<F>,
         blend: &keyform_model::BlendShapes<F>,
-        push: &mut dyn FnMut(&F) -> Result<i32>,
+        push: &mut dyn FnMut(&F, &F, &F) -> Result<i32>,
     ) -> Result<(i32, i32)> {
         let Some(base) = keyform_eval::interp::base_keyform(&m.parameters, grid) else {
             return invalid("blend shapes on an object without keyforms");
@@ -182,7 +200,7 @@ impl BsBuild {
                 let mut d = f.zeroed();
                 d.add_scaled(f, 1.0);
                 d.add_scaled(base, -1.0);
-                let i = push(&d)?;
+                let i = push(&d, f, base)?;
                 first.get_or_insert(i);
             }
             // Constraints of this parameter, one per constraint parameter.
@@ -244,6 +262,15 @@ fn to_units(xy: &mut [f32], o: &ExportOptions) {
         p[0] = (p[0] - o.origin[0]) * s;
         p[1] = (p[1] - o.origin[1]) * s;
     }
+}
+
+/// conv(form) − conv(base) in export units (root objects): the reference
+/// subtracts after converting (observed on rotation scale deltas).
+fn unit_delta(form: &[f32], base: &[f32], o: &ExportOptions) -> Vec<f32> {
+    let (mut a, mut b) = (form.to_vec(), base.to_vec());
+    to_units(&mut a, o);
+    to_units(&mut b, o);
+    a.iter().zip(&b).map(|(x, y)| x - y).collect()
 }
 
 fn i32s(v: Vec<i32>) -> SectionData {
@@ -483,17 +510,23 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             rep.warnings.push(
                 "blend shapes are not supported by this moc3 version and were dropped".into(),
             );
-        } else if m.parts.iter().any(|p| !p.blend_shapes.is_empty())
-            || m.glues.iter().any(|g| !g.blend_shapes.is_empty())
-            || m.deformers
-                .iter()
-                .any(|d| matches!(&d.kind, DeformerKind::Rotation(r) if !r.blend_shapes.is_empty()))
-        {
-            // TODO(Q-0036): parts / rotation deformers / glue (v5.0) have no
-            // reference export to compare against yet.
+        } else if m.glues.iter().any(|g| !g.blend_shapes.is_empty()) {
+            // TODO(Q-0036): glue deltas (intensity) have no reference export
+            // to compare against yet.
             return Err(FormatError::Unsupported(
-                "moc3 export of blend shapes on parts, rotation deformers or glue is not implemented yet".into(),
+                "moc3 export of blend shapes on glue is not implemented yet".into(),
             ));
+        } else if v < 5
+            && (m.parts.iter().any(|p| !p.blend_shapes.is_empty())
+                || m.deformers.iter().any(
+                    |d| matches!(&d.kind, DeformerKind::Rotation(r) if !r.blend_shapes.is_empty()),
+                ))
+        {
+            // 4.2 has warp and art-mesh blend shapes only; the reference
+            // exports without the others after a warning (observed).
+            rep.warnings.push(
+                "Blend shapes other than on art meshes and warp deformers need 5.0 or later and were dropped".into(),
+            );
         }
     }
     let param_pos: HashMap<usize, usize> = param_order
@@ -591,7 +624,7 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
     let mut rot_kf_colors: Vec<(i32, i32)> = Vec::new();
     // Colour pool order (observed, 5.3.04, v4–v6): offscreen keyforms, then
     // deformer keyforms in deformer-table order, then art meshes.
-    // TODO(Q-0036): confirm the pool order rule.
+    // (The exporter's build order, confirmed in Q-0036.)
     let mut off_colors: Vec<(i32, i32)> = Vec::new();
     let mut off_opacity: Vec<f32> = Vec::new();
     let mut part_off_kf: Vec<i32> = Vec::new();
@@ -662,20 +695,7 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 // spec: moc3.md §8.10 — the 1/ppu export wrap is removed with
                 // change-parent scale compensation, which lands on the first
                 // rotation deformer of every chain (warps pass total scale through).
-                let mut first_rotation = true;
-                let mut t = def.target;
-                let mut steps = 0;
-                while let Some(p) = t.filter(|&p| p < nd) {
-                    if matches!(m.deformers[p].kind, DeformerKind::Rotation(_)) {
-                        first_rotation = false;
-                        break;
-                    }
-                    steps += 1;
-                    if steps > nd {
-                        break;
-                    }
-                    t = m.deformers[p].target;
-                }
+                let first_rotation = first_rotation_on_chain(m, def.target, nd);
                 rot_color_begin.push(count(mul_pool.len())?);
                 for k in &g.keyforms {
                     let mut origin = k.origin;
@@ -698,42 +718,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                     scr_pool.push(k.screen);
                 }
             }
-        }
-    }
-
-    // Warp blend-shape deltas follow all warp grid keyforms (§8.4).
-    // TODO(Q-0036): unverified against a reference export with warp blend shapes.
-    if v >= 4 {
-        let mut wi = 0i32;
-        for &d in &def_order {
-            let def = &m.deformers[d];
-            let DeformerKind::Warp(wd) = &def.kind else {
-                continue;
-            };
-            let here = wi;
-            wi += 1;
-            if wd.blend_shapes.is_empty() {
-                continue;
-            }
-            let g = prep(m, &wd.grid);
-            let root = def.target.is_none();
-            let (b, n) = bs.add(m, &param_pos, &g, &wd.blend_shapes, &mut |k: &WarpForm| {
-                let i = count(w.opacity.len())?;
-                let mut pts = k.positions.clone();
-                if root {
-                    let sc = 1.0 / o.pixels_per_unit;
-                    pts.iter_mut().for_each(|x| *x *= sc);
-                }
-                w.opacity.push(k.opacity);
-                w.pos_begin.push(push_positions(&mut positions, &pts));
-                if v >= 5 {
-                    warp_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
-                    mul_pool.push(k.multiply);
-                    scr_pool.push(k.screen);
-                }
-                Ok(i)
-            })?;
-            bs_warps.push((here, b, n));
         }
     }
 
@@ -845,6 +829,49 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         }
         mesh_draw_orders.push(dos);
     }
+    // Warp blend-shape deltas: after all normal keyforms (positions at the
+    // end of the pool, after the art meshes'), before the art-mesh deltas.
+    // spec: moc3.md §8.4 "Delta pool order"
+    if v >= 4 {
+        let mut wi = 0i32;
+        for &d in &def_order {
+            let def = &m.deformers[d];
+            let DeformerKind::Warp(wd) = &def.kind else {
+                continue;
+            };
+            let here = wi;
+            wi += 1;
+            if wd.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &wd.grid);
+            let root = def.target.is_none();
+            let (b, n) = bs.add(
+                m,
+                &param_pos,
+                &g,
+                &wd.blend_shapes,
+                &mut |k: &WarpForm, f, bf| {
+                    let i = count(w.opacity.len())?;
+                    let pts = if root {
+                        unit_delta(&f.positions, &bf.positions, o)
+                    } else {
+                        k.positions.clone()
+                    };
+                    w.opacity.push(k.opacity);
+                    w.pos_begin.push(push_positions(&mut positions, &pts));
+                    if v >= 5 {
+                        warp_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                        mul_pool.push(k.multiply);
+                        scr_pool.push(k.screen);
+                    }
+                    Ok(i)
+                },
+            )?;
+            bs_warps.push((here, b, n));
+        }
+    }
+
     // Art mesh blend-shape deltas follow all art mesh grid keyforms (§8.4).
     if v >= 4 {
         for (mi_out, &ai) in mesh_order.iter().enumerate() {
@@ -859,13 +886,13 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 &param_pos,
                 &g,
                 &am.blend_shapes,
-                &mut |k: &ArtMeshForm| {
+                &mut |k: &ArtMeshForm, f, bf| {
                     let i = count(a.opacity.len())?;
-                    let mut pts = k.positions.clone();
-                    if root {
-                        let sc = 1.0 / o.pixels_per_unit;
-                        pts.iter_mut().for_each(|x| *x *= sc);
-                    }
+                    let pts = if root {
+                        unit_delta(&f.positions, &bf.positions, o)
+                    } else {
+                        k.positions.clone()
+                    };
                     a.opacity.push(k.opacity);
                     a.draw_order.push(k.draw_order);
                     a.pos_begin.push(push_positions(&mut positions, &pts));
@@ -879,6 +906,122 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 },
             )?;
             bs_meshes.push((count(mi_out)?, b, n));
+        }
+    }
+    // Part, rotation and offscreen deltas (v5.0+, offscreen v5.3), after
+    // the art-mesh deltas in kind order. spec: moc3.md §8.4
+    let mut bs_parts: Vec<(i32, i32, i32)> = Vec::new();
+    let mut bs_rots: Vec<(i32, i32, i32)> = Vec::new();
+    let mut bs_offs: Vec<(i32, i32, i32)> = Vec::new();
+    // (part, positions of its delta part keyforms).
+    let mut part_delta_slots: Vec<(PartIndex, Vec<usize>)> = Vec::new();
+    if v >= 5 {
+        for (pi, &p) in part_order.iter().enumerate() {
+            let part = &m.parts[p];
+            if part.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &part.grid);
+            let mut slots = Vec::new();
+            let (b, n) = bs.add(
+                m,
+                &param_pos,
+                &g,
+                &part.blend_shapes,
+                &mut |k: &PartForm, _, _| {
+                    let i = count(part_draw.len())?;
+                    slots.push(part_draw.len());
+                    part_draw.push(k.draw_order);
+                    // Filled in with the paired offscreen delta below (v5.3).
+                    part_off_kf.push(-1);
+                    Ok(i)
+                },
+            )?;
+            part_delta_slots.push((p, slots));
+            bs_parts.push((count(pi)?, b, n));
+        }
+        let mut ri = 0i32;
+        for &d in &def_order {
+            let def = &m.deformers[d];
+            let DeformerKind::Rotation(rd) = &def.kind else {
+                continue;
+            };
+            let here = ri;
+            ri += 1;
+            if rd.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &rd.grid);
+            let root = def.target.is_none();
+            let first = first_rotation_on_chain(m, def.target, nd);
+            let (b, n) = bs.add(
+                m,
+                &param_pos,
+                &g,
+                &rd.blend_shapes,
+                &mut |k: &RotationForm, f, bf| {
+                    let i = count(r.opacity.len())?;
+                    let origin = if root {
+                        let d = unit_delta(&f.origin, &bf.origin, o);
+                        [d[0], d[1]]
+                    } else {
+                        k.origin
+                    };
+                    r.opacity.push(k.opacity);
+                    r.angle.push(k.angle);
+                    r.ox.push(origin[0]);
+                    r.oy.push(origin[1]);
+                    // Differences of the exported values (observed: the
+                    // 1/ppu scale is applied before subtracting).
+                    r.scale.push(if first {
+                        f.scale / o.pixels_per_unit - bf.scale / o.pixels_per_unit
+                    } else {
+                        k.scale
+                    });
+                    r.rx.push(i32::from(k.reflect_x));
+                    r.ry.push(i32::from(k.reflect_y));
+                    rot_kf_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                    mul_pool.push(k.multiply);
+                    scr_pool.push(k.screen);
+                    Ok(i)
+                },
+            )?;
+            bs_rots.push((here, b, n));
+        }
+        if v >= 6 {
+            for (oi, &p) in off_parts.iter().enumerate() {
+                let part = &m.parts[p];
+                if part.blend_shapes.is_empty() {
+                    continue;
+                }
+                let g = prep(m, &part.grid);
+                let slots = part_delta_slots
+                    .iter()
+                    .find(|x| x.0 == p)
+                    .map(|x| x.1.clone())
+                    .unwrap_or_default();
+                let mut nth = 0;
+                let (b, n) = bs.add(
+                    m,
+                    &param_pos,
+                    &g,
+                    &part.blend_shapes,
+                    &mut |k: &PartForm, _, _| {
+                        let i = count(off_opacity.len())?;
+                        // The part's delta keyforms point at their offscreen deltas.
+                        if let Some(&s) = slots.get(nth) {
+                            part_off_kf[s] = i;
+                        }
+                        nth += 1;
+                        off_opacity.push(k.opacity);
+                        off_colors.push((count(mul_pool.len())?, count(scr_pool.len())?));
+                        mul_pool.push(k.multiply);
+                        scr_pool.push(k.screen);
+                        Ok(i)
+                    },
+                )?;
+                bs_offs.push((count(oi)?, b, n));
+            }
         }
     }
     // Texture index = position among the pages used, in texture-manager order (§8.6).
@@ -1396,6 +1539,40 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             ],
             &bs_meshes,
         )?;
+        if v >= 5 {
+            targets(
+                &mut raw,
+                c::BS_PARTS,
+                [
+                    "bs_parts.target",
+                    "bs_parts.binding_begin",
+                    "bs_parts.binding_count",
+                ],
+                &bs_parts,
+            )?;
+            targets(
+                &mut raw,
+                c::BS_ROTATIONS,
+                [
+                    "bs_rotations.target",
+                    "bs_rotations.binding_begin",
+                    "bs_rotations.binding_count",
+                ],
+                &bs_rots,
+            )?;
+        }
+        if v >= 6 {
+            targets(
+                &mut raw,
+                c::BS_OFFSCREENS,
+                [
+                    "bs_offscreens.target",
+                    "bs_offscreens.binding_begin",
+                    "bs_offscreens.binding_count",
+                ],
+                &bs_offs,
+            )?;
+        }
         raw.counts[c::BS_CONSTRAINT_INDICES] = count(bs.constraint_indices.len())?;
         set(
             &mut raw,

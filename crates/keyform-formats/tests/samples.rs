@@ -3637,13 +3637,19 @@ fn moc3_export_matches_reference_p5() {
         ("bs.cmo3", 4, "bs_v4/bs.moc3"),
         ("bs.cmo3", 5, "bs_v5/bs.moc3"),
         ("bs.cmo3", 6, "bs_runtime/bs.moc3"),
+        // Blend shapes on a warp, a rotation deformer, a part and an
+        // offscreen part (v4.2 drops the last three with a warning).
+        ("bs2.cmo3", 4, "bs2_v4/bs2.moc3"),
+        ("bs2.cmo3", 5, "bs2_v5/bs2.moc3"),
+        ("bs2.cmo3", 6, "bs2_v6/bs2.moc3"),
     ] {
         let doc = Cmo3Document::read(&std::fs::read(dir.join(model)).unwrap()).unwrap();
         let mut o = ExportOptions::for_model(&doc.model);
         o.version = version;
         let (raw, rep) = export_moc3(&doc.model, &o).unwrap();
-        assert!(
-            rep.warnings.is_empty(),
+        assert_eq!(
+            rep.warnings.len(),
+            usize::from(model == "bs2.cmo3" && version == 4),
             "{model} v{version}: {:?}",
             rep.warnings
         );
