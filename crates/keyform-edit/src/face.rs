@@ -507,8 +507,7 @@ mod adjust_tests {
             cells: vec![(0, 0, 0, front.clone()), (1, 1, 0, key)],
         };
         let mut m = Model::default();
-        let mut w = keyform_model::WarpForm::default();
-        w.positions = front.clone();
+        let w = keyform_model::WarpForm { positions: front.clone(), ..Default::default() };
         let mut grid = keyform_model::KeyformGrid::single(w.clone());
         grid.keyforms.push(w);
         m.deformers
