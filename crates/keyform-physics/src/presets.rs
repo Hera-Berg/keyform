@@ -216,8 +216,14 @@ pub fn write(presets: &[Preset]) -> String {
     o
 }
 
-/// One tag: (closing, name, attributes).
-fn tags(text: &str) -> Vec<(bool, String, Vec<(String, String)>)> {
+type Attrs = Vec<(String, String)>;
+/// A tag: (closing, name, attributes).
+type Tag = (bool, String, Attrs);
+/// An open `<group>`: (name, value, items).
+type Group = (Option<String>, Option<String>, Attrs);
+
+/// The tags of `text`, in order.
+fn tags(text: &str) -> Vec<Tag> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(i) = rest.find('<') {
@@ -253,7 +259,7 @@ pub fn parse(text: &str) -> Vec<Preset> {
     let num = |s: Option<String>| s.and_then(|x| x.parse::<f32>().ok());
     let mut out = Vec::new();
     let mut cur: Option<Preset> = None;
-    let mut group: Option<(Option<String>, Option<String>, Vec<(String, String)>)> = None;
+    let mut group: Option<Group> = None;
     for (closing, name, attrs) in tags(text) {
         match (name.as_str(), closing) {
             ("preset", false) => {
