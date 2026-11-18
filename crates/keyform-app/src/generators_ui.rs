@@ -458,6 +458,14 @@ pub struct FaceDialog {
     px: Option<usize>,
     py: Option<usize>,
     message: Option<String>,
+    /// Generated keyforms per feature, for Adjust Face Motion.
+    snapshots: Vec<(
+        keyform_edit::face::Feature,
+        keyform_edit::face::MotionSnapshot,
+    )>,
+    /// Per feature: movement %, deformation %, directions (← → ↑ ↓).
+    levels: Vec<(f32, f32, [bool; 4])>,
+    match_brows: bool,
 }
 
 pub fn face_dialog(ctx: &egui::Context, st: &mut FaceDialog, doc: Option<&mut Document>) {
@@ -521,8 +529,79 @@ pub fn face_dialog(ctx: &egui::Context, st: &mut FaceDialog, doc: Option<&mut Do
                     r = keyform_edit::face::generate_motion(m, &warps, px, py, [30.0, 30.0], &values);
                 });
                 st.message = Some(match r {
-                    Ok(n) => format!("{n} keyforms generated."),
+                    Ok(n) => {
+                        st.snapshots = st
+                            .warps
+                            .iter()
+                            .filter_map(|&(f, d)| keyform_edit::face::snapshot(&doc.model, d, px, py).map(|s| (f, s)))
+                            .collect();
+                        st.levels = vec![(100.0, 100.0, [true; 4]); st.snapshots.len()];
+                        format!("{n} keyforms generated.")
+                    }
                     Err(e) => e,
+                });
+            }
+        }
+        // Adjust Face Motion (§3.3): movement scales translation,
+        // deformation the shape change. Ranges are Keyform's (0–200 %).
+        // TODO(Q-0045): the reference's ranges and layout.
+        if !st.snapshots.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new(crate::i18n::tr("Adjust Face Motion")).strong());
+            ui.checkbox(&mut st.match_brows, crate::i18n::tr("Match movement level of eyebrows to eyes"));
+            let mut changed = false;
+            let before = st.levels.clone();
+            egui::Grid::new("face-adjust").num_columns(4).striped(true).show(ui, |ui| {
+                for h in ["", "Movement level", "Deformation level", ""] {
+                    ui.label(egui::RichText::new(crate::i18n::tr(h)).strong());
+                }
+                ui.end_row();
+                for (k, (f, _)) in st.snapshots.iter().enumerate() {
+                    let l = &mut st.levels[k];
+                    ui.label(crate::i18n::tr(f.name()));
+                    ui.add(egui::Slider::new(&mut l.0, 0.0..=200.0).suffix(" %"));
+                    ui.add(egui::Slider::new(&mut l.1, 0.0..=200.0).suffix(" %"));
+                    ui.horizontal(|ui| {
+                        for (i, a) in ["←", "→", "↑", "↓"].iter().enumerate() {
+                            ui.toggle_value(&mut l.2[i], *a);
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            if st.match_brows {
+                use keyform_edit::face::Feature;
+                let eye = st.snapshots.iter().position(|s| matches!(s.0, Feature::EyeL | Feature::EyeR));
+                if let Some(e) = eye {
+                    let mv = st.levels[e].0;
+                    for (k, (f, _)) in st.snapshots.iter().enumerate() {
+                        if matches!(f, Feature::EyebrowL | Feature::EyebrowR) {
+                            st.levels[k].0 = mv;
+                        }
+                    }
+                }
+            }
+            changed |= st.levels != before;
+            if changed {
+                use keyform_edit::face::Direction;
+                let jobs: Vec<_> = st
+                    .snapshots
+                    .iter()
+                    .zip(&st.levels)
+                    .map(|((_, s), l)| {
+                        let dirs: Vec<Direction> = [Direction::XMinus, Direction::XPlus, Direction::YPlus, Direction::YMinus]
+                            .into_iter()
+                            .zip(l.2)
+                            .filter(|x| x.1)
+                            .map(|x| x.0)
+                            .collect();
+                        (s.clone(), dirs, l.0 / 100.0, l.1 / 100.0)
+                    })
+                    .collect();
+                doc.edit("Adjust Face Motion", |m| {
+                    for (s, dirs, mv, df) in &jobs {
+                        keyform_edit::face::adjust(m, s, dirs, *mv, *df);
+                    }
                 });
             }
         }

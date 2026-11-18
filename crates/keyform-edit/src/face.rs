@@ -366,3 +366,170 @@ mod tests {
         );
     }
 }
+
+/// Directions of the face keys (Adjust Face Motion buttons ← → ↑ ↓).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    XMinus,
+    XPlus,
+    YPlus,
+    YMinus,
+}
+
+/// A snapshot of a deformer's generated keyforms (cell → positions) and
+/// its front cell, for re-adjusting without compounding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MotionSnapshot {
+    pub deformer: usize,
+    pub front: usize,
+    /// (cell, X key sign, Y key sign, positions); signs −1 / 0 / +1.
+    pub cells: Vec<(usize, i8, i8, Vec<f32>)>,
+}
+
+/// Snapshot of deformer `d`'s keyforms on (`px`, `py`) after generation.
+pub fn snapshot(m: &Model, d: usize, px: usize, py: usize) -> Option<MotionSnapshot> {
+    let keyform_model::DeformerKind::Warp(w) = &m.deformers.get(d)?.kind else {
+        return None;
+    };
+    let bs = &w.grid.bindings;
+    let (bx, by) = (
+        bs.iter().position(|b| b.parameter == px)?,
+        bs.iter().position(|b| b.parameter == py)?,
+    );
+    let (dx, dy) = (m.parameters[px].default, m.parameters[py].default);
+    let n = w.grid.keyforms.len();
+    let mut cells = Vec::new();
+    let mut front = None;
+    for c in 0..n {
+        let mut rest = c;
+        let mut keys = Vec::new();
+        for b in bs {
+            let k = b.keys.len().max(1);
+            keys.push(b.keys.get(rest % k).copied().unwrap_or(0.0));
+            rest /= k;
+        }
+        // Other bindings at their defaults only.
+        if bs.iter().enumerate().any(|(j, b)| {
+            j != bx && j != by && (keys[j] - m.parameters[b.parameter].default).abs() > 1e-4
+        }) {
+            continue;
+        }
+        let sign = |v: f32, d: f32| {
+            if (v - d).abs() < 1e-4 {
+                0
+            } else if v > d {
+                1
+            } else {
+                -1
+            }
+        };
+        let (sx, sy) = (sign(keys[bx], dx), sign(keys[by], dy));
+        if sx == 0 && sy == 0 {
+            front = Some(c);
+        }
+        cells.push((c, sx, sy, w.grid.keyforms[c].positions.clone()));
+    }
+    Some(MotionSnapshot {
+        deformer: d,
+        front: front?,
+        cells,
+    })
+}
+
+/// Adjust Face Motion: rescales the snapshot's displacements from the
+/// front keyform for the chosen directions. Movement (the mean
+/// translation) is scaled by `movement`, the remaining shape change by
+/// `deformation` (1.0 = as generated). Q-0044: movement scales
+/// translation, deformation the shape change.
+pub fn adjust(
+    m: &mut Model,
+    s: &MotionSnapshot,
+    dirs: &[Direction],
+    movement: f32,
+    deformation: f32,
+) {
+    let Some(front) = s.cells.iter().find(|c| c.0 == s.front).map(|c| c.3.clone()) else {
+        return;
+    };
+    let hit = |sx: i8, sy: i8| {
+        dirs.iter().any(|d| match d {
+            Direction::XMinus => sx < 0,
+            Direction::XPlus => sx > 0,
+            // Canvas y grows downward; a positive Y key looks up.
+            Direction::YPlus => sy > 0,
+            Direction::YMinus => sy < 0,
+        })
+    };
+    let Some(def) = m.deformers.get_mut(s.deformer) else {
+        return;
+    };
+    let keyform_model::DeformerKind::Warp(w) = &mut std::sync::Arc::make_mut(def).kind else {
+        return;
+    };
+    for (c, sx, sy, pos) in &s.cells {
+        if *c == s.front || !hit(*sx, *sy) {
+            continue;
+        }
+        let n = (pos.len() / 2).max(1) as f32;
+        let (mut mx, mut my) = (0.0, 0.0);
+        for (p, f) in pos.chunks_exact(2).zip(front.chunks_exact(2)) {
+            mx += (p[0] - f[0]) / n;
+            my += (p[1] - f[1]) / n;
+        }
+        if let Some(k) = w.grid.keyforms.get_mut(*c) {
+            k.positions = pos
+                .chunks_exact(2)
+                .zip(front.chunks_exact(2))
+                .flat_map(|(p, f)| {
+                    let (dx, dy) = (p[0] - f[0] - mx, p[1] - f[1] - my);
+                    [
+                        f[0] + mx * movement + dx * deformation,
+                        f[1] + my * movement + dy * deformation,
+                    ]
+                })
+                .collect();
+        }
+    }
+}
+
+#[cfg(test)]
+mod adjust_tests {
+    use super::*;
+
+    #[test]
+    fn movement_and_deformation_split() {
+        // Front at (0,0),(2,0); a key moved by (1,0) and stretched by ±1.
+        let front = vec![0.0, 0.0, 2.0, 0.0];
+        let key = vec![0.0, 0.0, 4.0, 0.0]; // mean shift (1, 0), shape ±1
+        let s = MotionSnapshot {
+            deformer: 0,
+            front: 0,
+            cells: vec![(0, 0, 0, front.clone()), (1, 1, 0, key)],
+        };
+        let mut m = Model::default();
+        let mut w = keyform_model::WarpForm::default();
+        w.positions = front.clone();
+        let mut grid = keyform_model::KeyformGrid::single(w.clone());
+        grid.keyforms.push(w);
+        m.deformers
+            .push(std::sync::Arc::new(keyform_model::Deformer {
+                info: keyform_model::ObjectInfo::new("W"),
+                target: None,
+                kind: keyform_model::DeformerKind::Warp(keyform_model::WarpDeformer {
+                    cols: 1,
+                    rows: 1,
+                    quad: false,
+                    grid,
+                    blend_shapes: Default::default(),
+                    bezier_nets: Vec::new(),
+                    sway: Vec::new(),
+                }),
+            }));
+        adjust(&mut m, &s, &[Direction::XPlus], 2.0, 0.0);
+        let keyform_model::DeformerKind::Warp(w) = &m.deformers[0].kind else {
+            panic!()
+        };
+        // Movement doubled (2, 0), no shape change.
+        assert_eq!(w.grid.keyforms[1].positions, vec![2.0, 0.0, 4.0, 0.0]);
+    }
+}
