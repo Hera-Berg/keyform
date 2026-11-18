@@ -456,7 +456,12 @@ fn parent_kind(m: &Model, d: Option<DeformerIndex>) -> Option<bool> {
 
 /// Inserts a new object into a part's child list: after the first adopted
 /// child if it is in that part, else at the end.
-fn add_to_part(m: &mut Model, part: PartIndex, child: PartChild, near: Option<PartChild>) {
+pub(crate) fn add_to_part(
+    m: &mut Model,
+    part: PartIndex,
+    child: PartChild,
+    near: Option<PartChild>,
+) {
     let Some(p) = m.parts.get_mut(part) else {
         return;
     };

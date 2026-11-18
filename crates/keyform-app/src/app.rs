@@ -152,6 +152,7 @@ pub struct KeyformApp {
     physics_editor: crate::physics_editor::PhysicsEditor,
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     sway: crate::generators_ui::SwayDialog,
+    template: crate::template_dialog::TemplateDialog,
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
@@ -275,6 +276,7 @@ impl KeyformApp {
             physics_editor: Default::default(),
             motion_sync: Default::default(),
             sway: Default::default(),
+            template: Default::default(),
             forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
@@ -1077,6 +1079,18 @@ impl KeyformApp {
             self.motion_sync.show();
             ui.close();
         }
+        ui.menu_button("Model Template", |ui| {
+            if ui
+                .add_enabled(
+                    doc_ok_for_physics(self),
+                    egui::Button::new("Apply Model Template…"),
+                )
+                .clicked()
+            {
+                self.template.show();
+                ui.close();
+            }
+        });
         ui.separator();
         if ui
             .add_enabled(
@@ -2512,6 +2526,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::generators_ui::sway_dialog(&ctx, &mut self.sway, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::template_dialog::dialog(&ctx, &mut self.template, doc, &mut self.log);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

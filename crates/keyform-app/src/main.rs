@@ -32,6 +32,7 @@ mod physics_editor;
 mod psd_dialog;
 mod reference_p5;
 mod soft_select;
+mod template_dialog;
 mod texture_atlas;
 mod theme;
 mod track_layers;

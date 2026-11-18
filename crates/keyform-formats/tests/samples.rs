@@ -3845,3 +3845,94 @@ fn tempdir(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&d).unwrap();
     d
 }
+
+/// Applying a model as a template to a copy of itself whose art meshes
+/// lost their rig (root-level, one keyform) restores the deformation:
+/// the meshes evaluate where the original's do at other parameter values,
+/// and the result saves. spec: templates.md §3, §5
+#[test]
+fn template_restores_a_stripped_rig() {
+    use keyform_edit::template::{apply, auto_match, mesh_infos, ApplyOptions, Layout};
+    use keyform_formats::cmo3::Cmo3Document;
+    use std::sync::Arc;
+    let Some(path) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_free_t08.cmo3"))
+    else {
+        return;
+    };
+    let tpl = Cmo3Document::read(&std::fs::read(&path).unwrap())
+        .unwrap()
+        .model;
+    let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    // Strip: every mesh at its default-state canvas shape, at the root.
+    let vals: Vec<f32> = tpl.parameters.iter().map(|p| p.default).collect();
+    let frame = keyform_eval::Evaluator::new(&tpl).evaluate(&vals);
+    for (i, a) in doc.model.art_meshes.iter_mut().enumerate() {
+        let a = Arc::make_mut(a);
+        let mut f = a.grid.keyforms[0].clone();
+        f.positions = frame.meshes[i].positions.clone();
+        a.target = None;
+        a.grid = keyform_model::KeyformGrid::single(f);
+        a.grid.guids = vec![keyform_model::new_guid()];
+        a.blend_shapes = Default::default();
+    }
+    let layout = Layout::default();
+    let w = tpl.canvas.width as f32;
+    let h = tpl.canvas.height as f32;
+    let pairs: Vec<(usize, usize)> = auto_match(
+        &mesh_infos(&doc.model),
+        &mesh_infos(&tpl),
+        &layout,
+        w.hypot(h),
+        true,
+        &[],
+    )
+    .into_iter()
+    .enumerate()
+    .filter_map(|(d, t)| t.map(|t| (d, t)))
+    .collect();
+    assert_eq!(pairs.len(), tpl.art_meshes.len());
+    let rep = apply(
+        &mut doc.model,
+        &tpl,
+        &pairs,
+        &layout,
+        &ApplyOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(rep.meshes, pairs.len());
+    assert_eq!(rep.parameters_added, 0, "all parameters reused by ID");
+    // Compare at a few poses.
+    let pick = |id: &str| tpl.parameters.iter().position(|p| p.id == id);
+    for (id, v) in [
+        ("ParamAngleX", 20.0),
+        ("ParamAngleY", -15.0),
+        ("ParamBodyAngleX", 8.0),
+    ] {
+        let Some(pi) = pick(id) else { continue };
+        let mut a = vals.clone();
+        a[pi] = v;
+        let fa = keyform_eval::Evaluator::new(&tpl).evaluate(&a);
+        let pd = doc
+            .model
+            .parameters
+            .iter()
+            .position(|p| p.id == id)
+            .unwrap();
+        let mut b: Vec<f32> = doc.model.parameters.iter().map(|p| p.default).collect();
+        b[pd] = v;
+        let fb = keyform_eval::Evaluator::new(&doc.model).evaluate(&b);
+        let mut worst = 0.0f32;
+        for (i, &(d, t)) in pairs.iter().enumerate() {
+            let _ = i;
+            for (x, y) in fa.meshes[t].positions.iter().zip(&fb.meshes[d].positions) {
+                worst = worst.max((x - y).abs());
+            }
+        }
+        assert!(worst < 0.05, "{id}: worst {worst} px");
+    }
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.model.same_data(&doc.model));
+}
