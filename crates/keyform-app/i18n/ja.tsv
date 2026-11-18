@@ -189,3 +189,16 @@ Export model template	モデルテンプレートの書き出し
 Export model template…	モデルテンプレートを書き出し…
 Description	説明
 Author	作者
+Apply 3D Rotation Expression	3D回転表現を適用
+Apply 3D Rotation Expression…	3D回転表現を適用…
+Auto Generation of Face Motion	顔の動きの自動生成
+Auto Generation of Face Motion…	顔の動きの自動生成…
+Generate Face Deformer	顔のデフォーマを生成
+Generate Face Motion	顔の動きを生成
+Generate Motion	動きを生成
+Generate	生成
+X direction	X方向
+Y direction	Y方向
+Default depth	既定の奥行き
+Keyform to update	更新するキーフォーム
+Corners	四隅

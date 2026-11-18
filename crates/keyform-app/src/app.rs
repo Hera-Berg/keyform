@@ -156,6 +156,8 @@ pub struct KeyformApp {
     physics_editor: crate::physics_editor::PhysicsEditor,
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     sway: crate::generators_ui::SwayDialog,
+    rotate3d: crate::generators_ui::Rotate3dDialog,
+    face: crate::generators_ui::FaceDialog,
     template: crate::template_dialog::TemplateDialog,
     blend_limits: crate::blend_limits_dialog::BlendLimitsDialog,
     forms: crate::form_dialogs::FormDialogs,
@@ -307,6 +309,8 @@ impl KeyformApp {
             physics_editor: Default::default(),
             motion_sync: crate::motion_sync_dialog::MotionSyncDialog::with_presets(ms_presets),
             sway: Default::default(),
+            rotate3d: Default::default(),
+            face: Default::default(),
             template: Default::default(),
             blend_limits: Default::default(),
             forms: Default::default(),
@@ -1281,6 +1285,26 @@ impl KeyformApp {
             .clicked()
         {
             self.sway.show();
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                doc_ok_for_physics(self),
+                egui::Button::new(crate::i18n::tr("Apply 3D Rotation Expression…")),
+            )
+            .clicked()
+        {
+            self.rotate3d.open = true;
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                doc_ok_for_physics(self),
+                egui::Button::new(crate::i18n::tr("Auto Generation of Face Motion…")),
+            )
+            .clicked()
+        {
+            self.face.open = true;
             ui.close();
         }
         if ui
@@ -2743,6 +2767,16 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::generators_ui::sway_dialog(&ctx, &mut self.sway, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::generators_ui::rotate3d_dialog(&ctx, &mut self.rotate3d, doc);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::generators_ui::face_dialog(&ctx, &mut self.face, doc);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

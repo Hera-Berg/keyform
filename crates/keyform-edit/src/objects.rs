@@ -562,40 +562,62 @@ pub fn create_warp_deformer(
     rows: u32,
     bezier: (u32, u32),
 ) -> Result<DeformerIndex, String> {
+    create_warp_deformer_in(m, nd, cols, rows, bezier, None)
+}
+
+/// The children's bounding box (min, max) in the new deformer's parent
+/// space, for callers that choose their own rectangle.
+pub fn children_bounds(m: &Model, nd: &NewDeformer) -> Result<Option<(V2, V2)>, String> {
+    children_box(m, nd)
+}
+
+/// Like [`create_warp_deformer`], with an explicit rectangle (x, y, w, h)
+/// in the parent's local space.
+pub fn create_warp_deformer_in(
+    m: &mut Model,
+    nd: &NewDeformer,
+    cols: u32,
+    rows: u32,
+    bezier: (u32, u32),
+    rect_override: Option<(f32, f32, f32, f32)>,
+) -> Result<DeformerIndex, String> {
     let (cw, ch) = (m.canvas.width as f32, m.canvas.height as f32);
     let warp_parent = parent_kind(m, nd.parent);
     // (x, y, width, height) in the parent's local space.
-    let rect = match children_box(m, nd)? {
-        Some((lo, hi)) => {
-            let (mut x, mut y, mut rw, mut rh) = (lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]);
-            if rw < 0.002 && rh < 0.002 {
-                let (dy, e) = if warp_parent == Some(true) {
-                    (0.1, 0.3)
+    let rect = match rect_override {
+        Some(r) => r,
+        None => match children_box(m, nd)? {
+            Some((lo, hi)) => {
+                let (mut x, mut y, mut rw, mut rh) = (lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]);
+                if rw < 0.002 && rh < 0.002 {
+                    let (dy, e) = if warp_parent == Some(true) {
+                        (0.1, 0.3)
+                    } else {
+                        (30.0, 100.0)
+                    };
+                    y += dy;
+                    x -= e;
+                    y -= e;
+                    rw += 2.0 * e;
+                    rh += 2.0 * e;
                 } else {
-                    (30.0, 100.0)
-                };
-                y += dy;
-                x -= e;
-                y -= e;
-                rw += 2.0 * e;
-                rh += 2.0 * e;
-            } else {
-                rw = rw.max(0.002);
-                rh = rh.max(0.002);
-                x -= rw * 0.05;
-                y -= rh * 0.05;
-                rw *= 1.1;
-                rh *= 1.1;
+                    rw = rw.max(0.002);
+                    rh = rh.max(0.002);
+                    x -= rw * 0.05;
+                    y -= rh * 0.05;
+                    rw *= 1.1;
+                    rh *= 1.1;
+                }
+                (x, y, rw, rh)
             }
-            (x, y, rw, rh)
-        }
-        None => match warp_parent {
-            None => (cw * 0.05, ch * 0.05, cw * 0.9, ch * 0.9),
-            Some(true) => (0.05, 0.05, 0.9, 0.9),
-            Some(false) => {
-                let (x, y, rw, rh) = (-cw / 4.0, ch / 4.0, cw / 2.0, ch / 2.0);
-                (x + 0.05 * rw, y + 0.05 * rh, rw * 0.9, rh * 0.9)
-            }
+            None => match warp_parent {
+                None => (cw * 0.05, ch * 0.05, cw * 0.9, ch * 0.9),
+                Some(true) => (0.05, 0.05, 0.9, 0.9),
+                Some(false) => {
+                    let (x, y, rw, rh) = (-cw / 4.0, ch / 4.0, cw / 2.0, ch / 2.0);
+                    (x + 0.05 * rw, y + 0.05 * rh, rw * 0.9, rh * 0.9)
+                }
+            },
         },
     };
     let (cols, rows) = (cols.clamp(1, 100), rows.clamp(1, 100));

@@ -265,3 +265,248 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- 3D rotation
+
+/// Apply 3D Rotation Expression (generators.md §1).
+// TODO(Q-0044): settings are not stored (`CRotate3DExtension`) yet.
+#[derive(Default)]
+pub struct Rotate3dDialog {
+    pub open: bool,
+    px: Option<usize>,
+    py: Option<usize>,
+    settings: Option<keyform_edit::rotate3d::Settings>,
+    side: bool,
+    message: Option<String>,
+}
+
+fn param_pick(ui: &mut egui::Ui, salt: &str, doc: &Document, p: &mut Option<usize>) {
+    let name = p
+        .and_then(|i| doc.model.parameters.get(i))
+        .map_or("—".to_owned(), |q| q.name.clone());
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(name)
+        .height(300.0)
+        .show_ui(ui, |ui| {
+            for (i, q) in doc.model.parameters.iter().enumerate() {
+                if q.kind == keyform_model::ParameterKind::BlendShape {
+                    continue;
+                }
+                ui.selectable_value(p, Some(i), &q.name)
+                    .on_hover_text(&q.id);
+            }
+        });
+}
+
+pub fn rotate3d_dialog(ctx: &egui::Context, st: &mut Rotate3dDialog, doc: Option<&mut Document>) {
+    use keyform_edit::rotate3d::{Order, Update};
+    if !st.open {
+        return;
+    }
+    let Some(doc) = doc else {
+        st.open = false;
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(crate::i18n::tr("Apply 3D Rotation Expression"))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let Some(o) = doc.primary() else {
+                ui.label(crate::i18n::tr("Select an art mesh or a warp deformer."));
+                return;
+            };
+            let s = st.settings.get_or_insert_with(|| {
+                keyform_edit::rotate3d::Settings::for_canvas(
+                    doc.model.canvas.width as f32,
+                    doc.model.canvas.height as f32,
+                )
+            });
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::tr("X direction"));
+                param_pick(ui, "r3-px", doc, &mut st.px);
+                ui.label(crate::i18n::tr("Y direction"));
+                param_pick(ui, "r3-py", doc, &mut st.py);
+            });
+            egui::Grid::new("r3").num_columns(2).show(ui, |ui| {
+                ui.label(crate::i18n::tr("Range of angle X / Y (°)"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut s.max_angle[0]).range(0.0..=90.0));
+                    ui.add(egui::DragValue::new(&mut s.max_angle[1]).range(0.0..=90.0));
+                });
+                ui.end_row();
+                ui.label(crate::i18n::tr("Perspective strength"));
+                let mut p = s.perspective.unwrap_or(0.0);
+                let mut on = s.perspective.is_some();
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut on, "");
+                    ui.add_enabled(on, egui::Slider::new(&mut p, 0.0..=100.0));
+                });
+                s.perspective = on.then_some(p);
+                ui.end_row();
+                ui.label(crate::i18n::tr("Centre of rotation"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut s.centre[0]));
+                    ui.add(egui::DragValue::new(&mut s.centre[1]));
+                });
+                ui.end_row();
+                ui.label(crate::i18n::tr("Camera position"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut s.camera[0]));
+                    ui.add(egui::DragValue::new(&mut s.camera[1]));
+                });
+                ui.end_row();
+                ui.label(crate::i18n::tr("Default depth"));
+                ui.add(egui::DragValue::new(&mut s.default_depth));
+                ui.end_row();
+                ui.label(crate::i18n::tr("Z-direction offset"));
+                ui.add(egui::DragValue::new(&mut s.z_offset));
+                ui.end_row();
+                ui.label(crate::i18n::tr("Rotation type"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(
+                        &mut s.order,
+                        Order::Xy,
+                        crate::i18n::tr("From X-direction to −Y-direction"),
+                    );
+                    ui.radio_value(
+                        &mut s.order,
+                        Order::Yx,
+                        crate::i18n::tr("From Y-direction to X-direction"),
+                    );
+                    ui.radio_value(
+                        &mut s.order,
+                        Order::Arbitrary,
+                        crate::i18n::tr("XY-directions simultaneously"),
+                    );
+                });
+                ui.end_row();
+                ui.label(crate::i18n::tr("Keyform to update"));
+                ui.horizontal(|ui| {
+                    for (u, l) in [
+                        (Update::All, "All"),
+                        (Update::X, "X-direction parameters"),
+                        (Update::Y, "Y-direction parameters"),
+                        (Update::Corners, "Corners"),
+                    ] {
+                        ui.radio_value(&mut s.update, u, crate::i18n::tr(l));
+                    }
+                });
+                ui.end_row();
+            });
+            ui.checkbox(
+                &mut st.side,
+                crate::i18n::tr("Estimate depth from the keyform at the current values"),
+            );
+            if ui.button(crate::i18n::tr("Generate")).clicked() {
+                if let (Some(px), Some(py)) = (st.px, st.py) {
+                    let s = *s;
+                    let side = st
+                        .side
+                        .then(|| keyform_edit::current_cell(&doc.model, o, &doc.values).ok())
+                        .flatten();
+                    let mut r = Ok(0);
+                    doc.edit("Apply 3D Rotation Expression", |m| {
+                        r = keyform_edit::rotate3d::generate(m, o, px, py, &s, side);
+                    });
+                    st.message = Some(match r {
+                        Ok(n) => format!("{n} keyforms generated."),
+                        Err(e) => e,
+                    });
+                }
+            }
+            if let Some(m) = &st.message {
+                ui.label(m);
+            }
+        });
+    if !open {
+        st.open = false;
+    }
+}
+
+// ---------------------------------------------------------------- Face
+
+/// Auto Generation of Face Motion (generators.md §3).
+#[derive(Default)]
+pub struct FaceDialog {
+    pub open: bool,
+    parts: [Option<usize>; 11],
+    warps: Vec<(keyform_edit::face::Feature, usize)>,
+    px: Option<usize>,
+    py: Option<usize>,
+    message: Option<String>,
+}
+
+pub fn face_dialog(ctx: &egui::Context, st: &mut FaceDialog, doc: Option<&mut Document>) {
+    use keyform_edit::face::Feature;
+    if !st.open {
+        return;
+    }
+    let Some(doc) = doc else {
+        st.open = false;
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(crate::i18n::tr("Auto Generation of Face Motion")).open(&mut open).show(ctx, |ui| {
+        ui.label(egui::RichText::new(crate::i18n::tr("Generate Face Deformer")).strong());
+        egui::Grid::new("face-parts").num_columns(2).show(ui, |ui| {
+            for (i, f) in Feature::ALL.iter().enumerate() {
+                ui.label(crate::i18n::tr(f.name()));
+                let name = st.parts[i].and_then(|p| doc.model.parts.get(p)).map_or("—".to_owned(), |p| p.info.display_name().to_owned());
+                egui::ComboBox::from_id_salt(("face-part", i)).selected_text(name).height(300.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut st.parts[i], None, "—");
+                    for (k, p) in doc.model.parts.iter().enumerate() {
+                        if Some(k) != doc.model.root_part {
+                            ui.selectable_value(&mut st.parts[i], Some(k), p.info.display_name());
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        if ui.button(crate::i18n::tr("Generate Face Deformer")).clicked() {
+            let parts = st.parts;
+            let values = doc.values.clone();
+            let mut r = Ok(Vec::new());
+            doc.edit("Generate Face Deformer", |m| {
+                r = keyform_edit::face::generate_deformers(m, &parts, (5, 5), &values);
+            });
+            match r {
+                Ok(w) => {
+                    st.warps = w;
+                    st.message = Some(crate::i18n::tr("Deformer generated successfully. Please specify each deformer and click the \"Generate Motion\" button to continue.").to_owned());
+                }
+                Err(e) => st.message = Some(e),
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new(crate::i18n::tr("Generate Face Motion")).strong());
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Angle X"));
+            param_pick(ui, "face-px", doc, &mut st.px);
+            ui.label(crate::i18n::tr("Angle Y"));
+            param_pick(ui, "face-py", doc, &mut st.py);
+        });
+        for (f, d) in &st.warps {
+            ui.label(format!("{}: {}", crate::i18n::tr(f.name()), doc.model.deformers.get(*d).map_or("?", |x| x.info.display_name())));
+        }
+        if ui.add_enabled(!st.warps.is_empty(), egui::Button::new(crate::i18n::tr("Generate Motion"))).clicked() {
+            if let (Some(px), Some(py)) = (st.px, st.py) {
+                let (warps, values) = (st.warps.clone(), doc.values.clone());
+                let mut r = Ok(0);
+                doc.edit("Generate Face Motion", |m| {
+                    r = keyform_edit::face::generate_motion(m, &warps, px, py, [30.0, 30.0], &values);
+                });
+                st.message = Some(match r {
+                    Ok(n) => format!("{n} keyforms generated."),
+                    Err(e) => e,
+                });
+            }
+        }
+        if let Some(m) = &st.message {
+            ui.label(m);
+        }
+    });
+    if !open {
+        st.open = false;
+    }
+}

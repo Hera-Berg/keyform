@@ -4034,3 +4034,51 @@ fn sway_settings_load_and_save() {
         std::fs::write(out, &bytes).unwrap();
     }
 }
+
+/// Face deformers and face motion on a sample: warps are created in the
+/// feature parts with their meshes, then Angle X / Y keyforms are written
+/// and the model still saves. spec: generators.md §3.1–3.2
+#[test]
+fn face_generators_on_a_sample() {
+    use keyform_edit::face::{generate_deformers, generate_motion, Feature};
+    use keyform_formats::cmo3::Cmo3Document;
+    let Some(path) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_free_t08.cmo3"))
+    else {
+        return;
+    };
+    let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let m = &mut doc.model;
+    let part = |id: &str| m.parts.iter().position(|p| p.info.id == id);
+    let mut parts = [None; 11];
+    parts[0] = part("PartFace");
+    parts[1] = part("PartEye");
+    parts[9] = part("PartMouth");
+    parts[10] = part("PartNose");
+    assert!(parts[0].is_some() && parts[1].is_some(), "sample part ids");
+    let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+    let n_def = m.deformers.len();
+    let warps = generate_deformers(m, &parts, (5, 5), &values).unwrap();
+    assert_eq!(m.deformers.len(), n_def + warps.len());
+    let (px, py) = (
+        m.parameters
+            .iter()
+            .position(|p| p.id == "ParamAngleX")
+            .unwrap(),
+        m.parameters
+            .iter()
+            .position(|p| p.id == "ParamAngleY")
+            .unwrap(),
+    );
+    // hiyori has one Eye part: use its warp for both eyes.
+    let mut w = warps.clone();
+    let eye = w.iter().find(|x| x.0 == Feature::EyeL).unwrap().1;
+    w.push((Feature::EyeR, eye));
+    let n = generate_motion(m, &w, px, py, [30.0, 30.0], &values).unwrap();
+    assert!(n >= 8, "{n} keyforms");
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.model.same_data(&edited));
+}
