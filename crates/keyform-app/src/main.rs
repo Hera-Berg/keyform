@@ -20,6 +20,7 @@ mod icons;
 mod inspector;
 mod log;
 mod mesh_edit;
+mod motion_sync_dialog;
 mod new_model_dialog;
 mod palettes;
 mod param_ctrl_ui;

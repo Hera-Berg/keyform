@@ -352,6 +352,7 @@ pub fn model3_json(
     physics: bool,
     user_data: bool,
     display_info: bool,
+    motion_sync: bool,
 ) -> Value {
     let mut fr = Map::new();
     fr.insert("Moc".into(), json!(format!("{name}.moc3")));
@@ -364,6 +365,12 @@ pub fn model3_json(
     }
     if display_info {
         fr.insert("DisplayInfo".into(), json!(format!("{name}.cdi3.json")));
+    }
+    if motion_sync {
+        fr.insert(
+            "MotionSync".into(),
+            json!(format!("{name}.motionsync3.json")),
+        );
     }
     let mut root = Map::new();
     root.insert("Version".into(), json!(3));
@@ -568,17 +575,83 @@ pub fn userdata3_json(m: &Model, meshes: &[usize]) -> Option<Value> {
     }))
 }
 
+/// motionsync3.json (motion-sync.md §2) of all the model's settings, or
+/// `None` without settings. Numbers are the f32 values widened to f64 and
+/// printed in full ("Scale": 0.30000001192092896), as the reference
+/// writes them (observed, 5.3.04); `UseCase` is "Mouth" (not stored).
+// TODO(Q-0039): the spec says 3-decimal floats; the reference doesn't.
+pub fn motionsync3_json(m: &Model) -> Option<Value> {
+    if m.motion_sync.is_empty() {
+        return None;
+    }
+    let f = |v: f32| json!(f64::from(v));
+    let settings: Vec<Value> = m
+        .motion_sync
+        .iter()
+        .map(|s| {
+            let cubism: Vec<Value> = s
+                .cubism
+                .iter()
+                .map(|c| {
+                    json!({ "Name": c.name, "Id": c.parameter_id, "Min": f(c.min), "Max": f(c.max),
+                            "Damper": f(c.damper), "Smooth": c.smooth })
+                })
+                .collect();
+            let audio: Vec<Value> = s
+                .audio
+                .iter()
+                .map(|a| {
+                    json!({ "Name": a.name, "Id": a.audio_id, "Min": f(a.min), "Max": f(a.max),
+                            "Scale": f(a.scale), "Enabled": a.enabled })
+                })
+                .collect();
+            // One entry per audio parameter with a mapping, in audio order.
+            let mappings: Vec<Value> = s
+                .audio
+                .iter()
+                .filter_map(|a| s.mappings.iter().find(|x| x.audio_id == a.audio_id))
+                .map(|x| {
+                    let targets: Vec<Value> =
+                        x.targets.iter().map(|(id, v)| json!({ "Id": id, "Value": f(*v) })).collect();
+                    json!({ "Type": x.kind, "Id": x.audio_id, "Targets": targets })
+                })
+                .collect();
+            json!({
+                "Id": s.id,
+                "AnalysisType": s.sync_type,
+                "UseCase": "Mouth",
+                "CubismParameters": cubism,
+                "AudioParameters": audio,
+                "Mappings": mappings,
+                "PostProcessing": { "BlendRatio": f(s.blend), "Smoothing": s.smoothing, "SampleRate": f(s.sample_rate) },
+            })
+        })
+        .collect();
+    let dict: Vec<Value> = m
+        .motion_sync
+        .iter()
+        .map(|s| json!({ "Id": s.id, "Name": s.name }))
+        .collect();
+    Some(json!({
+        "Version": 1,
+        "Meta": { "SettingCount": m.motion_sync.len(), "Dictionary": dict },
+        "Settings": settings,
+    }))
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeExportOptions {
     pub moc3: ExportOptions,
     pub export_physics: bool,
+    /// "Export motion-sync settings file" (`exportMotionSyncJson`).
+    pub export_motion_sync: bool,
     pub extend_edge_color: bool,
     pub export_display_info: bool,
     pub export_user_data: bool,
 }
 
 /// Writes the "Export For Runtime" file set into `dir` with base `name`.
-/// Motion sync is not written yet. Returns the written paths and the export
+/// Returns the written paths and the export
 /// report (physics verification messages are added to its warnings).
 pub fn export_runtime(
     m: &Model,
@@ -648,6 +721,16 @@ pub fn export_runtime(
             to_json_string(&v).as_bytes(),
         )?;
     }
+    let mut motion_sync = false;
+    if opts.export_motion_sync {
+        if let Some(v) = motionsync3_json(m) {
+            write(
+                dir.join(format!("{name}.motionsync3.json")),
+                to_json_string(&v).as_bytes(),
+            )?;
+            motion_sync = true;
+        }
+    }
     let v = model3_json(
         name,
         &tex_paths,
@@ -655,6 +738,7 @@ pub fn export_runtime(
         physics,
         user_data,
         opts.export_display_info,
+        motion_sync,
     );
     write(
         dir.join(format!("{name}.model3.json")),

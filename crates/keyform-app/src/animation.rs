@@ -668,6 +668,99 @@ impl Document {
         Ok(n)
     }
 
+    /// Bake Animation from Motion-sync: analyses sound track `sound` with
+    /// the model's motion-sync setting `setting` (motion-sync.md §3) and
+    /// writes the rows, resampled from the setting's SampleRate to the
+    /// scene's frame rate, as keys on the model track's parameter curves
+    /// over the sound (one undo step). Keys inside that range are replaced.
+    /// Returns the number of keys written. spec: motion-sync.md §3 step 5
+    // TODO(Q-0039): key placement, curve type, scene extension and the
+    // lip-sync warning of the reference.
+    pub fn bake_motion_sync(&mut self, setting: usize, sound: usize) -> Result<usize, String> {
+        use keyform_anim::motionsync::Setting;
+        let ms = self
+            .model
+            .motion_sync
+            .get(setting)
+            .ok_or("The model has no motion-sync settings.")?;
+        let eng = Setting::from_model(ms);
+        let st = self.anim.as_ref().ok_or("No animation is open.")?;
+        let scene = st.scene().ok_or("No scene.")?.clone();
+        let (ti, m) = st.model_track().ok_or("This scene has no model track.")?;
+        let track = scene.tracks.get(sound).ok_or("No such sound track.")?;
+        let TrackKind::Sound(snd) = &track.kind else {
+            return Err("That track is not a sound track.".into());
+        };
+        let g = snd
+            .resource
+            .as_ref()
+            .ok_or("The sound track has no sound.")?;
+        let pcm = st.sounds.get(g).ok_or("The sound could not be read.")?;
+        let frames = eng.frames(pcm);
+        if frames.is_empty() {
+            return Err("The sound is too short.".into());
+        }
+        let model_track = &scene.tracks[ti];
+        let shift = model_track.offset - model_track.start;
+        let (start, end) = (track.start, track.start + track.duration.max(1) - 1);
+        let attrs: Vec<(String, usize)> = eng
+            .cubism
+            .iter()
+            .filter_map(|c| {
+                let pi = self.model.parameters.iter().position(|p| p.id == c.id)?;
+                let k = m
+                    .params
+                    .iter()
+                    .position(|a| param_index(&self.model, a) == Some(pi))?;
+                Some((c.id.clone(), k))
+            })
+            .collect();
+        if attrs.is_empty() {
+            return Err("None of the setting's parameters is on the model track.".into());
+        }
+        let value = |id: &str, i: usize| frames[i].iter().find(|(p, _)| p == id).map(|x| x.1);
+        let rate = f64::from(eng.sample_rate);
+        let last = frames.len() - 1;
+        let kind = scene.default_param_curve;
+        let st = self.anim.as_mut().ok_or("No animation is open.")?;
+        let before = st.doc.animation.clone();
+        let legacy = before.smooth_legacy;
+        let TrackKind::Model(mt) = &mut st.doc.animation.scenes[st.scene].tracks[ti].kind else {
+            return Err("no model track".into());
+        };
+        let mut n = 0;
+        for (id, k) in &attrs {
+            let a = &mut mt.params[*k];
+            let (lo, hi) = keyform_anim::scene::clamp_range(a);
+            let c = &mut a.curve;
+            c.fixed = false;
+            let (from, to) = (start + shift, end + shift);
+            c.keys.retain(|key| key.frame < from || key.frame > to);
+            for f in start..=end {
+                // Scene frame → row position at SampleRate (linear blend of
+                // the two nearest rows, as §3 step 3).
+                let x = f64::from(f - start) / scene.fps * rate;
+                let i0 = (x.floor() as usize).min(last);
+                let i1 = (i0 + 1).min(last);
+                let t = (x - x.floor()) as f32;
+                let (Some(a0), Some(a1)) = (value(id, i0), value(id, i1)) else {
+                    continue;
+                };
+                keyform_anim::scene::set_key(c, f + shift, f64::from(a0 + (a1 - a0) * t), kind);
+                n += 1;
+            }
+            c.types = vec![kind; c.keys.len()];
+            keyform_anim::scene::refresh(c, lo, hi, legacy);
+        }
+        st.undo.push((
+            "Bake Animation from Motion-sync".into(),
+            UndoStep::Anim(before),
+        ));
+        st.redo.clear();
+        st.dirty = true;
+        Ok(n)
+    }
+
     pub fn import_motion(&mut self, path: &Path) -> Result<Vec<String>, String> {
         use keyform_anim::motion::Target;
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1318,6 +1411,7 @@ enum SceneOp {
     AddImage(PathBuf),
     AddSceneTrack(usize),
     BakeLipSync(usize),
+    BakeMotionSync(usize, usize),
     ImportMotion(PathBuf),
     OpenPhysicsBake,
     DeleteFormEdit(usize),
@@ -1392,6 +1486,12 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
     let mut op = None;
     let mut ctrl_op = None;
     let param_ids: Vec<String> = doc.model.parameters.iter().map(|p| p.id.clone()).collect();
+    let doc_motion_sync_names: Vec<String> = doc
+        .model
+        .motion_sync
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
     if let Some(st) = doc.anim.as_mut() {
         ui.horizontal(|ui| {
             ui.menu_button("Scene", |ui| {
@@ -1479,6 +1579,19 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     op = Some(SceneOp::OpenPhysicsBake);
                     ui.close();
                 }
+                let ms_settings = &doc_motion_sync_names;
+                ui.add_enabled_ui(!sound_tracks.is_empty() && !ms_settings.is_empty(), |ui| {
+                    ui.menu_button("Bake Animation from Motion-sync", |ui| {
+                        for (si, sname) in ms_settings.iter().enumerate() {
+                            for (i, name) in &sound_tracks {
+                                if ui.button(format!("{sname} ← {name}")).clicked() {
+                                    op = Some(SceneOp::BakeMotionSync(si, *i));
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
+                });
                 ui.add_enabled_ui(!sound_tracks.is_empty(), |ui| {
                     ui.menu_button("Bake Lip-sync", |ui| {
                         for (i, name) in &sound_tracks {
@@ -1647,6 +1760,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 .map_or(Err("No animation is open.".into()), |a| {
                     a.bake_lip_sync(i).map(|_| ())
                 }),
+            SceneOp::BakeMotionSync(s, i) => doc.bake_motion_sync(s, i).map(|_| ()),
             SceneOp::OpenPhysicsBake => {
                 let outs = doc.physics_outputs();
                 if outs.is_empty() {
@@ -2361,6 +2475,57 @@ mod tests {
 
     /// Physics baking: a head turn drives the physics outputs, which get
     /// keys (every frame, or reduced to turning points) as one undo step.
+    #[test]
+    fn bake_motion_sync_writes_mouth_keys() {
+        // ms.cmo3 (reference-made motion-sync setting) + a burst WAV.
+        let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+            return;
+        };
+        let dir = Path::new(&dir);
+        let (model, wav) = (dir.join("ms.cmo3"), dir.join("../q32_35/burst.wav"));
+        if !wav.exists() {
+            return;
+        }
+        let mut log = Log::default();
+        let mut doc = Document::new_animation(&model, &mut log).unwrap();
+        let scene = doc.anim.as_ref().unwrap().scene;
+        let b = std::fs::read(&wav).unwrap();
+        let w = keyform_anim::lipsync_bake::RawWav::parse(&b).unwrap();
+        let abs = std::fs::canonicalize(&wav).unwrap();
+        doc.anim_structure("Add Sound Track", |d, _| {
+            d.add_sound_track(scene, &abs.to_string_lossy(), w.duration())
+        })
+        .unwrap();
+        let a = doc.anim.as_ref().unwrap();
+        let sound = a
+            .scene()
+            .unwrap()
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Sound(_)))
+            .unwrap();
+        let n = doc.bake_motion_sync(0, sound).unwrap();
+        assert!(n > 10, "{n} keys");
+        let a = doc.anim.as_ref().unwrap();
+        assert_eq!(
+            a.undo.last().map(|u| u.0.as_str()),
+            Some("Bake Animation from Motion-sync")
+        );
+        let (_, m) = a.model_track().unwrap();
+        let open = m
+            .params
+            .iter()
+            .find(|p| p.id.ends_with("ParamMouthOpenY"))
+            .unwrap();
+        let peak = open
+            .curve
+            .keys
+            .iter()
+            .map(|k| k.value)
+            .fold(0.0f64, f64::max);
+        assert!(peak > 0.05, "mouth never opens: {peak}");
+    }
+
     #[test]
     fn bake_physics_writes_outputs() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

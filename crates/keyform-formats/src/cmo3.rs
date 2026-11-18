@@ -496,6 +496,7 @@ impl<'a, 'd> Loader<'a, 'd> {
         }
 
         self.load_physics(&root, &mut m)?;
+        self.load_motion_sync(&root, &mut m)?;
 
         if let Some(opts) = root.field("modelOptions")? {
             if let Some(e) = opts.own_field("MODEL_EXPORT_SETTING_KEY")? {
@@ -630,6 +631,84 @@ impl<'a, 'd> Loader<'a, 'd> {
                     "normalizedAngleValueMax",
                 )?,
             });
+        }
+        Ok(())
+    }
+
+    /// Motion-sync settings (`motionSyncSettingsSet`). Layout observed in a
+    /// reference-made file (5.3.04): parameters by ID string, mappings as a
+    /// map audio ID → `MappingItem` whose details map parameter ID →
+    /// `ShapeMappingDetail.target`. spec: 70-advanced/motion-sync.md §1
+    fn load_motion_sync(&mut self, root: &O<'a, 'd>, m: &mut Model) -> Result<()> {
+        use keyform_model::{MotionSyncSetting, SyncAudioParam, SyncCubismParam, SyncMapping};
+        let Some(set) = root.field("motionSyncSettingsSet")? else {
+            return Ok(());
+        };
+        for s in set.list("_settingSourceSetMotionSync")? {
+            let pp = s.field("postProcessingSetting")?;
+            let f = |o: &Option<O<'a, 'd>>, k: &str, d: f32| -> Result<f32> {
+                Ok(match o {
+                    Some(o) => o.f32(k)?.unwrap_or(d),
+                    None => d,
+                })
+            };
+            let mut st = MotionSyncSetting {
+                guid: s.guid("guid")?.unwrap_or_default().to_owned(),
+                id: s.id("id")?.unwrap_or_default().to_owned(),
+                name: s.string("name")?.unwrap_or_default(),
+                // A missing value means version 0 (motion-sync.md §2).
+                version: u8::from(s.enum_value("motionSyncVersion")? == Some("MOTION_SYNC_1")),
+                sync_type: "CRI".into(),
+                blend: f(&pp, "blendPercentage", 0.0)?,
+                smoothing: match &pp {
+                    Some(o) => o.i32("smoothAmount")?.unwrap_or(0),
+                    None => 0,
+                },
+                sample_rate: f(&pp, "sampleRate", 30.0)?,
+                cubism: Vec::new(),
+                audio: Vec::new(),
+                mappings: Vec::new(),
+            };
+            if let Some(mp) = s.field("mapping")? {
+                if let Some(t) = mp.enum_value("syncType")? {
+                    st.sync_type = t.to_owned();
+                }
+                for c in mp.list("cubismParameters")? {
+                    st.cubism.push(SyncCubismParam {
+                        guid: c.guid("guid")?.unwrap_or_default().to_owned(),
+                        parameter_id: c.string("parameterId")?.unwrap_or_default(),
+                        name: c.string("name")?.unwrap_or_default(),
+                        min: c.f32("min")?.unwrap_or(0.0),
+                        max: c.f32("max")?.unwrap_or(1.0),
+                        damper: c.f32("damper")?.unwrap_or(0.0),
+                        smooth: c.i32("smooth")?.unwrap_or(0),
+                    });
+                }
+                for a in mp.list("audioParameters")? {
+                    st.audio.push(SyncAudioParam {
+                        guid: a.guid("guid")?.unwrap_or_default().to_owned(),
+                        audio_id: a.string("audioId")?.unwrap_or_default(),
+                        name: a.string("name")?.unwrap_or_default(),
+                        min: a.f32("min")?.unwrap_or(0.0),
+                        max: a.f32("max")?.unwrap_or(1.0),
+                        scale: a.f32("scale")?.unwrap_or(1.0),
+                        enabled: a.bool("enabled")?.unwrap_or(true),
+                    });
+                }
+                for it in mp.list("mappingMap")? {
+                    let mut targets = Vec::new();
+                    for d in it.list("details")? {
+                        let key = d.attr("xs.n").unwrap_or_default().to_owned();
+                        targets.push((key, d.f32("target")?.unwrap_or(0.0)));
+                    }
+                    st.mappings.push(SyncMapping {
+                        audio_id: it.string("audioId")?.unwrap_or_default(),
+                        kind: it.enum_value("type")?.unwrap_or("Shape").to_owned(),
+                        targets,
+                    });
+                }
+            }
+            m.motion_sync.push(st);
         }
         Ok(())
     }

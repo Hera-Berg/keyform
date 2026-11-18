@@ -3760,3 +3760,88 @@ fn physics_edits_save() {
         break;
     }
 }
+
+/// Runtime export of the reference-made motion-sync model (`KEYFORM_BB_P5`,
+/// ms.cmo3): moc3, model3, motionsync3, cdi3 and physics3 equal the
+/// reference's export byte for byte. spec: motion-sync.md §2
+#[test]
+fn runtime_export_with_motion_sync_matches_reference() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_formats::moc3::ExportOptions;
+    use keyform_formats::runtime_json::{export_runtime, RuntimeExportOptions};
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    let doc = Cmo3Document::read(&std::fs::read(dir.join("ms.cmo3")).unwrap()).unwrap();
+    assert_eq!(doc.model.motion_sync.len(), 1);
+    assert_eq!(doc.model.motion_sync[0].version, 1);
+    let mut o = ExportOptions::for_model(&doc.model);
+    o.version = 6;
+    let ro = RuntimeExportOptions {
+        moc3: o,
+        export_physics: true,
+        export_motion_sync: true,
+        extend_edge_color: doc.model.export.extend_edge_color,
+        export_display_info: true,
+        export_user_data: true,
+    };
+    let out = tempdir("ms_export");
+    export_runtime(&doc.model, &ro, &out, "ms").unwrap();
+    for f in [
+        "moc3",
+        "model3.json",
+        "motionsync3.json",
+        "cdi3.json",
+        "physics3.json",
+    ] {
+        let want = std::fs::read(dir.join(format!("ms_rt/ms.{f}"))).unwrap();
+        let got = std::fs::read(out.join(format!("ms.{f}"))).unwrap();
+        assert!(want == got, "ms.{f} differs");
+    }
+}
+
+/// Motion-sync edits (a changed setting, a new one) survive a save and
+/// reload; an unchanged save keeps the document as it was.
+#[test]
+fn motion_sync_edits_save() {
+    use keyform_formats::cmo3::Cmo3Document;
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join("ms.cmo3");
+    let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let s = &mut doc.model.motion_sync;
+    let mut extra = s[0].clone();
+    s[0].name = "Edited <&>".into();
+    s[0].blend = 0.25;
+    s[0].smoothing = 40;
+    s[0].cubism[1].damper = 0.05;
+    s[0].audio[2].enabled = false;
+    s[0].mappings[1].targets[1].1 = 0.8;
+    extra.guid = keyform_model::new_guid();
+    extra.id = "MotionSyncSetting2".into();
+    extra.name = "Second".into();
+    for c in &mut extra.cubism {
+        c.guid = keyform_model::new_guid();
+    }
+    // Every audio element keeps its mapping: the reference drops a setting
+    // whose mapping misses elements (observed; Q-0039).
+    s.push(extra);
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.model.motion_sync, edited.motion_sync);
+    if let Some(out) = std::env::var_os("KEYFORM_MS_OUT") {
+        std::fs::write(out, &bytes).unwrap();
+    }
+}
+
+/// A fresh, empty directory under the target temp folder for one test.
+fn tempdir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("keyform-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}

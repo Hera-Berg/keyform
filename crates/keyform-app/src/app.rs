@@ -150,6 +150,7 @@ pub struct KeyformApp {
     new_model: crate::new_model_dialog::NewModelDialog,
     parts_settings: crate::parts_settings::PartsSettings,
     physics_editor: crate::physics_editor::PhysicsEditor,
+    motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
@@ -271,6 +272,7 @@ impl KeyformApp {
             new_model: Default::default(),
             parts_settings: Default::default(),
             physics_editor: Default::default(),
+            motion_sync: Default::default(),
             forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
@@ -1061,6 +1063,16 @@ impl KeyformApp {
             .clicked()
         {
             self.physics_editor.show();
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                doc_ok_for_physics(self),
+                egui::Button::new("Motion-sync Settings…"),
+            )
+            .clicked()
+        {
+            self.motion_sync.show();
             ui.close();
         }
     }
@@ -2461,6 +2473,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::physics_editor::window(&ctx, &mut self.physics_editor, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::motion_sync_dialog::dialog(&ctx, &mut self.motion_sync, doc, &mut self.log);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

@@ -474,6 +474,11 @@ impl Document {
                 log.warn(format!("{name}: {w}"));
             }
             model = doc.model.clone();
+            motion_sync = model
+                .motion_sync
+                .iter()
+                .map(keyform_anim::motionsync::Setting::from_model)
+                .collect();
             source = Some(Source::Project(Box::new(doc)));
         } else if lower.ends_with(".moc3") {
             let raw = Moc3Raw::read(&read(path)?).map_err(|e| e.to_string())?;
@@ -636,7 +641,7 @@ impl Document {
             expressions.len()
         ));
         let palette_from_children = matches!(source, Source::Project(_));
-        Ok(Self {
+        let mut doc = Self {
             path: path.to_path_buf(),
             title: name,
             source,
@@ -714,7 +719,18 @@ impl Document {
                 Mode::Viewer
             },
             model,
-        })
+        };
+        // Motion-sync settings from before 5.0.01 (motion-sync.md §2).
+        if doc.model.motion_sync.iter().any(|s| s.version == 0) {
+            doc.edit("Motion-sync formula update", |m| {
+                keyform_anim::motionsync::correct_v0(&mut m.motion_sync);
+            });
+            log.warn(
+                "The motion-sync formula has been optimized since Cubism 5.0.01. The blending \
+                 ratio value is automatically adjusted to maintain compatibility.",
+            );
+        }
+        Ok(doc)
     }
 
     /// Model edits are possible only on projects (runtime models cannot be
@@ -1154,6 +1170,7 @@ impl Document {
         let ro = RuntimeExportOptions {
             moc3: ExportOptions::for_model(&self.model),
             export_physics: true,
+            export_motion_sync: true,
             extend_edge_color: self.model.export.extend_edge_color,
             export_display_info: true,
             export_user_data: true,
@@ -1769,6 +1786,18 @@ impl Document {
 
     /// Rebuilds what is derived from the model after an edit, undo or redo.
     pub(crate) fn model_changed(&mut self) {
+        if matches!(self.source, Source::Project(_)) {
+            let ms: Vec<keyform_anim::motionsync::Setting> = self
+                .model
+                .motion_sync
+                .iter()
+                .map(keyform_anim::motionsync::Setting::from_model)
+                .collect();
+            if ms != self.motion_sync {
+                self.motion_sync = ms;
+                self.motion_sync_frames.clear();
+            }
+        }
         if self.drag.is_none() {
             self.mask_issues = keyform_edit::mask_issues(&self.model);
         }

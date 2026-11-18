@@ -41,7 +41,9 @@ pub struct Setting {
     pub cubism: Vec<CubismParameter>,
     pub audio: Vec<AudioParameter>,
     pub mappings: Vec<Mapping>,
-    /// Percent. Used by Keyform's analysis engine (motion-sync.md §4).
+    /// Blend ratio 0–1 (stored and exported as e.g. 0.5, observed; the
+    /// spec calls it a percentage). Used by Keyform's analysis engine
+    /// (motion-sync.md §4). TODO(Q-0039)
     pub blend_ratio: f32,
     /// 0–100. Used by Keyform's analysis engine.
     pub smoothing: i32,
@@ -49,6 +51,63 @@ pub struct Setting {
     pub audio_level_effect_ratio: f32,
     /// Analysis frames per second (default 60, viewer.md §3.8).
     pub sample_rate: f32,
+}
+
+impl Setting {
+    /// The engine view of a model's motion-sync setting (.cmo3).
+    pub fn from_model(s: &keyform_model::MotionSyncSetting) -> Self {
+        Self {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            cubism: s
+                .cubism
+                .iter()
+                .map(|c| CubismParameter {
+                    id: c.parameter_id.clone(),
+                    min: c.min,
+                    max: c.max,
+                    damper: c.damper,
+                    smooth: c.smooth,
+                })
+                .collect(),
+            audio: s
+                .audio
+                .iter()
+                .map(|a| AudioParameter {
+                    id: a.audio_id.clone(),
+                    min: a.min,
+                    max: a.max,
+                    scale: a.scale,
+                    enabled: a.enabled,
+                })
+                .collect(),
+            mappings: s
+                .mappings
+                .iter()
+                .map(|m| Mapping {
+                    id: m.audio_id.clone(),
+                    targets: m.targets.clone(),
+                })
+                .collect(),
+            blend_ratio: s.blend,
+            smoothing: s.smoothing,
+            audio_level_effect_ratio: 0.0,
+            sample_rate: s.sample_rate.max(1.0),
+        }
+    }
+}
+
+/// Settings stored at the 5.0.00 formula (version 0) are corrected on
+/// open: the blend value is halved and the version set to 1. Returns
+/// whether anything changed. spec: motion-sync.md §2 "Pre-5.0.01 settings"
+pub fn correct_v0(settings: &mut [keyform_model::MotionSyncSetting]) -> bool {
+    let mut changed = false;
+    for s in settings.iter_mut().filter(|s| s.version == 0) {
+        s.blend *= 0.5;
+        s.version = 1;
+        changed = true;
+    }
+    changed
 }
 
 /// One analysis frame: parameter id → value.
@@ -121,7 +180,7 @@ pub fn parse(json: &str) -> Result<Vec<Setting>, AnimError> {
                         .unwrap_or_default(),
                 })
                 .collect(),
-            blend_ratio: num(&s["PostProcessing"], "BlendRatio", 50.0),
+            blend_ratio: num(&s["PostProcessing"], "BlendRatio", 0.5),
             smoothing: num(&s["PostProcessing"], "Smoothing", 0.0) as i32,
             audio_level_effect_ratio: num(&s["PostProcessing"], "AudioLevelEffectRatio", 0.0),
             sample_rate: num(&s["PostProcessing"], "SampleRate", 60.0).max(1.0),
@@ -177,7 +236,7 @@ impl Setting {
             })
             .collect();
         let silence = self.silence_targets();
-        let r = (self.blend_ratio / 100.0).clamp(0.0, 1.0);
+        let r = self.blend_ratio.clamp(0.0, 1.0);
         let level_effect = (self.audio_level_effect_ratio / 100.0).clamp(0.0, 1.0);
         let smoothing = self.smoothing.clamp(0, 100) as f32;
         let mut state: Vec<Option<f32>> = vec![None; self.cubism.len()];

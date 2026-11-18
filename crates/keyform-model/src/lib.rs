@@ -8,12 +8,14 @@ use std::sync::Arc;
 pub mod deform_path;
 pub mod forms;
 pub mod grid;
+pub mod motion_sync;
 pub mod physics;
 
 pub mod animation;
 pub use deform_path::*;
 pub use forms::*;
 pub use grid::*;
+pub use motion_sync::*;
 pub use physics::*;
 
 pub type Color = [f32; 4];
@@ -99,6 +101,8 @@ pub struct Model {
     /// Imported layered images (PSDs), oldest first.
     pub layered_images: Vec<Arc<LayeredImage>>,
     pub physics: PhysicsRig,
+    /// Motion-sync settings. spec: 70-advanced/motion-sync.md §1
+    pub motion_sync: Vec<MotionSyncSetting>,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
     pub eye_blink_parameters: Vec<ParamIndex>,
@@ -131,6 +135,7 @@ impl Model {
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
             && self.physics == other.physics
+            && self.motion_sync == other.motion_sync
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -163,6 +168,7 @@ impl Model {
             && self.root_part == other.root_part
             && self.root_parameter_entries == other.root_parameter_entries
             && self.physics == other.physics
+            && self.motion_sync == other.motion_sync
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name

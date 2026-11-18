@@ -20,7 +20,7 @@ use crate::error::{invalid, Result};
 use crate::xml::Element;
 
 /// Path of the document's root object (`<main>`'s first child).
-fn main_path(root: &Element) -> Result<Vec<u32>> {
+pub(super) fn main_path(root: &Element) -> Result<Vec<u32>> {
     match root.children.iter().position(|c| c.name == "main") {
         Some(i) => Ok(vec![i as u32, 0]),
         None => invalid("document has no <main>"),
