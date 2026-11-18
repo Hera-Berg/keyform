@@ -3642,6 +3642,11 @@ fn moc3_export_matches_reference_p5() {
         ("bs2.cmo3", 4, "bs2_v4/bs2.moc3"),
         ("bs2.cmo3", 5, "bs2_v5/bs2.moc3"),
         ("bs2.cmo3", 6, "bs2_v6/bs2.moc3"),
+        // bs2 plus a glue blend shape.
+        ("bs3.cmo3", 5, "bs3_v5/bs3.moc3"),
+        ("bs3.cmo3", 6, "bs3_v6/bs3.moc3"),
+        // bs3 with a clip list on the offscreen part.
+        ("clip.cmo3", 6, "clip_v6/clip.moc3"),
     ] {
         let doc = Cmo3Document::read(&std::fs::read(dir.join(model)).unwrap()).unwrap();
         let mut o = ExportOptions::for_model(&doc.model);

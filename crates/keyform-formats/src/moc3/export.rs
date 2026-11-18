@@ -510,14 +510,9 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             rep.warnings.push(
                 "blend shapes are not supported by this moc3 version and were dropped".into(),
             );
-        } else if m.glues.iter().any(|g| !g.blend_shapes.is_empty()) {
-            // TODO(Q-0036): glue deltas (intensity) have no reference export
-            // to compare against yet.
-            return Err(FormatError::Unsupported(
-                "moc3 export of blend shapes on glue is not implemented yet".into(),
-            ));
         } else if v < 5
             && (m.parts.iter().any(|p| !p.blend_shapes.is_empty())
+                || m.glues.iter().any(|g| !g.blend_shapes.is_empty())
                 || m.deformers.iter().any(
                     |d| matches!(&d.kind, DeformerKind::Rotation(r) if !r.blend_shapes.is_empty()),
                 ))
@@ -908,11 +903,41 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             bs_meshes.push((count(mi_out)?, b, n));
         }
     }
+    // ---- Glue.
+    let mut gl = GlueCols::default();
+    let (mut pair_w, mut pair_v): (Vec<f32>, Vec<i16>) = (Vec::new(), Vec::new());
+    let mut glue_int = Vec::new();
+    for &gi in &glue_order {
+        let g0 = &m.glues[gi];
+        let g = prep(m, &g0.grid);
+        gl.kb.push(pools.keyform_binding(&g.bindings));
+        gl.begin.push(count(glue_int.len())?);
+        gl.count.push(count(g.keyforms.len())?);
+        glue_int.extend(g.keyforms.iter().map(|k| k.intensity));
+        let (ma, mb) = (g0.mesh_a.unwrap_or(0), g0.mesh_b.unwrap_or(0));
+        gl.a.push(mesh_index[&ma]);
+        gl.b.push(mesh_index[&mb]);
+        gl.pair_begin.push(count(pair_w.len())?);
+        for (pair, wts) in g0.pairs.iter().zip(&g0.weights) {
+            // Entries whose vertex did not resolve are skipped (§8.8).
+            let (Some(va), Some(vb)) = *pair else {
+                continue;
+            };
+            pair_v.push(va as i16);
+            pair_w.push(wts[0]);
+            pair_v.push(vb as i16);
+            pair_w.push(wts[1]);
+        }
+        gl.pair_count
+            .push(count(pair_w.len())? - gl.pair_begin.last().copied().unwrap_or(0));
+    }
+
     // Part, rotation and offscreen deltas (v5.0+, offscreen v5.3), after
     // the art-mesh deltas in kind order. spec: moc3.md §8.4
     let mut bs_parts: Vec<(i32, i32, i32)> = Vec::new();
     let mut bs_rots: Vec<(i32, i32, i32)> = Vec::new();
     let mut bs_offs: Vec<(i32, i32, i32)> = Vec::new();
+    let mut bs_glues: Vec<(i32, i32, i32)> = Vec::new();
     // (part, positions of its delta part keyforms).
     let mut part_delta_slots: Vec<(PartIndex, Vec<usize>)> = Vec::new();
     if v >= 5 {
@@ -988,6 +1013,25 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             )?;
             bs_rots.push((here, b, n));
         }
+        for (gi_out, &gi) in glue_order.iter().enumerate() {
+            let g0 = &m.glues[gi];
+            if g0.blend_shapes.is_empty() {
+                continue;
+            }
+            let g = prep(m, &g0.grid);
+            let (b, n) = bs.add(
+                m,
+                &param_pos,
+                &g,
+                &g0.blend_shapes,
+                &mut |k: &GlueForm, _, _| {
+                    let i = count(glue_int.len())?;
+                    glue_int.push(k.intensity);
+                    Ok(i)
+                },
+            )?;
+            bs_glues.push((count(gi_out)?, b, n));
+        }
         if v >= 6 {
             for (oi, &p) in off_parts.iter().enumerate() {
                 let part = &m.parts[p];
@@ -1033,35 +1077,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         .collect();
     let mesh_tex: Vec<i32> = a.texture.iter().map(|t| tex_pos[t]).collect();
     rep.textures = tex_used;
-
-    // ---- Glue.
-    let mut gl = GlueCols::default();
-    let (mut pair_w, mut pair_v): (Vec<f32>, Vec<i16>) = (Vec::new(), Vec::new());
-    let mut glue_int = Vec::new();
-    for &gi in &glue_order {
-        let g0 = &m.glues[gi];
-        let g = prep(m, &g0.grid);
-        gl.kb.push(pools.keyform_binding(&g.bindings));
-        gl.begin.push(count(glue_int.len())?);
-        gl.count.push(count(g.keyforms.len())?);
-        glue_int.extend(g.keyforms.iter().map(|k| k.intensity));
-        let (ma, mb) = (g0.mesh_a.unwrap_or(0), g0.mesh_b.unwrap_or(0));
-        gl.a.push(mesh_index[&ma]);
-        gl.b.push(mesh_index[&mb]);
-        gl.pair_begin.push(count(pair_w.len())?);
-        for (pair, wts) in g0.pairs.iter().zip(&g0.weights) {
-            // Entries whose vertex did not resolve are skipped (§8.8).
-            let (Some(va), Some(vb)) = *pair else {
-                continue;
-            };
-            pair_v.push(va as i16);
-            pair_w.push(wts[0]);
-            pair_v.push(vb as i16);
-            pair_w.push(wts[1]);
-        }
-        gl.pair_count
-            .push(count(pair_w.len())? - gl.pair_begin.last().copied().unwrap_or(0));
-    }
 
     // ---- Parameters and binding pools. Bindings sorted by parameter (stable).
     let mut pb_order: Vec<usize> = (0..pools.param_bindings.len()).collect();
@@ -1560,6 +1575,16 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 ],
                 &bs_rots,
             )?;
+            targets(
+                &mut raw,
+                c::BS_GLUES,
+                [
+                    "bs_glues.target",
+                    "bs_glues.binding_begin",
+                    "bs_glues.binding_count",
+                ],
+                &bs_glues,
+            )?;
         }
         if v >= 6 {
             targets(
@@ -1620,7 +1645,9 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
         let mut flags = Vec::new();
         let mut blend = Vec::new();
         let (mut cb, mut cn) = (Vec::new(), Vec::new());
-        let mut clips2: Vec<i32> = raw_clips.clone();
+        // Offscreen clip lists come first in the clip pool, before the art
+        // meshes' (observed: the exporter builds offscreens first, Q-0036).
+        let mut off_pool: Vec<i32> = Vec::new();
         for &p in &off_parts {
             let part = &m.parts[p];
             // Parts are never culled: double-sided (4); inverted mask (8).
@@ -1633,7 +1660,6 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
                 i32::from(part.color_composition.moc3_code())
                     | (i32::from(part.alpha_composition.moc3_code()) << 8),
             );
-            // TODO(Q-0036): where part clip lists go in the clip pool.
             let list: Vec<i32> = part
                 .clip
                 .iter()
@@ -1643,14 +1669,19 @@ pub fn export_moc3(m: &Model, o: &ExportOptions) -> Result<(Moc3Raw, ExportRepor
             cb.push(if list.is_empty() {
                 0
             } else {
-                count(clips2.len())?
+                count(off_pool.len())?
             });
             cn.push(count(list.len())?);
-            clips2.extend(list);
+            off_pool.extend(list);
         }
-        if clips2.len() != raw_clips.len() {
-            raw.counts[c::CLIP_MASKS] = count(clips2.len())?;
-            set(&mut raw, "clip_masks", i32s(clips2));
+        if !off_pool.is_empty() {
+            let shift = count(off_pool.len())?;
+            if let Some(SectionData::I32(b)) = raw.sections.get_mut("art_meshes.clip_begin") {
+                b.iter_mut().for_each(|x| *x += shift);
+            }
+            off_pool.extend_from_slice(&raw_clips);
+            raw.counts[c::CLIP_MASKS] = count(off_pool.len())?;
+            set(&mut raw, "clip_masks", i32s(off_pool));
         }
         let n_off = off_owner.len();
         raw.counts[c::OFFSCREENS] = count(n_off)?;
