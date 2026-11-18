@@ -20,6 +20,31 @@ pub struct TemplateDialog {
     options: ApplyOptions,
     message: Option<String>,
     noted: bool,
+    /// "Export model template" form: name, description, author.
+    pub export: Option<(String, String, String)>,
+}
+
+/// Loads a template model from `path` (checks the target version).
+fn load_template(
+    st: &mut TemplateDialog,
+    doc: &Document,
+    path: &std::path::Path,
+    label: String,
+    log: &mut Log,
+) {
+    match std::fs::read(path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| keyform_formats::cmo3::Cmo3Document::read(&b).map_err(|e| e.to_string()))
+    {
+        Ok(d) => {
+            if d.model.target_version > doc.model.target_version && doc.model.target_version != 0 {
+                st.message = Some("The template targets a newer version than the model.".into());
+            }
+            st.template = Some((label, d.model));
+            st.mapping.clear();
+        }
+        Err(e) => log.warn(format!("{}: {e}", path.display())),
+    }
 }
 
 impl TemplateDialog {
@@ -60,21 +85,23 @@ pub fn dialog(
             ui.horizontal(|ui| {
                 if ui.button(crate::i18n::tr("Select Model Template…")).clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Model (*.cmo3)", &["cmo3"]).pick_file() {
-                        match std::fs::read(&p)
-                            .map_err(|e| e.to_string())
-                            .and_then(|b| keyform_formats::cmo3::Cmo3Document::read(&b).map_err(|e| e.to_string()))
-                        {
-                            Ok(d) => {
-                                if d.model.target_version > doc.model.target_version && doc.model.target_version != 0 {
-                                    st.message = Some("The template targets a newer version than the model.".into());
-                                }
-                                st.template = Some((p.display().to_string(), d.model));
-                                st.mapping.clear();
-                            }
-                            Err(e) => log.warn(format!("{}: {e}", p.display())),
-                        }
+                        load_template(st, doc, &p, p.display().to_string(), log);
                     }
                 }
+                // Keyform's template list (template_list.rs).
+                ui.menu_button(crate::i18n::tr("Model Template list"), |ui| {
+                    let entries = crate::template_list::list(&crate::template_list::templates_dir());
+                    if entries.is_empty() {
+                        ui.weak(crate::i18n::tr("No templates yet."));
+                    }
+                    for e in entries {
+                        let tip = format!("{}\n{}", e.manifest.description, e.manifest.author);
+                        if ui.button(&e.manifest.name).on_hover_text(tip).clicked() {
+                            load_template(st, doc, &e.model_path(), e.manifest.name.clone(), log);
+                            ui.close();
+                        }
+                    }
+                });
                 if let Some((name, _)) = &st.template {
                     ui.label(name);
                 }
@@ -167,5 +194,59 @@ pub fn dialog(
         });
     if !open {
         st.open = false;
+    }
+}
+
+/// "Export model template": name, description and author, then
+/// template_list::export into the template folder.
+pub fn export_dialog(
+    ctx: &egui::Context,
+    st: &mut TemplateDialog,
+    doc: Option<&mut Document>,
+    log: &mut Log,
+) {
+    let Some((name, desc, author)) = &mut st.export else {
+        return;
+    };
+    let Some(doc) = doc else {
+        st.export = None;
+        return;
+    };
+    let (mut ok, mut cancel) = (false, false);
+    egui::Window::new(crate::i18n::tr("Export model template"))
+        .collapsible(false)
+        .show(ctx, |ui| {
+            egui::Grid::new("tpl-export").num_columns(2).show(ui, |ui| {
+                ui.label(crate::i18n::tr("Name"));
+                ui.text_edit_singleline(name);
+                ui.end_row();
+                ui.label(crate::i18n::tr("Description"));
+                ui.text_edit_multiline(desc);
+                ui.end_row();
+                ui.label(crate::i18n::tr("Author"));
+                ui.text_edit_singleline(author);
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                ok = ui
+                    .add_enabled(
+                        !name.trim().is_empty(),
+                        egui::Button::new(crate::i18n::tr("OK")),
+                    )
+                    .clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
+            });
+        });
+    if ok {
+        let dir = crate::template_list::templates_dir();
+        match crate::template_list::export(&dir, doc, name.trim(), desc, author) {
+            Ok(p) => {
+                log.info(format!("model template written to {}", p.display()));
+                st.export = None;
+            }
+            Err(e) => log.warn(e),
+        }
+    } else if cancel {
+        st.export = None;
     }
 }

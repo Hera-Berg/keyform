@@ -1261,6 +1261,16 @@ impl KeyformApp {
                 self.template.show();
                 ui.close();
             }
+            if ui
+                .add_enabled(
+                    doc_ok_for_physics(self),
+                    egui::Button::new(crate::i18n::tr("Export model template…")),
+                )
+                .clicked()
+            {
+                self.template.export = Some((String::new(), String::new(), String::new()));
+                ui.close();
+            }
         });
         ui.separator();
         if ui
@@ -1877,6 +1887,13 @@ impl KeyformApp {
                     files.len(),
                     dir.display()
                 ));
+                // External-API export events (external-api.md §4.1).
+                if let Some(server) = &self.api_server {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as u64);
+                    server.export_events(&files, &s.doc.path, now);
+                }
                 if !s.doc.mask_issues.is_empty() && !self.settings.mask_dialog_suppressed {
                     self.mask_dialog = true;
                 }
@@ -2731,6 +2748,11 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::template_dialog::dialog(&ctx, &mut self.template, doc, &mut self.log);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::template_dialog::export_dialog(&ctx, &mut self.template, doc, &mut self.log);
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

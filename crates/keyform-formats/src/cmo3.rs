@@ -48,6 +48,7 @@ pub struct SourceMap {
 }
 
 /// A loaded project: archive, lossless document and the typed model.
+#[derive(Clone)]
 pub struct Cmo3Document {
     pub archive: CaffArchive,
     pub xml: XmlDocument,

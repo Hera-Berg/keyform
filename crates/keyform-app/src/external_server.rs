@@ -167,6 +167,37 @@ impl Server {
         });
     }
 
+    /// Export events after Export For Runtime (§4.1 "Events"): the moc3
+    /// (0.9.3+ sessions also get every written file), physics3 and
+    /// motionsync3 files, each to its subscribers.
+    pub fn export_events(
+        &self,
+        files: &[std::path::PathBuf],
+        model: &std::path::Path,
+        now_ms: u64,
+    ) {
+        let s = |p: &std::path::Path| p.display().to_string();
+        let find = |ext: &str| files.iter().find(|f| s(f).ends_with(ext));
+        let all: Vec<String> = files.iter().map(|f| s(f)).collect();
+        for c in self.conns.values() {
+            let v = c.session.version.unwrap_or(external_api::LATEST);
+            for (method, ext) in [
+                ("NotifyMocFileExported", ".moc3"),
+                ("NotifyPhysicsFileExported", ".physics3.json"),
+                ("NotifyMotionSyncFileExported", ".motionsync3.json"),
+            ] {
+                let Some(f) = find(ext) else { continue };
+                let mut data = serde_json::json!({ "Path": s(f), "ModelFilePath": s(model) });
+                if method == "NotifyMocFileExported" && v >= 903 {
+                    data["Files"] = serde_json::json!(all);
+                }
+                if let Some(t) = external_api::event(&c.session, method, data, now_ms) {
+                    let _ = c.tx.send(t);
+                }
+            }
+        }
+    }
+
     /// Sends an event to the subscribed connections (§4.1 "Events").
     pub fn event(&self, method: &str, data: &serde_json::Value, now_ms: u64) {
         for c in self.conns.values() {
@@ -284,5 +315,59 @@ mod tests {
         );
         assert!(answers[1].contains("\"Token\":\"tok\""), "{}", answers[1]);
         assert!(answers[2].contains("InvalidJson"), "{}", answers[2]);
+    }
+
+    /// A subscribed client gets the moc3 export event with every file.
+    #[test]
+    fn export_event_reaches_subscribers() {
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut server = Server::start(port).unwrap();
+        let (subscribed_tx, subscribed_rx) = std::sync::mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            let (mut ws, _) =
+                tungstenite::client(format!("ws://127.0.0.1:{port}/"), stream).unwrap();
+            let read = |ws: &mut tungstenite::WebSocket<TcpStream>| loop {
+                if let tungstenite::Message::Text(t) = ws.read().unwrap() {
+                    return t.to_string();
+                }
+            };
+            for text in [
+                r#"{"Version":"1.0.1","Timestamp":0,"RequestId":"a","Type":"Request","Method":"RegisterPlugin","Data":{"Name":"t"}}"#,
+                r#"{"Version":"1.0.1","Timestamp":0,"RequestId":"b","Type":"Request","Method":"NotifyMocFileExported","Data":{"Enabled":true}}"#,
+            ] {
+                ws.send(tungstenite::Message::text(text)).unwrap();
+                read(&mut ws);
+            }
+            subscribed_tx.send(()).unwrap();
+            let event = read(&mut ws);
+            let _ = ws.close(None);
+            event
+        });
+        let mut host = Minimal;
+        let t0 = Instant::now();
+        let mut sent = false;
+        while !client.is_finished() && t0.elapsed() < Duration::from_secs(10) {
+            server.poll(&mut host, 1);
+            if !sent && subscribed_rx.try_recv().is_ok() {
+                let files = vec![
+                    std::path::PathBuf::from("/x/m.moc3"),
+                    std::path::PathBuf::from("/x/m.model3.json"),
+                ];
+                server.export_events(&files, std::path::Path::new("/x/m.cmo3"), 2);
+                sent = true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let e: serde_json::Value = serde_json::from_str(&client.join().unwrap()).unwrap();
+        assert_eq!(e["Type"], "Event");
+        assert_eq!(e["Method"], "NotifyMocFileExported");
+        assert_eq!(e["Data"]["Path"], "/x/m.moc3");
+        assert_eq!(e["Data"]["ModelFilePath"], "/x/m.cmo3");
+        assert_eq!(e["Data"]["Files"].as_array().unwrap().len(), 2);
     }
 }

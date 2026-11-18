@@ -1868,6 +1868,16 @@ impl Document {
         Ok(path)
     }
 
+    /// The current model as `.cmo3` bytes, without touching the open file.
+    pub fn project_bytes(&self) -> Result<Vec<u8>, String> {
+        let Source::Project(doc) = &self.source else {
+            return Err(format!("{}: not a model project", self.title));
+        };
+        let mut d = (**doc).clone();
+        d.model = self.model.clone();
+        d.save_bytes().map_err(|e| e.to_string())
+    }
+
     /// Back to defaults: parameters, playback state, physics, pose.
     pub fn reset_parameters(&mut self) {
         self.values = self.model.parameters.iter().map(|p| p.default).collect();
