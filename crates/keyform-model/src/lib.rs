@@ -103,6 +103,9 @@ pub struct Model {
     pub physics: PhysicsRig,
     /// Motion-sync settings. spec: 70-advanced/motion-sync.md §1
     pub motion_sync: Vec<MotionSyncSetting>,
+    /// Parameters excluded from Random Pose (`CRandomPoseSetting` entries
+    /// with `isEnable` false; read only). spec: generators.md §4
+    pub random_pose_off: Vec<ParamIndex>,
     pub export: ExportSettings,
     /// Parameters of the "eye blink" and "lip sync" effect groups.
     pub eye_blink_parameters: Vec<ParamIndex>,
@@ -630,6 +633,45 @@ pub struct WarpDeformer {
     /// Bezier net division per edit level (`CWarpDeformerBezierExtension`):
     /// (level, cols, rows). spec: 35-editing/warp-deformer-editing.md
     pub bezier_nets: Vec<(u8, u32, u32)>,
+    /// Auto Generation of Sway Motion settings per parameter
+    /// (`CAutoYureConfigExtension`). spec: 70-advanced/generators.md §2
+    pub sway: Vec<SwayConfig>,
+}
+
+/// One side of a sway setting (`YureDeformConfig`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwaySideConfig {
+    /// Sway level (horizontal) %.
+    pub scale_x: f32,
+    /// Sway level (vertical) %.
+    pub scale_y: f32,
+    /// Enlarge / shrink.
+    pub expand: f32,
+    /// Softness (decay exponent).
+    pub decay: f64,
+}
+
+impl Default for SwaySideConfig {
+    fn default() -> Self {
+        Self {
+            scale_x: 8.0,
+            scale_y: 6.0,
+            expand: 0.0,
+            decay: 3.0,
+        }
+    }
+}
+
+/// A warp deformer's sway setting for one parameter (`AutoYureConfig`).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct SwayConfig {
+    pub parameter: ParamIndex,
+    pub left: SwaySideConfig,
+    pub right: SwaySideConfig,
+    pub sync: bool,
+    /// Pivot: 0 TOP, 1 RIGHT, 2 BOTTOM, 3 LEFT.
+    pub root: u8,
+    pub flip: bool,
 }
 
 /// Nets of a new warp deformer: 2×2 at level 2, 1×1 at level 3.

@@ -497,6 +497,22 @@ impl<'a, 'd> Loader<'a, 'd> {
 
         self.load_physics(&root, &mut m)?;
         self.load_motion_sync(&root, &mut m)?;
+        // Random Pose enable flags of the current setting (generators.md §4).
+        if let Some(mgr) = root.field("randomPoseSetting")? {
+            let i = mgr.i32("currentIndex")?.unwrap_or(0).max(0) as usize;
+            if let Some(s) = mgr.list("_settings")?.get(i) {
+                let keys = s.list("parameters.keys")?;
+                let vals = s.list("parameters.values")?;
+                for (k, v) in keys.iter().zip(&vals) {
+                    let id = k.attr("idstr").unwrap_or_default();
+                    if v.bool("isEnable")? == Some(false) {
+                        if let Some(p) = m.parameters.iter().position(|q| q.id == id) {
+                            m.random_pose_off.push(p);
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(opts) = root.field("modelOptions")? {
             if let Some(e) = opts.own_field("MODEL_EXPORT_SETTING_KEY")? {
@@ -1366,7 +1382,44 @@ impl<'a, 'd> Loader<'a, 'd> {
                     })
                 })?;
                 let mut bezier_nets = Vec::new();
+                let mut sway = Vec::new();
                 for ext in o.list("_extensions")? {
+                    if ext.tag() == "CAutoYureConfigExtension" {
+                        // generators.md §2 "Storage" (observed layout).
+                        for e in ext.list("paramToConfigMap")? {
+                            let Some(&parameter) =
+                                e.guid("key")?.and_then(|g| self.idx.params.get(g))
+                            else {
+                                continue;
+                            };
+                            let Some(v) = e.field("value")? else { continue };
+                            let side = |n: &str| -> Result<keyform_model::SwaySideConfig> {
+                                let d = keyform_model::SwaySideConfig::default();
+                                Ok(match v.field(n)? {
+                                    Some(c) => keyform_model::SwaySideConfig {
+                                        scale_x: c.f32("scalePercentX")?.unwrap_or(d.scale_x),
+                                        scale_y: c.f32("scalePercentY")?.unwrap_or(d.scale_y),
+                                        expand: c.f32("expandScale")?.unwrap_or(d.expand),
+                                        decay: c.f64("decayLevel")?.unwrap_or(d.decay),
+                                    },
+                                    None => d,
+                                })
+                            };
+                            sway.push(keyform_model::SwayConfig {
+                                parameter,
+                                left: side("leftYureConfig")?,
+                                right: side("rightYureConfig")?,
+                                sync: v.bool("syncLeftRight")?.unwrap_or(true),
+                                root: match v.enum_value("rootDirection")? {
+                                    Some("RIGHT") => 1,
+                                    Some("BOTTOM") => 2,
+                                    Some("LEFT") => 3,
+                                    _ => 0,
+                                },
+                                flip: v.bool("isFlip")?.unwrap_or(false),
+                            });
+                        }
+                    }
                     if ext.tag() == "CWarpDeformerBezierExtension" {
                         let level = ext.i32("editLevel")?.unwrap_or(2).clamp(1, 3) as u8;
                         let c = ext.i32("bezierCol")?.unwrap_or(1).clamp(1, 1000) as u32;
@@ -1376,6 +1429,7 @@ impl<'a, 'd> Loader<'a, 'd> {
                 }
                 DeformerKind::Warp(WarpDeformer {
                     bezier_nets,
+                    sway,
                     cols: cols as u32,
                     rows: rows as u32,
                     quad: o.bool("isQuadTransform")?.unwrap_or(false),

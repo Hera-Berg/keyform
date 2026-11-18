@@ -15,6 +15,8 @@ pub struct SwayDialog {
     settings: SwaySettings,
     sync: bool,
     auto: bool,
+    /// (deformer, parameter) whose stored setting is shown.
+    loaded: Option<(usize, usize)>,
     message: Option<String>,
 }
 
@@ -93,6 +95,14 @@ pub fn sway_dialog(
                     });
             });
             let Some(p) = st.param else { return };
+            // Reopen with the deformer's stored setting (generators.md §2).
+            if st.loaded != Some((d, p)) {
+                st.loaded = Some((d, p));
+                if let Some(c) = keyform_edit::sway::stored(&doc.model, d, p) {
+                    st.settings = SwaySettings::from_config(&c);
+                    st.sync = c.sync;
+                }
+            }
             let keys = keyform_edit::keys_of(&doc.model, Selection::Deformer(d), p);
             if keys.len() != 3 {
                 ui.label(crate::i18n::tr(
@@ -153,10 +163,12 @@ pub fn sway_dialog(
             if run {
                 let s = st.settings;
                 let mut err = None;
+                let sync = st.sync;
                 doc.edit("Auto Generation of Sway Motion", |m| {
                     if let Err(e) = keyform_edit::sway::generate(m, d, p, &s) {
                         err = Some(e);
                     }
+                    keyform_edit::sway::store(m, d, s.to_config(p, sync));
                 });
                 st.message = err;
             }
@@ -166,9 +178,9 @@ pub fn sway_dialog(
     }
 }
 
-/// Set Random Pose: every non-blend-shape parameter gets a random value in
-/// its range. Keyforms are not changed. spec: generators.md §4
-// TODO(Q-0040): per-parameter / group enable flags, patterns A/B, Posing.
+/// Set Random Pose: every enabled, non-blend-shape parameter gets a random
+/// value in its range. Keyforms are not changed. spec: generators.md §4
+// Patterns A/B, Posing and Apply Opacity wait (Q-0040).
 pub fn random_pose(doc: &mut Document, seed: u64) {
     let mut x = seed | 1;
     let mut next = || {
@@ -179,7 +191,11 @@ pub fn random_pose(doc: &mut Document, seed: u64) {
         (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
     };
     for (i, p) in doc.model.parameters.iter().enumerate() {
-        if p.kind == keyform_model::ParameterKind::BlendShape {
+        // Blend-shape parameters and those switched off in the model's
+        // random-pose setting are skipped (Q-0040).
+        if p.kind == keyform_model::ParameterKind::BlendShape
+            || doc.model.random_pose_off.contains(&i)
+        {
             continue;
         }
         let (lo, hi) = (p.min.min(p.max), p.max.max(p.min));

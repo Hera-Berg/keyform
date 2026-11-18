@@ -292,10 +292,16 @@ fn import(st: &mut PhysicsEditor, doc: &mut Document, rig: &mut PhysicsRig, log:
     let idx = |id: &str| doc.model.parameters.iter().position(|p| p.id == id);
     match keyform_physics::json3::parse(&text, &idx) {
         Ok((new, errors)) => {
+            let d = PhysicsRig::default();
+            let session_only = new.gravity != d.gravity || new.wind != d.wind;
             *rig = new;
             st.group = 0;
             if errors.is_empty() {
-                st.message = Some("Physics settings are imported.".into());
+                st.message = Some(if session_only {
+                    "Physics settings are imported. Gravity and wind apply in this session only: the model file doesn't store them.".into()
+                } else {
+                    "Physics settings are imported.".into()
+                });
             } else {
                 st.message = Some(format!(
                     "Following errors occurred when importing the physics settings.\n{}",

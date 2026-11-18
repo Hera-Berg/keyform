@@ -224,6 +224,9 @@ impl Cmo3Document {
         for name in grid::GRID_IMPORTS {
             ensure_import(&mut xml, name);
         }
+        if let Some(v) = ctx.model_source_version {
+            raise_version(&mut xml, "CModelSource", v);
+        }
         let new_images = !ctx.tex.imports.is_empty();
         for name in std::mem::take(&mut ctx.tex.imports) {
             ensure_import(&mut xml, name);
@@ -513,6 +516,24 @@ fn upgrade_alpha_composition(xml: &mut crate::xml::XmlDocument) {
 
 /// Adds a `<?target data?>` processing instruction if missing (after the
 /// last one of the same target).
+/// Raises a `<?version Type:N?>` marker to at least `v`.
+fn raise_version(xml: &mut crate::xml::XmlDocument, ty: &str, v: u32) {
+    let prefix = format!("{ty}:");
+    for p in xml.pis.iter_mut().filter(|p| p.target == "version") {
+        if let Some(n) = p
+            .data
+            .strip_prefix(&prefix)
+            .and_then(|n| n.parse::<u32>().ok())
+        {
+            if n < v {
+                p.data = format!("{prefix}{v}");
+            }
+            return;
+        }
+    }
+    ensure_pi(xml, "version", &format!("{prefix}{v}"));
+}
+
 fn ensure_pi(xml: &mut crate::xml::XmlDocument, target: &str, data: &str) {
     use crate::xml::Pi;
     if xml.pis.iter().any(|p| p.target == target && p.data == data) {
@@ -1212,6 +1233,31 @@ fn write_deformer(
             };
             write_info(&mut f, "CDeformerId", &o.info, &n.info)?;
             f.bool("isQuadTransform", ow.quad, nw.quad);
+            if ow.sway != nw.sway {
+                // Replace the deformer's sway extension (generators.md §2).
+                let el = src.element.clone().ok_or_else(|| {
+                    crate::error::FormatError::Invalid(format!("deformer {id}: no element"))
+                })?;
+                let Some(owner) = element_at(root, Some(&el))?
+                    .attr("xs.id")
+                    .map(str::to_owned)
+                else {
+                    return unsupported(format!(
+                        "deformer {id}: sway settings on an unshared deformer"
+                    ));
+                };
+                let ep = grid::field_path(root, &el, "_extensions")?;
+                let new_ext = if nw.sway.is_empty() {
+                    None
+                } else {
+                    Some(objects::sway_extension(root, ctx, &owner, &nw.sway)?)
+                };
+                let l = element_at(root, Some(&ep))?;
+                l.children.retain(|c| c.name != "CAutoYureConfigExtension");
+                l.children.extend(new_ext);
+                grid::set_count(l);
+                ctx.structural = true;
+            }
         }
         (DeformerKind::Rotation(or), DeformerKind::Rotation(nr)) => {
             write_forms(

@@ -324,6 +324,7 @@ pub fn moc3_to_model(r: &Moc3Raw) -> Result<Model> {
                 }
                 DeformerKind::Warp(WarpDeformer {
                     bezier_nets: Vec::new(),
+                    sway: Vec::new(),
                     cols: cols as u32,
                     rows: rows as u32,
                     quad: r.version >= 2 && w("warps.quad")? != 0,

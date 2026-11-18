@@ -13,7 +13,6 @@ use super::element_at;
 use super::grid::{field_path, get_shared, scalar, set_count, stub, uuid_of, Ctx};
 use super::objects::guid_id;
 use super::params::main_path;
-use super::unsupported;
 use crate::error::Result;
 use crate::graph::format_f32;
 use crate::xml::Element;
@@ -28,9 +27,19 @@ pub(super) fn sync_motion_sync(
         return Ok(());
     }
     let main = main_path(root)?;
-    let Ok(set) = field_path(root, &main, "motionSyncSettingsSet") else {
-        // TODO(Q-0039): adding the set to an older document.
-        return unsupported("motion-sync settings in a model file saved before Cubism 5");
+    let set = match field_path(root, &main, "motionSyncSettingsSet") {
+        Ok(p) => p,
+        Err(_) => {
+            // Older documents (CModelSource < 14) have no set: add it as the
+            // last field and raise the schema version marker (Q-0039).
+            let mut set = el("CMotionSyncSettingSourceSet", "motionSyncSettingsSet");
+            let mut l = el("linked_set", "_settingSourceSetMotionSync");
+            set_count(&mut l);
+            set.children.push(l);
+            element_at(root, Some(&main))?.children.push(set);
+            ctx.model_source_version = Some(ctx.model_source_version.unwrap_or(0).max(14));
+            field_path(root, &main, "motionSyncSettingsSet")?
+        }
     };
     let list = field_path(root, &set, "_settingSourceSetMotionSync")?;
     ctx.structural = true;

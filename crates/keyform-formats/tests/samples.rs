@@ -3947,3 +3947,90 @@ fn template_restores_a_stripped_rig() {
     let back = Cmo3Document::read(&bytes).unwrap();
     assert!(back.model.same_data(&doc.model));
 }
+
+/// A motion-sync setting added to a document from before the set existed
+/// (CModelSource v13): the set is added, the schema marker raised, and the
+/// setting reloads. spec: motion-sync.md §1 (Q-0039)
+#[test]
+fn motion_sync_in_older_document() {
+    use keyform_formats::cmo3::Cmo3Document;
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let Some(old) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_free_t08.cmo3"))
+    else {
+        return;
+    };
+    let ms =
+        Cmo3Document::read(&std::fs::read(std::path::Path::new(&dir).join("ms.cmo3")).unwrap())
+            .unwrap();
+    let mut doc = Cmo3Document::read(&std::fs::read(&old).unwrap()).unwrap();
+    assert!(doc.model.motion_sync.is_empty());
+    let mut s = ms.model.motion_sync[0].clone();
+    s.guid = keyform_model::new_guid();
+    for c in &mut s.cubism {
+        c.guid = keyform_model::new_guid();
+    }
+    doc.model.motion_sync.push(s);
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert_eq!(back.model.motion_sync, edited.motion_sync);
+    if let Some(out) = std::env::var_os("KEYFORM_MS_OLD_OUT") {
+        std::fs::write(out, &bytes).unwrap();
+    }
+}
+
+/// Sway settings (`CAutoYureConfigExtension`) load from a reference-made
+/// file, and edits save and reload. spec: generators.md §2 "Storage"
+#[test]
+fn sway_settings_load_and_save() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::DeformerKind;
+    use std::sync::Arc;
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let mut doc =
+        Cmo3Document::read(&std::fs::read(std::path::Path::new(&dir).join("sway.cmo3")).unwrap())
+            .unwrap();
+    let d = doc
+        .model
+        .deformers
+        .iter()
+        .position(|x| x.info.id == "Warp1")
+        .unwrap();
+    let DeformerKind::Warp(w) = &doc.model.deformers[d].kind else {
+        panic!()
+    };
+    assert_eq!(w.sway.len(), 1);
+    let c = w.sway[0];
+    assert_eq!(doc.model.parameters[c.parameter].id, "ParamBodyAngleZ");
+    assert_eq!(
+        (c.left.scale_x, c.left.scale_y, c.left.expand, c.left.decay),
+        (7.1, 5.2, 0.0, 3.0)
+    );
+    assert!(c.sync && !c.flip && c.root == 0);
+    let DeformerKind::Warp(w) = &mut Arc::make_mut(&mut doc.model.deformers[d]).kind else {
+        panic!()
+    };
+    w.sway[0].right.scale_x = 9.5;
+    w.sway[0].sync = false;
+    w.sway[0].root = 3;
+    w.sway[0].flip = true;
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    let DeformerKind::Warp(a) = &back.model.deformers[d].kind else {
+        panic!()
+    };
+    let DeformerKind::Warp(b) = &edited.deformers[d].kind else {
+        panic!()
+    };
+    assert_eq!(a.sway, b.sway);
+    if let Some(out) = std::env::var_os("KEYFORM_SWAY_OUT") {
+        std::fs::write(out, &bytes).unwrap();
+    }
+}

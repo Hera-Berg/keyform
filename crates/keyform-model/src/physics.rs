@@ -98,10 +98,15 @@ pub struct PhysicsRig {
 
 impl PhysicsRig {
     /// The rig as the model file stores it: the editor-only enable flags
-    /// set (physics-editor.md §3 "Enable" is preview state).
+    /// set (physics-editor.md §3 "Enable" is preview state); gravity and
+    /// wind at their defaults (the model file has no field for them; they
+    /// live for the session, Q-0038).
     pub fn as_stored(&self) -> PhysicsRig {
         let mut r = self.clone();
         r.settings.iter_mut().for_each(|s| s.enabled = true);
+        let d = PhysicsRig::default();
+        r.gravity = d.gravity;
+        r.wind = d.wind;
         r
     }
 }

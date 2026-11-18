@@ -912,6 +912,9 @@ pub(super) fn create_deformer(
                 ];
                 exts.push(x);
             }
+            if !w.sway.is_empty() {
+                exts.push(sway_extension(root, ctx, &owner, &w.sway)?);
+            }
             let ep = field_path(root, &path, "_extensions")?;
             let l = element_at(root, Some(&ep))?;
             l.children = exts;
@@ -920,6 +923,59 @@ pub(super) fn create_deformer(
             Ok(path)
         }
     }
+}
+
+/// A warp deformer's `CAutoYureConfigExtension` (generators.md §2
+/// "Storage", layout observed in a reference-saved file).
+pub(super) fn sway_extension(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    owner: &str,
+    sway: &[keyform_model::SwayConfig],
+) -> Result<Element> {
+    let el = |tag: &str, name: &str| Element::new(tag).with_attr("xs.n", name);
+    let mut sup = el("ACExtension", "super");
+    sup.children = vec![
+        el("CExtensionGuid", "guid")
+            .with_attr("uuid", keyform_model::new_guid())
+            .with_attr("note", "(no debug info)"),
+        stub("CWarpDeformerSource", Some("_owner"), owner),
+    ];
+    let mut map = el("linked_map", "paramToConfigMap");
+    for s in sway {
+        let Some(p) = ctx.params.get(s.parameter).cloned() else {
+            continue;
+        };
+        let key = guid_id(root, ctx, &p.guid, "CParameterGuid", &p.id)?;
+        let side = |name: &str, c: &keyform_model::SwaySideConfig| {
+            let mut e = el("YureDeformConfig", name);
+            e.children = vec![
+                scalar("f", "scalePercentX", super::format_f32(c.scale_x)),
+                scalar("f", "scalePercentY", super::format_f32(c.scale_y)),
+                scalar("f", "expandScale", super::format_f32(c.expand)),
+                scalar("d", "decayLevel", crate::graph::format_f64(c.decay)),
+            ];
+            e
+        };
+        let mut v = el("AutoYureConfig", "value");
+        v.children = vec![
+            side("leftYureConfig", &s.left),
+            side("rightYureConfig", &s.right),
+            scalar("b", "syncLeftRight", s.sync.to_string()),
+            el("YureRootDirection", "rootDirection").with_attr(
+                "v",
+                ["TOP", "RIGHT", "BOTTOM", "LEFT"][usize::from(s.root.min(3))],
+            ),
+            scalar("b", "isFlip", s.flip.to_string()),
+        ];
+        let mut entry = Element::new("entry");
+        entry.children = vec![stub("CParameterGuid", Some("key"), &key), v];
+        map.children.push(entry);
+    }
+    set_count(&mut map);
+    let mut x = Element::new("CAutoYureConfigExtension");
+    x.children = vec![sup, map];
+    Ok(x)
 }
 
 /// A new object was written with one keyform; richer grids are rebuilt.

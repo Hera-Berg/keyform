@@ -276,6 +276,67 @@ pub fn generate(m: &mut Model, d: usize, p: usize, s: &SwaySettings) -> Result<(
     Ok(())
 }
 
+impl SwaySettings {
+    /// From a stored setting (`AutoYureConfig`).
+    pub fn from_config(c: &keyform_model::SwayConfig) -> Self {
+        let side = |s: &keyform_model::SwaySideConfig| SwaySide {
+            sx: s.scale_x,
+            sy: s.scale_y,
+            softness: s.decay as f32,
+            enlarge: s.expand,
+        };
+        Self {
+            left: side(&c.left),
+            right: side(&c.right),
+            pivot: match c.root {
+                1 => Pivot::Right,
+                2 => Pivot::Bottom,
+                3 => Pivot::Left,
+                _ => Pivot::Top,
+            },
+            flip: c.flip,
+        }
+    }
+
+    /// To a stored setting for `parameter`.
+    pub fn to_config(&self, parameter: usize, sync: bool) -> keyform_model::SwayConfig {
+        let side = |s: &SwaySide| keyform_model::SwaySideConfig {
+            scale_x: s.sx,
+            scale_y: s.sy,
+            expand: s.enlarge,
+            decay: f64::from(s.softness),
+        };
+        keyform_model::SwayConfig {
+            parameter,
+            left: side(&self.left),
+            right: side(&self.right),
+            sync,
+            root: self.pivot as u8,
+            flip: self.flip,
+        }
+    }
+}
+
+/// Stores `c` on warp deformer `d` (replacing the setting of its parameter).
+pub fn store(m: &mut Model, d: usize, c: keyform_model::SwayConfig) {
+    if let Some(def) = m.deformers.get_mut(d) {
+        if let DeformerKind::Warp(w) = &mut Arc::make_mut(def).kind {
+            match w.sway.iter_mut().find(|x| x.parameter == c.parameter) {
+                Some(x) => *x = c,
+                None => w.sway.push(c),
+            }
+        }
+    }
+}
+
+/// The stored setting of warp `d` for parameter `p`.
+pub fn stored(m: &Model, d: usize, p: usize) -> Option<keyform_model::SwayConfig> {
+    match &m.deformers.get(d)?.kind {
+        DeformerKind::Warp(w) => w.sway.iter().find(|x| x.parameter == p).copied(),
+        DeformerKind::Rotation(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -447,10 +447,8 @@ pub(super) fn sync_physics(
     if old.physics.as_stored() == new.physics.as_stored() {
         return Ok(());
     }
-    // The document stores no gravity, wind or enable flag (physics.md §1).
-    if old.physics.gravity != new.physics.gravity || old.physics.wind != new.physics.wind {
-        return unsupported("physics gravity / wind (not stored in the model file)");
-    }
+    // The document stores no gravity, wind or enable flag (physics.md §1);
+    // they are session state (Q-0038).
     ctx.structural = true;
     let main = main_path(root)?;
     let set = field_path(root, &main, "physicsSettingsSourceSet")?;

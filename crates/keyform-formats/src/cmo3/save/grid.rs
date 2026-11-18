@@ -49,6 +49,9 @@ pub(super) struct Ctx<'a> {
     pub structural: bool,
     /// New texture-manager elements and archive entries of this save.
     pub(crate) tex: super::textures::TexState,
+    /// Lowest `CModelSource` schema version the rewritten document needs
+    /// (fields added to an older document).
+    pub model_source_version: Option<u32>,
 }
 
 impl Ctx<'_> {
@@ -109,6 +112,7 @@ impl<'a> Ctx<'a> {
             next_idx: idx,
             deleted: Vec::new(),
             tex: Default::default(),
+            model_source_version: None,
             orphans: Vec::new(),
             pending_paths: Vec::new(),
             structural: false,

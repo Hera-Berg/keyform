@@ -78,7 +78,12 @@ fn remap_parameters(m: &mut Model, f: &dyn Fn(ParamIndex) -> ParamIndex) {
     }
     for d in &mut m.deformers {
         match &mut Arc::make_mut(d).kind {
-            DeformerKind::Warp(w) => grid!(w.grid, w.blend_shapes),
+            DeformerKind::Warp(w) => {
+                grid!(w.grid, w.blend_shapes);
+                for s in &mut w.sway {
+                    s.parameter = f(s.parameter);
+                }
+            }
             DeformerKind::Rotation(r) => grid!(r.grid, r.blend_shapes),
         }
     }
@@ -88,6 +93,9 @@ fn remap_parameters(m: &mut Model, f: &dyn Fn(ParamIndex) -> ParamIndex) {
         }
     };
     m.root_parameter_entries.iter_mut().for_each(entry);
+    for x in &mut m.random_pose_off {
+        *x = f(*x);
+    }
     for g in &mut m.parameter_groups {
         Arc::make_mut(g).children.iter_mut().for_each(entry);
     }
@@ -137,7 +145,10 @@ pub fn remove_parameter(m: &mut Model, p: ParamIndex) -> bool {
     }
     for d in &mut m.deformers {
         match &mut Arc::make_mut(d).kind {
-            DeformerKind::Warp(w) => drop_shapes!(w.blend_shapes),
+            DeformerKind::Warp(w) => {
+                drop_shapes!(w.blend_shapes);
+                w.sway.retain(|s| s.parameter != p);
+            }
             DeformerKind::Rotation(r) => drop_shapes!(r.blend_shapes),
         }
     }
@@ -154,6 +165,7 @@ pub fn remove_parameter(m: &mut Model, p: ParamIndex) -> bool {
         }
     }
     m.parameters.remove(p);
+    m.random_pose_off.retain(|&x| x != p);
     remap_parameters(m, &|i| if i > p { i - 1 } else { i });
     true
 }
@@ -601,6 +613,7 @@ pub fn create_warp_deformer(
         ],
         cols,
         rows,
+        sway: Vec::new(),
         quad: m.target_version >= 3030,
         grid: KeyformGrid {
             guids: vec![new_guid()],
