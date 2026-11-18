@@ -169,3 +169,17 @@ Scale	スケール
 Enabled	有効
 Damper	ダンパー
 Smooth	スムーズ
+Limit Settings for Blend Shape Weights	ブレンドシェイプのウェイト制限設定
+Limit Settings for Blend Shape Weights…	ブレンドシェイプのウェイト制限設定…
+Number of Target Objects to be Edited:	編集対象のオブジェクト数:
+Weight Limit Graph	ウェイト制限グラフ
+Edit Graph…	グラフを編集…
+Edit Graph	グラフの編集
+Add Row	行を追加
+Delete Row	行を削除
+Parameter Value	パラメータ値
+Weight Limit (%)	ウェイト制限 (%)
+Preset	プリセット
+Preset List	プリセット一覧
+Preset Name:	プリセット名:
+Confirm	確認

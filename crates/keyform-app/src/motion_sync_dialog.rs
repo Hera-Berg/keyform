@@ -51,9 +51,122 @@ pub struct MotionSyncDialog {
     message: Option<String>,
     /// Settings before uncommitted edits.
     base: Option<Vec<MotionSyncSetting>>,
+    /// User presets (remembered by the app).
+    pub user_presets: Vec<UserPreset>,
+    preset_add: Option<String>,
+    /// Preset List being edited (user presets) and its selected row.
+    preset_list: Option<(Vec<UserPreset>, Option<usize>)>,
+}
+
+/// A user preset: a setting's parameters, elements, mapping and
+/// post-processing (Preset ▸ Add…: "add the current input as a preset").
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UserPreset {
+    pub name: String,
+    /// (parameter id, name, min, max, damper, smooth).
+    pub cubism: Vec<(String, String, f32, f32, f32, i32)>,
+    /// (audio id, name, min, max, scale, enabled).
+    pub audio: Vec<(String, String, f32, f32, f32, bool)>,
+    pub mappings: Vec<(String, Vec<(String, f32)>)>,
+    pub blend: f32,
+    pub smoothing: i32,
+    pub sample_rate: f32,
+}
+
+impl UserPreset {
+    pub fn from_setting(name: &str, s: &MotionSyncSetting) -> Self {
+        Self {
+            name: name.to_owned(),
+            cubism: s
+                .cubism
+                .iter()
+                .map(|c| {
+                    (
+                        c.parameter_id.clone(),
+                        c.name.clone(),
+                        c.min,
+                        c.max,
+                        c.damper,
+                        c.smooth,
+                    )
+                })
+                .collect(),
+            audio: s
+                .audio
+                .iter()
+                .map(|a| {
+                    (
+                        a.audio_id.clone(),
+                        a.name.clone(),
+                        a.min,
+                        a.max,
+                        a.scale,
+                        a.enabled,
+                    )
+                })
+                .collect(),
+            mappings: s
+                .mappings
+                .iter()
+                .map(|x| (x.audio_id.clone(), x.targets.clone()))
+                .collect(),
+            blend: s.blend,
+            smoothing: s.smoothing,
+            sample_rate: s.sample_rate,
+        }
+    }
+
+    /// Replaces `s`'s contents (keeping its GUID, ID and name).
+    pub fn apply_to(&self, s: &mut MotionSyncSetting) {
+        s.cubism = self
+            .cubism
+            .iter()
+            .map(|c| SyncCubismParam {
+                guid: keyform_model::new_guid(),
+                parameter_id: c.0.clone(),
+                name: c.1.clone(),
+                min: c.2,
+                max: c.3,
+                damper: c.4,
+                smooth: c.5,
+            })
+            .collect();
+        s.audio = self
+            .audio
+            .iter()
+            .map(|a| SyncAudioParam {
+                guid: NULL_GUID.into(),
+                audio_id: a.0.clone(),
+                name: a.1.clone(),
+                min: a.2,
+                max: a.3,
+                scale: a.4,
+                enabled: a.5,
+            })
+            .collect();
+        s.mappings = self
+            .mappings
+            .iter()
+            .map(|(a, t)| SyncMapping {
+                audio_id: a.clone(),
+                kind: "Shape".into(),
+                targets: t.clone(),
+            })
+            .collect();
+        s.blend = self.blend;
+        s.smoothing = self.smoothing;
+        s.sample_rate = self.sample_rate;
+    }
 }
 
 impl MotionSyncDialog {
+    pub fn with_presets(user_presets: Vec<UserPreset>) -> Self {
+        Self {
+            user_presets,
+            ..Self::default()
+        }
+    }
+
     pub fn show(&mut self) {
         self.open = true;
     }
@@ -284,6 +397,52 @@ pub fn dialog(
                 ui.label(crate::i18n::tr("Lip-sync (Keyform analyser)"));
                 ui.end_row();
             });
+            // Preset row: built-in presets, then the user's.
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::tr("Preset"));
+                egui::ComboBox::from_id_salt("ms-preset-row")
+                    .selected_text("—")
+                    .show_ui(ui, |ui| {
+                        for (i, (name, _)) in PRESETS.iter().enumerate() {
+                            if ui.selectable_label(false, *name).clicked() {
+                                let fresh = new_setting(&doc.model, &s.name, i);
+                                UserPreset::from_setting("", &fresh).apply_to(s);
+                            }
+                        }
+                        for p in &st.user_presets {
+                            if ui.selectable_label(false, &p.name).clicked() {
+                                p.apply_to(s);
+                            }
+                        }
+                    });
+                if ui.button(crate::i18n::tr("Add…")).clicked() {
+                    st.preset_add = Some("Preset".into());
+                }
+                if ui.button(crate::i18n::tr("Edit…")).clicked() {
+                    st.preset_list = Some((st.user_presets.clone(), None));
+                }
+            });
+            if let Some(mut name) = st.preset_add.take() {
+                let mut keep = true;
+                ui.horizontal(|ui| {
+                    ui.label(crate::i18n::tr("Preset Name:"));
+                    ui.text_edit_singleline(&mut name);
+                    if ui.button(crate::i18n::tr("OK")).clicked() && !name.trim().is_empty() {
+                        st.user_presets
+                            .push(UserPreset::from_setting(name.trim(), s));
+                        keep = false;
+                    }
+                    if ui.button(crate::i18n::tr("Cancel")).clicked() {
+                        keep = false;
+                    }
+                });
+                ui.weak(crate::i18n::tr(
+                    "Saves the current setting as a new preset.",
+                ));
+                if keep {
+                    st.preset_add = Some(name);
+                }
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 ui.selectable_value(
@@ -296,7 +455,7 @@ pub fn dialog(
             });
             let mut missing = false;
             match st.tab {
-                Tab::Mapping => mapping_tab(ui, st, &doc.model, s, &mut missing),
+                Tab::Mapping => mapping_tab(ui, st, &doc.model, &mut doc.values, s, &mut missing),
                 Tab::Audio => audio_tab(ui, s),
                 Tab::Parameter => parameter_tab(ui, &doc.model, s, &mut missing),
             }
@@ -318,6 +477,7 @@ pub fn dialog(
         st.open = false;
     }
     add_dialog(ctx, st, &doc.model, &mut list);
+    preset_list_window(ctx, st);
     // Live while a drag or text edit is in progress, one undo step after.
     if list != before {
         if st.base.is_none() {
@@ -343,6 +503,7 @@ fn mapping_tab(
     ui: &mut egui::Ui,
     st: &mut MotionSyncDialog,
     m: &Model,
+    values: &mut [f32],
     s: &mut MotionSyncSetting,
     missing: &mut bool,
 ) {
@@ -369,6 +530,43 @@ fn mapping_tab(
             kind: "Shape".into(),
             targets: Vec::new(),
         });
+    }
+    // Apply: the model's current values become this element's targets;
+    // Confirm: the targets are set on the model (observed, Q-0039).
+    let (apply, confirm) = ui
+        .horizontal(|ui| {
+            (
+                ui.button(crate::i18n::tr("Apply"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Use the model's current parameter values as this element's shape",
+                    ))
+                    .clicked(),
+                ui.button(crate::i18n::tr("Confirm"))
+                    .on_hover_text(crate::i18n::tr("Show this element's shape on the model"))
+                    .clicked(),
+            )
+        })
+        .inner;
+    if apply || confirm {
+        if let Some(mp) = s.mappings.iter_mut().find(|x| x.audio_id == aid) {
+            for c in &s.cubism {
+                let Some(pi) = m.parameters.iter().position(|q| q.id == c.parameter_id) else {
+                    continue;
+                };
+                if apply {
+                    let v = values.get(pi).copied().unwrap_or(0.0);
+                    match mp.targets.iter_mut().find(|t| t.0 == c.parameter_id) {
+                        Some(t) => t.1 = v,
+                        None => mp.targets.push((c.parameter_id.clone(), v)),
+                    }
+                } else if let (Some(t), Some(x)) = (
+                    mp.targets.iter().find(|t| t.0 == c.parameter_id),
+                    values.get_mut(pi),
+                ) {
+                    *x = t.1;
+                }
+            }
+        }
     }
     let cubism = s.cubism.clone();
     let Some(mapping) = s.mappings.iter_mut().find(|x| x.audio_id == aid) else {
@@ -556,6 +754,82 @@ fn add_dialog(
     }
 }
 
+/// Preset List: built-ins (read-only) and user presets (duplicate, rename,
+/// delete). Layout as the reference's (observed, Q-0039).
+fn preset_list_window(ctx: &egui::Context, st: &mut MotionSyncDialog) {
+    let Some((list, sel)) = &mut st.preset_list else {
+        return;
+    };
+    let (mut ok, mut cancel) = (false, false);
+    egui::Window::new(crate::i18n::tr("Preset List"))
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.horizontal_top(|ui| {
+                egui::Grid::new("ms-presets")
+                    .num_columns(3)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for h in ["No", "Preset Name", "Parameters"] {
+                            ui.label(egui::RichText::new(crate::i18n::tr(h)).strong());
+                        }
+                        ui.end_row();
+                        let n_builtin = PRESETS.len();
+                        for (i, (name, t)) in PRESETS.iter().enumerate() {
+                            ui.label((i + 1).to_string());
+                            ui.weak(*name);
+                            ui.label(t[0].1.len().to_string());
+                            ui.end_row();
+                        }
+                        for (k, p) in list.iter_mut().enumerate() {
+                            ui.label((n_builtin + k + 1).to_string());
+                            if *sel == Some(k) {
+                                ui.text_edit_singleline(&mut p.name);
+                            } else if ui.selectable_label(false, &p.name).clicked() {
+                                *sel = Some(k);
+                            }
+                            ui.label(p.cubism.len().to_string());
+                            ui.end_row();
+                        }
+                    });
+                ui.vertical(|ui| {
+                    if ui
+                        .add_enabled(
+                            sel.is_some(),
+                            egui::Button::new(crate::i18n::tr("Duplicate…")),
+                        )
+                        .clicked()
+                    {
+                        if let Some(p) = sel.and_then(|k| list.get(k)).cloned() {
+                            list.push(UserPreset {
+                                name: format!("{} copy", p.name),
+                                ..p
+                            });
+                        }
+                    }
+                    if ui
+                        .add_enabled(sel.is_some(), egui::Button::new(crate::i18n::tr("Delete")))
+                        .clicked()
+                    {
+                        if let Some(k) = sel.take() {
+                            list.remove(k);
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
+            });
+        });
+    if ok {
+        if let Some((l, _)) = st.preset_list.take() {
+            st.user_presets = l;
+        }
+    } else if cancel {
+        st.preset_list = None;
+    }
+}
+
 /// "Load Audio…" and play / stop of the audio preview.
 fn audio_row(ui: &mut egui::Ui, st: &mut MotionSyncDialog, doc: &mut Document, log: &mut Log) {
     ui.horizontal(|ui| {
@@ -695,5 +969,26 @@ mod doc_tests {
         let v = keyform_formats::runtime_json::motionsync3_json(&back.model).unwrap();
         assert_eq!(v["Settings"][0]["Mappings"].as_array().unwrap().len(), 6);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    #[test]
+    fn user_preset_round_trip() {
+        let m = Model::default();
+        let mut a = new_setting(&m, "a", 0);
+        a.blend = 0.3;
+        a.mappings[1].targets[0].1 = 0.42;
+        let p = UserPreset::from_setting("mine", &a);
+        let mut b = new_setting(&m, "b", 1);
+        let (guid, id) = (b.guid.clone(), b.id.clone());
+        p.apply_to(&mut b);
+        assert_eq!((b.guid, b.id, b.name.as_str()), (guid, id, "b"));
+        assert_eq!(b.blend, 0.3);
+        assert_eq!(b.mappings, a.mappings);
+        assert_eq!(b.cubism.len(), a.cubism.len());
     }
 }

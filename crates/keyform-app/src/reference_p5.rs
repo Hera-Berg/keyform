@@ -165,3 +165,32 @@ fn blend_shape_keys_and_drag() {
     assert!((h[0] - q0[0] - 25.0).abs() < 0.5, "half: {h:?}");
     assert!((p1[0] - p0[0]).abs() < 1e-3, "base unchanged");
 }
+
+/// "Add 3 keys" on a blend-shape parameter adds entries at the middle of
+/// the range and at the max (observed: 0, 0.5, 1 on a 0–1 parameter).
+#[test]
+fn blend_shape_add_three_keys() {
+    let Some(d) = dir() else { return };
+    let mut log = crate::log::Log::default();
+    let mut doc = crate::document::Document::open(&d.join("bs.cmo3"), &mut log).unwrap();
+    let mi = doc
+        .model
+        .art_meshes
+        .iter()
+        .position(|a| a.info.id == "ArtMesh49")
+        .unwrap();
+    let p = doc
+        .model
+        .parameters
+        .iter()
+        .position(|q| q.id == "ParamBsTest")
+        .unwrap();
+    let o = crate::document::Selection::ArtMesh(mi);
+    doc.select(Some(o));
+    doc.key_op(crate::document::KeyOp::DeleteAll, p).unwrap();
+    doc.key_op(crate::document::KeyOp::AddThree, p).unwrap();
+    assert_eq!(
+        keyform_edit::keys::blend_keys_of(&doc.model, o, p),
+        vec![0.5, 1.0]
+    );
+}

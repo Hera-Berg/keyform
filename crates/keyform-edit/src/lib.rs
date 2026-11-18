@@ -2,6 +2,7 @@
 //! model edit operations.
 
 pub mod automesh;
+pub mod blend_limits;
 pub mod checks;
 pub mod deform_path;
 pub mod form_tools;

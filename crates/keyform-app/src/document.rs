@@ -805,6 +805,7 @@ impl Document {
             // spec: blend-shapes.md §1, §3
             let (name, key) = match op {
                 KeyOp::AddTwo | KeyOp::AddThree => ("Add Blend Shape", Some(param.max)),
+                // (Add 3 keys also adds the middle of the range, below.)
                 KeyOp::Add => ("Add Blend Shape", Some(v)),
                 KeyOp::Delete => ("Delete Blend Shape", Some(v)),
                 KeyOp::DeleteAll => ("Delete Blend Shapes", None),
@@ -812,6 +813,11 @@ impl Document {
             let adding = matches!(op, KeyOp::Add | KeyOp::AddTwo | KeyOp::AddThree);
             let mut failure = None;
             self.edit(name, |m| {
+                if op == KeyOp::AddThree {
+                    // Observed: keys at 0, the middle of the range and the max.
+                    let mid = (param.min + param.max) / 2.0;
+                    let _ = keyform_edit::keys::add_blend_shape(m, o, p, mid);
+                }
                 if adding {
                     if let Err(e) =
                         keyform_edit::keys::add_blend_shape(m, o, p, key.unwrap_or(param.max))

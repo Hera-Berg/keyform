@@ -808,8 +808,16 @@ fn param_row(
                 ],
                 egui::Stroke::new(1.0, tokens.secondary_text),
             );
+            let blend = param.kind == keyform_model::ParameterKind::BlendShape;
             for k in keys {
                 let x = x_of(k);
+                // Blend shapes: the base key (0) grey, entry keys teal
+                // (as the reference draws them, Q-0037).
+                let fill = match (blend, k == 0.0) {
+                    (true, true) => tokens.secondary_text,
+                    (true, false) => tokens.info,
+                    _ => tokens.accent,
+                };
                 painter.add(egui::Shape::convex_polygon(
                     vec![
                         egui::pos2(x, y - 5.0),
@@ -817,7 +825,7 @@ fn param_row(
                         egui::pos2(x, y + 1.0),
                         egui::pos2(x - 3.0, y - 2.0),
                     ],
-                    tokens.accent,
+                    fill,
                     egui::Stroke::NONE,
                 ));
             }

@@ -157,6 +157,7 @@ pub struct KeyformApp {
     motion_sync: crate::motion_sync_dialog::MotionSyncDialog,
     sway: crate::generators_ui::SwayDialog,
     template: crate::template_dialog::TemplateDialog,
+    blend_limits: crate::blend_limits_dialog::BlendLimitsDialog,
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
@@ -194,6 +195,7 @@ impl Default for Settings {
 
 const SETTINGS_KEY: &str = "keyform.settings";
 const PLUGINS_KEY: &str = "keyform.external_apps";
+const MS_PRESETS_KEY: &str = "keyform.motion_sync_presets";
 const EXPORT_IMAGE_KEY: &str = "keyform.export_image";
 
 /// `targetVersionNo` of "SDK(N/A)/Latest Cubism" (cmo3.md §2): no mask hint.
@@ -284,6 +286,12 @@ impl KeyformApp {
             .and_then(|s| eframe::get_value::<crate::external_host::Plugins>(s, PLUGINS_KEY))
             .unwrap_or_default();
         crate::i18n::set(settings.lang);
+        let ms_presets = cc
+            .storage
+            .and_then(|s| {
+                eframe::get_value::<Vec<crate::motion_sync_dialog::UserPreset>>(s, MS_PRESETS_KEY)
+            })
+            .unwrap_or_default();
         let mut app = Self {
             api_server: None,
             plugins,
@@ -297,9 +305,10 @@ impl KeyformApp {
             new_model: Default::default(),
             parts_settings: Default::default(),
             physics_editor: Default::default(),
-            motion_sync: Default::default(),
+            motion_sync: crate::motion_sync_dialog::MotionSyncDialog::with_presets(ms_presets),
             sway: Default::default(),
             template: Default::default(),
+            blend_limits: Default::default(),
             forms: Default::default(),
             pending_psd: None,
             param_dialog: Default::default(),
@@ -1104,6 +1113,16 @@ impl KeyformApp {
             }
         });
         ui.menu_button(crate::i18n::tr("Parameter"), |ui| {
+            if ui
+                .add_enabled(
+                    ok,
+                    egui::Button::new(crate::i18n::tr("Limit Settings for Blend Shape Weights…")),
+                )
+                .clicked()
+            {
+                self.blend_limits.show();
+                ui.close();
+            }
             if ui
                 .add_enabled(
                     ok,
@@ -2716,6 +2735,11 @@ impl eframe::App for KeyformApp {
             .active
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
+        crate::blend_limits_dialog::dialog(&ctx, &mut self.blend_limits, doc);
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
         crate::form_dialogs::dialogs(&ctx, &mut self.forms, doc, &mut self.log);
         if let Some(mut p) = self.pending_psd.take() {
             let mut docs: Vec<(u64, &mut Document)> =
@@ -2788,6 +2812,7 @@ impl eframe::App for KeyformApp {
             list: self.plugins.list.iter().filter(|p| p.2).cloned().collect(),
         };
         eframe::set_value(storage, PLUGINS_KEY, &kept);
+        eframe::set_value(storage, MS_PRESETS_KEY, &self.motion_sync.user_presets);
         eframe::set_value(storage, EXPORT_IMAGE_KEY, &self.export_image);
     }
 }
