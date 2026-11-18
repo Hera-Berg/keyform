@@ -61,11 +61,83 @@ impl Settings {
             camera: [w / 2.0, h / 2.0],
             centre: [w / 2.0, h / 2.0],
             z_offset: 0.0,
-            perspective: Some(50.0),
+            // A new extension: perspective 100, simultaneous (Q-0044).
+            perspective: Some(100.0),
             max_angle: [30.0, 30.0],
-            order: Order::Xy,
+            order: Order::Arbitrary,
             default_depth: w * 0.05,
             update: Update::All,
+        }
+    }
+}
+
+impl Settings {
+    /// From stored settings: camera / centre are offsets from the canvas
+    /// centre, perspective 0–1. The default depth isn't stored.
+    pub fn from_config(c: &keyform_model::Rotate3dConfig, w: f32, h: f32) -> Self {
+        let mut s = Self::for_canvas(w, h);
+        s.camera = [w / 2.0 + c.camera[0], h / 2.0 + c.camera[1]];
+        s.centre = [w / 2.0 + c.centre[0], h / 2.0 + c.centre[1]];
+        s.max_angle = c.range;
+        s.z_offset = c.z_offset;
+        s.perspective = Some(c.perspective * 100.0);
+        s.order = match c.method {
+            0 => Order::Xy,
+            1 => Order::Yx,
+            _ => Order::Arbitrary,
+        };
+        s.update = match c.filter {
+            1 => Update::X,
+            2 => Update::Y,
+            3 => Update::Corners,
+            _ => Update::All,
+        };
+        s
+    }
+
+    /// Into stored settings (keeping fields Keyform doesn't edit from `base`).
+    pub fn to_config(
+        &self,
+        base: &keyform_model::Rotate3dConfig,
+        params: [Option<ParamIndex>; 2],
+        w: f32,
+        h: f32,
+    ) -> keyform_model::Rotate3dConfig {
+        keyform_model::Rotate3dConfig {
+            camera: [self.camera[0] - w / 2.0, self.camera[1] - h / 2.0],
+            centre: [self.centre[0] - w / 2.0, self.centre[1] - h / 2.0],
+            range: self.max_angle,
+            z_offset: self.z_offset,
+            perspective: self.perspective.unwrap_or(0.0) / 100.0,
+            method: match self.order {
+                Order::Xy => 0,
+                Order::Yx => 1,
+                Order::Arbitrary => 2,
+            },
+            filter: match self.update {
+                Update::All => 0,
+                Update::X => 1,
+                Update::Y => 2,
+                Update::Corners => 3,
+            },
+            parameters: params,
+            ..base.clone()
+        }
+    }
+}
+
+/// The stored settings of object `guid`.
+pub fn stored(m: &Model, guid: &str) -> Option<keyform_model::Rotate3dConfig> {
+    m.rotate3d.iter().find(|x| x.0 == guid).map(|x| x.1.clone())
+}
+
+/// Stores `c` for object `guid` (one extension per object).
+pub fn store(m: &mut Model, guid: &str, c: keyform_model::Rotate3dConfig) {
+    match m.rotate3d.iter_mut().find(|x| x.0 == guid) {
+        Some(x) => x.1 = c,
+        None => {
+            m.rotate3d.push((guid.to_owned(), c));
+            m.rotate3d.sort_by(|a, b| a.0.cmp(&b.0));
         }
     }
 }

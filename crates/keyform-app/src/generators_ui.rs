@@ -269,9 +269,10 @@ mod tests {
 // ---------------------------------------------------------------- 3D rotation
 
 /// Apply 3D Rotation Expression (generators.md §1).
-// TODO(Q-0044): settings are not stored (`CRotate3DExtension`) yet.
 #[derive(Default)]
 pub struct Rotate3dDialog {
+    /// Object whose stored settings are shown.
+    loaded: Option<crate::document::Selection>,
     pub open: bool,
     px: Option<usize>,
     py: Option<usize>,
@@ -315,12 +316,27 @@ pub fn rotate3d_dialog(ctx: &egui::Context, st: &mut Rotate3dDialog, doc: Option
                 ui.label(crate::i18n::tr("Select an art mesh or a warp deformer."));
                 return;
             };
-            let s = st.settings.get_or_insert_with(|| {
-                keyform_edit::rotate3d::Settings::for_canvas(
-                    doc.model.canvas.width as f32,
-                    doc.model.canvas.height as f32,
-                )
-            });
+            let (w, h) = (
+                doc.model.canvas.width as f32,
+                doc.model.canvas.height as f32,
+            );
+            let guid = object_guid(&doc.model, o);
+            if st.loaded != Some(o) {
+                // Reopen with the object's stored settings (generators.md §1).
+                st.loaded = Some(o);
+                let c = guid
+                    .as_deref()
+                    .and_then(|g| keyform_edit::rotate3d::stored(&doc.model, g))
+                    .unwrap_or_default();
+                st.settings = Some(keyform_edit::rotate3d::Settings::from_config(&c, w, h));
+                if let [Some(x), Some(y)] = c.parameters {
+                    st.px = Some(x);
+                    st.py = Some(y);
+                }
+            }
+            let s = st
+                .settings
+                .get_or_insert_with(|| keyform_edit::rotate3d::Settings::for_canvas(w, h));
             ui.horizontal(|ui| {
                 ui.label(crate::i18n::tr("X direction"));
                 param_pick(ui, "r3-px", doc, &mut st.px);
@@ -405,8 +421,16 @@ pub fn rotate3d_dialog(ctx: &egui::Context, st: &mut Rotate3dDialog, doc: Option
                         .then(|| keyform_edit::current_cell(&doc.model, o, &doc.values).ok())
                         .flatten();
                     let mut r = Ok(0);
+                    let guid = guid.clone();
+                    let depth_on = st.side;
                     doc.edit("Apply 3D Rotation Expression", |m| {
                         r = keyform_edit::rotate3d::generate(m, o, px, py, &s, side);
+                        if let Some(g) = &guid {
+                            let base = keyform_edit::rotate3d::stored(m, g).unwrap_or_default();
+                            let mut c = s.to_config(&base, [Some(px), Some(py)], w, h);
+                            c.depth_enabled = depth_on;
+                            keyform_edit::rotate3d::store(m, g, c);
+                        }
                     });
                     st.message = Some(match r {
                         Ok(n) => format!("{n} keyforms generated."),
@@ -508,5 +532,14 @@ pub fn face_dialog(ctx: &egui::Context, st: &mut FaceDialog, doc: Option<&mut Do
     });
     if !open {
         st.open = false;
+    }
+}
+
+/// The GUID of an art mesh or deformer.
+fn object_guid(m: &keyform_model::Model, o: crate::document::Selection) -> Option<String> {
+    match o {
+        crate::document::Selection::ArtMesh(i) => m.art_meshes.get(i).map(|a| a.info.guid.clone()),
+        crate::document::Selection::Deformer(i) => m.deformers.get(i).map(|d| d.info.guid.clone()),
+        _ => None,
     }
 }

@@ -25,6 +25,7 @@ mod objects;
 mod params;
 mod paths;
 mod random_pose;
+mod rotate3d;
 mod textures;
 
 use grid::Ctx;
@@ -83,6 +84,7 @@ impl Cmo3Document {
         textures::sync_textures(&mut root, ctx, &self.archive, old, new)?;
         params::sync_physics(&mut root, ctx, old, new)?;
         motion_sync::sync_motion_sync(&mut root, ctx, old, new)?;
+        rotate3d::sync_rotate3d(&mut root, ctx, old, new)?;
         // Parts and deformers are matched by GUID: new ones first (others
         // may refer to them), then edits, then deletions.
         let old_parts = objects::index_by_guid(&old.parts, |p| &p.info.guid);

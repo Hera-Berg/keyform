@@ -103,6 +103,9 @@ pub struct Model {
     pub physics: PhysicsRig,
     /// Motion-sync settings. spec: 70-advanced/motion-sync.md §1
     pub motion_sync: Vec<MotionSyncSetting>,
+    /// Apply 3D Rotation Expression settings per object GUID
+    /// (`CRotate3DExtension`). spec: 70-advanced/generators.md §1
+    pub rotate3d: Vec<(Guid, Rotate3dConfig)>,
     /// Parameters excluded from Random Pose (`CRandomPoseSetting` entries
     /// with `isEnable` false; read only). spec: generators.md §4
     pub random_pose_off: Vec<ParamIndex>,
@@ -139,6 +142,7 @@ impl Model {
             && self.root_parameter_entries == other.root_parameter_entries
             && self.physics == other.physics
             && self.motion_sync == other.motion_sync
+            && self.rotate3d == other.rotate3d
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -172,6 +176,7 @@ impl Model {
             && self.root_parameter_entries == other.root_parameter_entries
             && self.physics == other.physics
             && self.motion_sync == other.motion_sync
+            && self.rotate3d == other.rotate3d
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -1025,5 +1030,63 @@ mod tests {
         }));
         assert_eq!(m.target_deformer_guid(Some(0)), "abc");
         assert_eq!(m.target_deformer_guid(Some(7)), ROOT_DEFORMER_GUID);
+    }
+}
+
+/// The depth buffer of a 3D rotation with depth estimation
+/// (`CRotate3DExtension$DepthEstimationData`), kept as stored.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Rotate3dDepth {
+    pub buffer: Vec<f32>,
+    pub row: i32,
+    pub column: i32,
+    pub camera: [f32; 2],
+    pub centre: [f32; 2],
+    pub range: [f32; 2],
+    pub z_offset: f32,
+    pub perspective: f32,
+    pub method: u8,
+    /// The side keyform's form GUID.
+    pub reference_form: Guid,
+}
+
+/// An object's 3D rotation settings (`CRotate3DExtension`). Camera and
+/// centre are stored as offsets from the canvas centre (a new extension
+/// stores (0, 0) and the dialog shows the canvas centre, observed);
+/// perspective 0–1 (shown ×100).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rotate3dConfig {
+    pub camera: [f32; 2],
+    pub centre: [f32; 2],
+    pub range: [f32; 2],
+    pub symmetry: [bool; 2],
+    pub z_offset: f32,
+    pub perspective: f32,
+    /// 0 XY_ORDER, 1 YX_ORDER, 2 ARBITRARY_AXIS.
+    pub method: u8,
+    pub parameters: [Option<ParamIndex>; 2],
+    pub depth_enabled: bool,
+    pub depth: Option<Rotate3dDepth>,
+    /// 0 ALL_KEYFORMS, 1 X_DIRECTION, 2 Y_DIRECTION, 3 CORNERS.
+    pub filter: u8,
+}
+
+impl Default for Rotate3dConfig {
+    /// A new extension (Q-0044): camera / centre (0, 0), 30° / 30°,
+    /// perspective 1.0, ARBITRARY_AXIS, ALL_KEYFORMS.
+    fn default() -> Self {
+        Self {
+            camera: [0.0, 0.0],
+            centre: [0.0, 0.0],
+            range: [30.0, 30.0],
+            symmetry: [false, false],
+            z_offset: 0.0,
+            perspective: 1.0,
+            method: 2,
+            parameters: [None, None],
+            depth_enabled: false,
+            depth: None,
+            filter: 0,
+        }
     }
 }

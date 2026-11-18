@@ -478,6 +478,11 @@ impl<'a, 'd> Loader<'a, 'd> {
             let src = self.take_source(d);
             self.sources.deformers.push(src);
         }
+        for o in deformer_objs.iter().chain(meshes.iter()) {
+            self.load_rotate3d(o, &mut m)?;
+        }
+        // Kept sorted by object GUID (one extension per object).
+        m.rotate3d.sort_by(|a, b| a.0.cmp(&b.0));
         for d in &meshes {
             m.art_meshes
                 .push(std::sync::Arc::new(self.load_art_mesh(d, &m)?));
@@ -726,6 +731,78 @@ impl<'a, 'd> Loader<'a, 'd> {
                 }
             }
             m.motion_sync.push(st);
+        }
+        Ok(())
+    }
+
+    /// `CRotate3DExtension` of a deformer or art mesh (generators.md §1
+    /// "Storage", declarative fields).
+    fn load_rotate3d(&mut self, o: &O<'a, 'd>, m: &mut Model) -> Result<()> {
+        use keyform_model::{Rotate3dConfig, Rotate3dDepth};
+        let Some(guid) = o.guid("guid")? else {
+            return Ok(());
+        };
+        let method = |e: &O<'a, 'd>| -> Result<u8> {
+            Ok(match e.enum_value("rotationMethod")? {
+                Some("XY_ORDER") => 0,
+                Some("YX_ORDER") => 1,
+                _ => 2,
+            })
+        };
+        for ext in o.list("_extensions")? {
+            if ext.tag() != "CRotate3DExtension" {
+                continue;
+            }
+            let f = |k: &str, d: f32| -> Result<f32> { Ok(ext.f32(k)?.unwrap_or(d)) };
+            let p = |k: &str| -> Result<Option<usize>> {
+                Ok(ext.guid(k)?.and_then(|g| self.idx.params.get(g).copied()))
+            };
+            let depth = match ext.field("depthEstimationData")? {
+                Some(d) => Some(Rotate3dDepth {
+                    buffer: d.f32_array("depthBuffer")?.unwrap_or_default(),
+                    row: d.i32("row")?.unwrap_or(0),
+                    column: d.i32("column")?.unwrap_or(0),
+                    camera: [
+                        d.f32("cameraX")?.unwrap_or(0.0),
+                        d.f32("cameraY")?.unwrap_or(0.0),
+                    ],
+                    centre: [
+                        d.f32("centerX")?.unwrap_or(0.0),
+                        d.f32("centerY")?.unwrap_or(0.0),
+                    ],
+                    range: [
+                        d.f32("rotationRangeX")?.unwrap_or(30.0),
+                        d.f32("rotationRangeY")?.unwrap_or(30.0),
+                    ],
+                    z_offset: d.f32("zOffset")?.unwrap_or(0.0),
+                    perspective: d.f32("perspective")?.unwrap_or(1.0),
+                    method: method(&d)?,
+                    reference_form: d.guid("referenceFormGuid")?.unwrap_or_default().to_owned(),
+                }),
+                None => None,
+            };
+            let c = Rotate3dConfig {
+                camera: [f("cameraX", 0.0)?, f("cameraY", 0.0)?],
+                centre: [f("centerX", 0.0)?, f("centerY", 0.0)?],
+                range: [f("rotationRangeX", 30.0)?, f("rotationRangeY", 30.0)?],
+                symmetry: [
+                    ext.bool("isSymmetryX")?.unwrap_or(false),
+                    ext.bool("isSymmetryY")?.unwrap_or(false),
+                ],
+                z_offset: f("zOffset", 0.0)?,
+                perspective: f("perspective", 1.0)?,
+                method: method(&ext)?,
+                parameters: [p("mappedParameterGuid0")?, p("mappedParameterGuid1")?],
+                depth_enabled: ext.bool("isDepthEstimationEnabled")?.unwrap_or(false),
+                depth,
+                filter: match ext.enum_value("keyformFilterKind")? {
+                    Some("X_DIRECTION") => 1,
+                    Some("Y_DIRECTION") => 2,
+                    Some("CORNERS") => 3,
+                    _ => 0,
+                },
+            };
+            m.rotate3d.push((guid.to_owned(), c));
         }
         Ok(())
     }

@@ -4082,3 +4082,81 @@ fn face_generators_on_a_sample() {
     let back = Cmo3Document::read(&bytes).unwrap();
     assert!(back.model.same_data(&edited));
 }
+
+/// 3D rotation settings (`CRotate3DExtension`) on an art mesh and a warp
+/// save and reload, with and without depth data. spec: generators.md §1
+#[test]
+fn rotate3d_settings_save() {
+    use keyform_formats::cmo3::Cmo3Document;
+    use keyform_model::{Rotate3dConfig, Rotate3dDepth};
+    let Some(path) = sample_files("cmo3")
+        .into_iter()
+        .find(|p| p.ends_with("hiyori_free_t08.cmo3"))
+    else {
+        return;
+    };
+    let mut doc = Cmo3Document::read(&std::fs::read(&path).unwrap()).unwrap();
+    let m = &mut doc.model;
+    let px = m
+        .parameters
+        .iter()
+        .position(|p| p.id == "ParamAngleX")
+        .unwrap();
+    let py = m
+        .parameters
+        .iter()
+        .position(|p| p.id == "ParamAngleY")
+        .unwrap();
+    let mesh = m.art_meshes[0].info.guid.clone();
+    let warp = m
+        .deformers
+        .iter()
+        .find(|d| matches!(d.kind, keyform_model::DeformerKind::Warp(_)))
+        .unwrap()
+        .info
+        .guid
+        .clone();
+    let form = m.art_meshes[0]
+        .grid
+        .guids
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    m.rotate3d.push((
+        mesh,
+        Rotate3dConfig {
+            parameters: [Some(px), Some(py)],
+            ..Default::default()
+        },
+    ));
+    m.rotate3d.push((
+        warp,
+        Rotate3dConfig {
+            camera: [10.0, -20.0],
+            centre: [5.0, 6.0],
+            range: [25.0, 15.0],
+            perspective: 0.4,
+            method: 0,
+            filter: 3,
+            parameters: [Some(px), None],
+            depth_enabled: true,
+            depth: Some(Rotate3dDepth {
+                buffer: vec![1.0, 2.5, -3.0],
+                row: 1,
+                column: 3,
+                reference_form: form,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ));
+    doc.model.rotate3d.sort_by(|a, b| a.0.cmp(&b.0));
+    let edited = doc.model.clone();
+    let bytes = doc.save_bytes().unwrap_or_else(|e| panic!("{e}"));
+    if let Some(out) = std::env::var_os("KEYFORM_R3_OUT") {
+        std::fs::write(out, &bytes).unwrap();
+    }
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.model.rotate3d, edited.rotate3d);
+}
