@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- File types Keyform opens (desktop integration). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-keyform-cmo3">
+    <comment>2D mesh model project</comment>
+    <comment xml:lang="ja">2D メッシュモデルのプロジェクト</comment>
+    <glob pattern="*.cmo3"/>
+  </mime-type>
+  <mime-type type="application/x-keyform-can3">
+    <comment>2D mesh animation project</comment>
+    <comment xml:lang="ja">2D メッシュアニメーションのプロジェクト</comment>
+    <glob pattern="*.can3"/>
+  </mime-type>
+  <mime-type type="application/x-keyform-moc3">
+    <comment>2D mesh runtime model</comment>
+    <comment xml:lang="ja">2D メッシュのランタイムモデル</comment>
+    <glob pattern="*.moc3"/>
+  </mime-type>
+</mime-info>

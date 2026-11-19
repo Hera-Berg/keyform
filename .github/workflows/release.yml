@@ -1,0 +1,128 @@
+name: Release
+
+# Builds the installers from a version tag (v1.2.3) and attaches them to a
+# GitHub Release: Windows setup .exe, macOS universal .dmg, Linux AppImage,
+# and the vendored source archive for fully offline builds.
+# Every build compiles offline from vendored sources (tools/vendor.sh).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - id: v
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          case "$v" in [0-9]*) ;; *) v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1) ;; esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - run: tools/vendor.sh --tarball "keyform-${{ steps.v.outputs.version }}-vendored-src.tar.xz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendored-src
+          path: keyform-*-vendored-src.tar.xz
+
+  linux:
+    needs: vendor
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: vendored-src }
+      - run: tar -xJf keyform-*-vendored-src.tar.xz --strip-components=1 && rm keyform-*-vendored-src.tar.xz
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libfuse2
+      - run: cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app -p keyform-cli
+      - name: appimagetool (pinned release)
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x appimagetool && sudo mv appimagetool /usr/local/bin/
+      - run: packaging/linux/appimage.sh "${{ needs.vendor.outputs.version }}" target/release/keyform dist
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: dist/*.AppImage }
+
+  windows:
+    needs: vendor
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: vendored-src }
+      - shell: bash
+        run: tar -xJf keyform-*-vendored-src.tar.xz --strip-components=1 && rm keyform-*-vendored-src.tar.xz
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app -p keyform-cli
+      # Inno Setup is preinstalled on the windows-latest image.
+      - shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DVersion=${{ needs.vendor.outputs.version }}" `
+            "/DBinary=$PWD\target\release\keyform.exe" `
+            "/DOutDir=$PWD\dist" packaging\windows\keyform.iss
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/*.exe }
+
+  macos:
+    needs: vendor
+    runs-on: macos-latest
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: vendored-src }
+      - run: tar -xJf keyform-*-vendored-src.tar.xz --strip-components=1 && rm keyform-*-vendored-src.tar.xz
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - run: |
+          for t in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app --target $t
+          done
+      # Optional signing / notarization: set these repository secrets.
+      - name: Import signing certificate
+        if: env.MACOS_CERT_P12 != ''
+        env:
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm cert.p12
+      - env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          packaging/macos/bundle.sh "${{ needs.vendor.outputs.version }}" \
+            target/x86_64-apple-darwin/release/keyform \
+            target/aarch64-apple-darwin/release/keyform dist
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: dist/*.dmg }
+
+  release:
+    needs: [vendor, linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - run: (cd out && sha256sum * > SHA256SUMS)
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
+            --title "Keyform ${{ needs.vendor.outputs.version }}" --generate-notes

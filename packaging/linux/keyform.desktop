@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Keyform
+GenericName=2D Mesh Rigging Editor
+GenericName[ja]=2D メッシュリギングエディタ
+Comment=Rig and animate 2D mesh characters
+Comment[ja]=2D メッシュのキャラクターをリギングしてアニメーションします
+Exec=keyform %F
+Icon=keyform
+Terminal=false
+Categories=Graphics;2DGraphics;
+MimeType=application/x-keyform-cmo3;application/x-keyform-can3;application/x-keyform-moc3;
+StartupWMClass=keyform

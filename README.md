@@ -73,6 +73,41 @@ sessions. Debug options:
     kf compare a.cmo3 b.moc3 [samples]           # evaluate both, report geometry differences
     kf diffmoc a.moc3 b.moc3                     # section-by-section moc3 diff
 
+## Dev container
+
+    docker compose up            # build, clippy and the headless tests
+    docker compose run dev bash  # a shell with the toolchain
+
+The container has the Rust toolchain and Mesa's software Vulkan driver
+(lavapipe), so the GPU renderer tests run too. It is capped at 8 GB and 4
+build jobs (`KEYFORM_DOCKER_MEMORY`, `CARGO_BUILD_JOBS`). Mount licensed
+samples read-only with `KEYFORM_SAMPLES_DIR=/path/to/samples docker compose up`.
+The editor itself runs natively; display and GPU passthrough are not a goal.
+
+## Offline builds
+
+    tools/vendor.sh                      # vendor/ + .cargo/vendor.toml
+    cargo build --release --locked --offline --config .cargo/vendor.toml
+
+`tools/vendor.sh --tarball keyform-src.tar.xz` packs the sources and every
+dependency into one archive; each release attaches one. `vendor/` is
+generated (about 740 MB unpacked, mostly platform crates) and not committed.
+
+## Releases
+
+Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`. It vendors the
+dependencies once, builds offline on each platform, and publishes:
+
+- Windows: `Keyform-X.Y.Z-setup.exe` (Inno Setup; per-user or all users,
+  optional `.cmo3` / `.can3` / `.moc3` association);
+- macOS: `Keyform-X.Y.Z-universal.dmg` (x86_64 + arm64; signed and notarized
+  when the `MACOS_*` / `NOTARY_*` secrets are set);
+- Linux: `Keyform-X.Y.Z-x86_64.AppImage` (desktop file, MIME types, icons);
+- the vendored source archive and `SHA256SUMS`.
+
+Packaging files are in `packaging/`; the app icon is Keyform's own
+(`assets/icons/`).
+
 ## Black-box testing
 
 `tools/blackbox/` drives the reference editor and viewer under Wine on a

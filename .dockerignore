@@ -1,0 +1,9 @@
+target
+vendor
+dist
+out
+test-data
+*.cmo3
+*.can3
+*.moc3
+*.psd

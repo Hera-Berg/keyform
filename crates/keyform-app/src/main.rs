@@ -2,6 +2,8 @@
 //!
 //! Usage: `keyform [FILE…] [--screenshot OUT.png [--frames N]] [--size WxH] [--play MOTION]
 //! [--select OBJECT_ID] [ID=VALUE …]`
+// No console window behind the editor in Windows release builds.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod animation;
 mod app;

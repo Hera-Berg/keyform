@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Keyform</string>
+  <key>CFBundleDisplayName</key><string>Keyform</string>
+  <key>CFBundleIdentifier</key><string>org.keyform.Keyform</string>
+  <key>CFBundleExecutable</key><string>keyform</string>
+  <key>CFBundleIconFile</key><string>keyform</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleLocalizations</key><array><string>en</string><string>ja</string></array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>2D mesh model project</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>org.keyform.cmo3</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>2D mesh animation project</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>org.keyform.can3</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>2D mesh runtime model</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>org.keyform.moc3</string></array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.keyform.cmo3</string>
+      <key>UTTypeDescription</key><string>2D mesh model project</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>cmo3</string></array></dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.keyform.can3</string>
+      <key>UTTypeDescription</key><string>2D mesh animation project</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>can3</string></array></dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.keyform.moc3</string>
+      <key>UTTypeDescription</key><string>2D mesh runtime model</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>moc3</string></array></dict>
+    </dict>
+  </array>
+</dict>
+</plist>

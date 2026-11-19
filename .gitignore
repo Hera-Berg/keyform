@@ -6,3 +6,6 @@
 /*.psd
 /test-data/
 /out/
+/vendor/
+/.cargo/vendor.toml
+/dist/

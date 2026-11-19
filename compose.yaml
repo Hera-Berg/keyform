@@ -1,0 +1,24 @@
+# One-command dev environment: `docker compose up` builds the workspace and
+# runs the headless tests (CPU and GPU renderer via lavapipe).
+# Licensed sample models stay outside the repository: set KEYFORM_SAMPLES_DIR
+# to a local folder to mount it read-only at /samples.
+services:
+  dev:
+    build: .
+    image: keyform-dev
+    working_dir: /src
+    volumes:
+      - .:/src
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-target:/target
+      - ${KEYFORM_SAMPLES_DIR:-./tests}:/samples:ro
+    environment:
+      KEYFORM_SAMPLES: /samples
+      CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-4}
+      RUST_TEST_THREADS: ${RUST_TEST_THREADS:-2}
+    # Bounded like local runs: unbounded parallel builds can exhaust RAM.
+    mem_limit: ${KEYFORM_DOCKER_MEMORY:-8g}
+    command: ["sh", "-c", "cargo clippy --workspace --all-targets --locked && cargo test --workspace --locked"]
+volumes:
+  cargo-registry:
+  cargo-target:
