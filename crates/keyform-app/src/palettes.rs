@@ -706,6 +706,7 @@ pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deformer_children(
     ui: &mut egui::Ui,
     m: &Model,
