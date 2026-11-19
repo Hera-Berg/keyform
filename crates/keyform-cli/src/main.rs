@@ -8,7 +8,9 @@ use keyform_model::{DeformerKind, Model};
 
 const USAGE: &str = "usage:
   kf info <file.cmo3>             summary of a model project
-  kf roundtrip <in.cmo3> <out>    load and save a project unchanged
+  kf roundtrip <in.cmo3|can3> <out> load and save a project unchanged
+  kf physics <model> <physics3.json> <INPUT_ID> <OUTPUT_ID>
+                                   swing INPUT (sine, 3 s) and report OUTPUT's range
   kf xml <in.cmo3|can3> <out.xml> extract the document's main.xml
   kf motions <in.can3> <outdir>   export the scenes as motion3.json
   kf set <in.cmo3> <out.cmo3> KIND:ID.FIELD=VALUE ...
@@ -53,6 +55,9 @@ fn main() -> ExitCode {
     {
         ["info", path] => info(Path::new(path)),
         ["roundtrip", input, output] => roundtrip(Path::new(input), Path::new(output)),
+        ["physics", model3, physics3, input, output] => {
+            physics_check(Path::new(model3), Path::new(physics3), input, output)
+        }
         ["set", input, output, edits @ ..] => {
             edit::set_cmd(Path::new(input), Path::new(output), edits)
         }
@@ -202,6 +207,17 @@ fn print_summary(m: &Model) {
 }
 
 fn roundtrip(input: &Path, output: &Path) -> R {
+    if input.extension().is_some_and(|e| e.eq_ignore_ascii_case("can3")) {
+        let mut doc = keyform_formats::can3::Can3Document::read(&std::fs::read(input)?)?;
+        let bytes = doc.save_bytes()?;
+        std::fs::write(output, &bytes)?;
+        let back = keyform_formats::can3::Can3Document::read(&bytes)?;
+        if back.animation != doc.animation {
+            return Err("re-read animation differs".into());
+        }
+        println!("wrote {output:?}; animation identical after re-read");
+        return Ok(());
+    }
     let doc = load(input)?;
     std::fs::write(output, doc.write()?)?;
     let back = Cmo3Document::read(&std::fs::read(output)?)?;
@@ -419,5 +435,39 @@ fn new_animation(model: &Path, out: &Path) -> R {
     let bytes = a.save_bytes().map_err(|e| e.to_string())?;
     std::fs::write(out, bytes).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// `kf physics`: swings parameter INPUT through its range (a 0.8 Hz sine
+/// for 3 s at 60 fps), runs the physics3.json rig and prints how far OUTPUT
+/// moved. Fails when it doesn't move.
+fn physics_check(model: &Path, physics3: &Path, input: &str, output: &str) -> R {
+    let m = load_any(model)?;
+    let id_of = |id: &str| m.parameters.iter().position(|p| p.id == id);
+    let (rig, warnings) = keyform_physics::json3::parse(&std::fs::read_to_string(physics3)?, &id_of)?;
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+    let (Some(pi), Some(po)) = (id_of(input), id_of(output)) else {
+        return Err(format!("unknown parameter {input} or {output}").into());
+    };
+    let mut sim = keyform_physics::sim::PhysicsSim::new(&rig);
+    let mut values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+    let (lo, hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut lo, mut hi) = (lo, hi);
+    let q = &m.parameters[pi];
+    for k in 0..180 {
+        let t = k as f32 / 60.0;
+        let mut v = values.clone();
+        v[pi] = q.default + (q.max - q.default) * (std::f32::consts::TAU * 0.8 * t).sin();
+        sim.step(&rig, &m.parameters, &mut v, 1.0 / 60.0);
+        lo = lo.min(v[po]);
+        hi = hi.max(v[po]);
+        values = v;
+    }
+    println!("{output}: {lo:.3} … {hi:.3} while {input} swings");
+    if hi - lo < 1e-3 {
+        return Err(format!("{output} does not move with {input}").into());
+    }
     Ok(())
 }

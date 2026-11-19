@@ -61,8 +61,9 @@ def main():
             h.step(name)
         dump(h, f"step {min(a.until, len(steps))}")
     finally:
+        times = [t0] + [st[1] for st in h.steps]
         report = {
-            "steps": [s[0] for s in h.steps],
+            "steps": [{"step": st[0], "seconds": round(times[i + 1] - times[i], 1)} for i, st in enumerate(h.steps)],
             "seconds": round(time.time() - t0, 1),
             "notes": h.issues,
         }
@@ -492,6 +493,14 @@ def physics_inputs_outputs(h, psd, out):
         btn = min(add, key=lambda n: abs(n["rect"][1] - hint["rect"][1]) + abs(n["rect"][0] - 23))
         h.click(h.center(btn))
         popup_pick(h, param, h.center(btn))
+    # New inputs start at 0 % effectiveness (physics-editor.md §5.1): set them.
+    head = h.find("Effectiveness (%)")
+    for value in ("60", "40"):
+        rows = [n for n in h.in_window(w, role="SpinButton")
+                if abs(n["rect"][0] - head["rect"][0]) < 30 and n["rect"][1] > head["rect"][3] and n["value"] in ("0", "0.0")]
+        if not rows:
+            raise RuntimeError("no input effectiveness field at 0")
+        h.set_field(rows[0], value)
     h.click(h.center(h.in_window(w, label="Output Settings")[0]))
     h.click(h.center(h.in_window(w, label="Add", role="Button")[0]))
     combo = [n for n in h.in_window(w, role="ComboBox") if n["value"] == "Angle X"]
