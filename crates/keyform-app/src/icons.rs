@@ -194,6 +194,8 @@ pub fn icon(ui: &mut egui::Ui, icon: Icon) -> egui::Response {
 /// A small icon button.
 pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(Vec2::new(22.0, 18.0), Sense::click());
+    // Its tooltip is its accessible name (screen readers, scripted tests).
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
     if r.hovered() {
         ui.painter()
             .rect_filled(rect, 2.0, ui.visuals().widgets.hovered.bg_fill);

@@ -163,7 +163,7 @@ fn add_motions(doc: &mut Document, st: &mut SettingsState, log: &mut Log) {
     let Some(dir) = doc.path.parent().map(std::path::Path::to_path_buf) else {
         return;
     };
-    let files = rfd::FileDialog::new()
+    let files = crate::file_dialog::FileDialog::new()
         .add_filter("Motion (*.motion3.json)", &["json"])
         .set_directory(&dir)
         .pick_files();

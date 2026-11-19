@@ -584,7 +584,7 @@ impl KeyformApp {
                     }
                     let _ = std::fs::remove_file(&tmp);
                 }
-            } else if let Some(p) = rfd::FileDialog::new()
+            } else if let Some(p) = crate::file_dialog::FileDialog::new()
                 .add_filter("motion3.json", &["json"])
                 .set_file_name("recording.motion3.json")
                 .save_file()
@@ -668,7 +668,7 @@ impl KeyformApp {
     }
 
     fn open_dialog(&mut self) {
-        let files = rfd::FileDialog::new()
+        let files = crate::file_dialog::FileDialog::new()
             .add_filter("Models", &["cmo3", "can3", "moc3", "json", "psd"])
             .add_filter("Animation (*.can3)", &["can3"])
             .add_filter("Model project (*.cmo3)", &["cmo3"])
@@ -735,7 +735,7 @@ impl KeyformApp {
                     }
                     if ui.button(crate::i18n::tr("Animation…")).clicked() {
                         ui.close();
-                        if let Some(m) = rfd::FileDialog::new()
+                        if let Some(m) = crate::file_dialog::FileDialog::new()
                             .set_title("Model for the new animation")
                             .add_filter("Model project (*.cmo3)", &["cmo3"])
                             .pick_file()
@@ -921,6 +921,17 @@ impl KeyformApp {
                     self.delete_active();
                 }
                 ui.separator();
+                if ui
+                    .add_enabled(
+                        self.active.is_some(),
+                        egui::Button::new(crate::i18n::tr("Select All")).shortcut_text("Ctrl+A"),
+                    )
+                    .clicked()
+                {
+                    if let Some(d) = self.active_doc() {
+                        d.select_all();
+                    }
+                }
                 if ui
                     .add_enabled(
                         self.active.is_some(),
@@ -1846,7 +1857,7 @@ impl KeyformApp {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                match rfd::FileDialog::new()
+                match crate::file_dialog::FileDialog::new()
                     .set_directory(dir)
                     .set_file_name(name)
                     .add_filter("Animation (*.can3)", &["can3"])
@@ -1913,7 +1924,7 @@ impl KeyformApp {
         let Some(s) = self.slots.get_mut(i) else {
             return;
         };
-        let mut dialog = rfd::FileDialog::new()
+        let mut dialog = crate::file_dialog::FileDialog::new()
             .add_filter("Model project (*.cmo3)", &["cmo3"])
             .set_file_name(s.doc.title.clone());
         if let Some(dir) = s.doc.path.parent() {
@@ -1947,7 +1958,10 @@ impl KeyformApp {
             .as_ref()
             .and_then(|a| a.path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
-        let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() else {
+        let Some(dir) = crate::file_dialog::FileDialog::new()
+            .set_directory(start)
+            .pick_folder()
+        else {
             return;
         };
         match d.export_motions(&dir) {
@@ -1970,7 +1984,10 @@ impl KeyformApp {
             .as_ref()
             .and_then(|a| a.path.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
-        let Some(dir) = rfd::FileDialog::new().set_directory(start).pick_folder() else {
+        let Some(dir) = crate::file_dialog::FileDialog::new()
+            .set_directory(start)
+            .pick_folder()
+        else {
             return;
         };
         match d.export_expressions(&dir) {
@@ -1989,7 +2006,7 @@ impl KeyformApp {
         let Some(s) = self.active.and_then(|i| self.slots.get(i)) else {
             return;
         };
-        let mut dialog = rfd::FileDialog::new();
+        let mut dialog = crate::file_dialog::FileDialog::new();
         if let Some(dir) = s.doc.path.parent() {
             dialog = dialog.set_directory(dir);
         }
@@ -2304,6 +2321,23 @@ impl KeyformApp {
             if let (Some(l), Some(d)) = (level, self.active_doc()) {
                 if d.mode == Mode::Modeling {
                     d.set_edit_level(l);
+                }
+            }
+        }
+        // Edit ▸ Select All [Ctrl+A] / Deselect [Escape] (menus.md "Edit").
+        if !ctx.egui_wants_keyboard_input() {
+            let (all, none) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&K::new(M::COMMAND, Key::A)),
+                    i.consume_key(M::NONE, Key::Escape),
+                )
+            });
+            if let Some(d) = self.active_doc() {
+                let busy = d.mesh_edit.is_some() || d.temp_path.is_some() || d.is_dragging();
+                if all && !busy {
+                    d.select_all();
+                } else if none && !busy {
+                    d.select(None);
                 }
             }
         }

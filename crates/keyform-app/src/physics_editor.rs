@@ -303,7 +303,7 @@ fn paste_outputs(st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
 
 /// §8: replaces all groups from a physics3.json.
 fn import(st: &mut PhysicsEditor, doc: &mut Document, rig: &mut PhysicsRig, log: &mut Log) {
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("physics3.json", &["json"])
         .pick_file()
     else {
@@ -348,7 +348,7 @@ fn export(st: &mut PhysicsEditor, doc: &Document, rig: &PhysicsRig, log: &mut Lo
         st.message = Some("There are no physics settings to export.".into());
         return;
     };
-    let Some(path) = rfd::FileDialog::new()
+    let Some(path) = crate::file_dialog::FileDialog::new()
         .add_filter("physics3.json", &["json"])
         .set_file_name("model.physics3.json")
         .save_file()
@@ -682,7 +682,7 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
                 }
             }
             if ui.button(crate::i18n::tr("Link animation file…")).clicked() {
-                if let Some(p) = rfd::FileDialog::new()
+                if let Some(p) = crate::file_dialog::FileDialog::new()
                     .add_filter("can3", &["can3"])
                     .pick_file()
                 {

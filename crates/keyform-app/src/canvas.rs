@@ -168,6 +168,32 @@ pub fn canvas_ui(
         let q = view.to_px(p);
         rect.min + egui::vec2(q[0], q[1]) / ppp
     };
+    if crate::ui_map::enabled() {
+        if let Some(f) = doc.frame.as_ref() {
+            let meshes = doc
+                .model
+                .art_meshes
+                .iter()
+                .zip(&f.meshes)
+                .filter(|(_, s)| s.is_drawn())
+                .map(|(a, s)| {
+                    (
+                        a.info.id.clone(),
+                        s.positions.chunks_exact(2).map(|c| [c[0], c[1]]).collect(),
+                    )
+                })
+                .collect();
+            let paths = (0..doc.model.art_paths.len())
+                .map(|k| {
+                    (
+                        doc.model.art_paths[k].info.id.clone(),
+                        keyform_edit::artpath::canvas_points(&doc.model, f, &doc.values, k),
+                    )
+                })
+                .collect();
+            crate::ui_map::set_canvas(rect, &to_screen, meshes, paths);
+        }
+    }
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, tokens.canvas_viewport);
     // Canvas area (white), drawn as a quad so it follows rotation.

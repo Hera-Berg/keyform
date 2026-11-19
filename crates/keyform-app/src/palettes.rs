@@ -167,6 +167,8 @@ pub fn parts_ui(
             let (mut lock_toggled, mut move_here, mut bulk) = (Vec::new(), None, None);
             let mut drop = None;
             let mut stored_toggled = Vec::new();
+            let selected = doc.selection.objects.clone();
+            let mut toggle = Vec::new();
             let mut art_clicked = None;
             let art_selected = doc.art_tool.as_ref().and_then(|t| t.path);
             let draw_orders: Vec<f32> = doc
@@ -183,6 +185,8 @@ pub fn parts_ui(
             };
             let mut t = TreeCtx {
                 sel: &mut sel,
+                selected: &selected,
+                toggle: &mut toggle,
                 toggled: &mut toggled,
                 editable: doc.editable(),
                 deformers: *show_deformers,
@@ -241,6 +245,19 @@ pub fn parts_ui(
                 });
             } else if sel != doc.primary() {
                 doc.select(sel);
+            }
+            // After the plain click above: Ctrl / Shift toggles.
+            if !toggle.is_empty() {
+                let mut set = doc.selection.clone();
+                for o in toggle {
+                    if let Some(i) = set.objects.iter().position(|x| *x == o) {
+                        set.objects.remove(i);
+                        set.retain_points(|p| p.0 != o);
+                    } else {
+                        set.objects.push(o);
+                    }
+                }
+                doc.set_selection(set);
             }
             for s in toggled {
                 doc.edit("Change Visibility", |m| {
@@ -391,6 +408,10 @@ pub fn info(m: &Model, s: Selection) -> Option<&ObjectInfo> {
 
 struct TreeCtx<'a> {
     sel: &'a mut Option<Selection>,
+    /// Every selected object (highlighted rows).
+    selected: &'a [Selection],
+    /// Rows Ctrl/Shift+clicked: toggled in the selection.
+    toggle: &'a mut Vec<Selection>,
     /// Objects whose eye was clicked.
     toggled: &'a mut Vec<Selection>,
     editable: bool,
@@ -416,6 +437,16 @@ struct TreeCtx<'a> {
     art_clicked: &'a mut Option<usize>,
     /// The art path the ArtPath tool edits (highlighted).
     art_selected: Option<usize>,
+}
+
+/// A row click: Ctrl / Shift toggles the object in the selection,
+/// otherwise it becomes the only selection.
+fn pick(ui: &egui::Ui, t: &mut TreeCtx, me: Selection) {
+    if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+        t.toggle.push(me);
+    } else {
+        *t.sel = Some(me);
+    }
 }
 
 /// Objects kept as stored (art-path.md, alias.md): listed in their part,
@@ -504,10 +535,16 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     }
                     icons::icon(ui, Icon::Part);
                     let me = Selection::Part(p);
-                    let (r, dropped) =
-                        row_label(ui, *t.sel == Some(me), info.display_name(), me, t.dnd, true);
+                    let (r, dropped) = row_label(
+                        ui,
+                        t.selected.contains(&me),
+                        info.display_name(),
+                        me,
+                        t.dnd,
+                        true,
+                    );
                     if r.clicked() {
-                        *t.sel = Some(me);
+                        pick(ui, t, me);
                     }
                     if r.double_clicked() {
                         *t.open_settings = true;
@@ -562,14 +599,14 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     let me = Selection::ArtMesh(a);
                     let (r, dropped) = row_label(
                         ui,
-                        *t.sel == Some(me),
+                        t.selected.contains(&me),
                         info.display_name(),
                         me,
                         t.dnd,
                         false,
                     );
                     if r.clicked() {
-                        *t.sel = Some(me);
+                        pick(ui, t, me);
                     }
                     if let Some((o, _)) = dropped {
                         // Before this mesh, in its part.
@@ -600,10 +637,10 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     icons::icon(ui, deformer_icon(m, d));
                     if selectable(
                         ui,
-                        *t.sel == Some(Selection::Deformer(d)),
+                        t.selected.contains(&Selection::Deformer(d)),
                         info.display_name(),
                     ) {
-                        *t.sel = Some(Selection::Deformer(d));
+                        pick(ui, t, Selection::Deformer(d));
                     }
                 });
             }
@@ -612,10 +649,10 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
                     icons::icon(ui, Icon::Glue);
                     if selectable(
                         ui,
-                        *t.sel == Some(Selection::Glue(g)),
+                        t.selected.contains(&Selection::Glue(g)),
                         m.glues[g].info.display_name(),
                     ) {
-                        *t.sel = Some(Selection::Glue(g));
+                        pick(ui, t, Selection::Glue(g));
                     }
                 });
             }
@@ -647,10 +684,22 @@ pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
         children[slot(a.target)].push(Selection::ArtMesh(i));
     }
     let mut sel = doc.primary();
+    // The selected object's deformer ancestors are shown open, so a new or
+    // picked object is always visible in the tree.
+    let mut open = std::collections::HashSet::new();
+    let mut t = match sel {
+        Some(Selection::ArtMesh(a)) => m.art_meshes.get(a).and_then(|x| x.target),
+        Some(Selection::Deformer(d)) => m.deformers.get(d).and_then(|x| x.target),
+        _ => None,
+    };
+    while let Some(d) = t.filter(|&d| d < n && open.insert(d)) {
+        t = m.deformers[d].target;
+    }
+    let prev = sel;
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            deformer_children(ui, m, &children, n, &mut sel, 0);
+            deformer_children(ui, m, &children, n, &mut sel, 0, &open, prev);
         });
     if sel != doc.primary() {
         doc.select(sel);
@@ -664,6 +713,8 @@ fn deformer_children(
     node: usize,
     sel: &mut Option<Selection>,
     depth: usize,
+    open: &std::collections::HashSet<usize>,
+    prev: Option<Selection>,
 ) {
     if depth > 64 {
         return;
@@ -672,18 +723,26 @@ fn deformer_children(
         match c {
             Selection::Deformer(d) => {
                 let id = ui.make_persistent_id(("deformer", d));
-                egui::collapsing_header::CollapsingState::load_with_default_open(
+                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
-                    false,
-                )
-                .show_header(ui, |ui| {
-                    icons::icon(ui, deformer_icon(m, d));
-                    if selectable(ui, *sel == Some(c), m.deformers[d].info.display_name()) {
-                        *sel = Some(c);
-                    }
-                })
-                .body(|ui| deformer_children(ui, m, ch, d, sel, depth + 1));
+                    true,
+                );
+                // Opened once per selection change (the user can close it).
+                let opened_for = ui.make_persistent_id(("deformer-opened-for", d));
+                let last: Option<Option<Selection>> = ui.data(|x| x.get_temp(opened_for));
+                if open.contains(&d) && last != Some(prev) {
+                    state.set_open(true);
+                    ui.data_mut(|x| x.insert_temp(opened_for, prev));
+                }
+                state
+                    .show_header(ui, |ui| {
+                        icons::icon(ui, deformer_icon(m, d));
+                        if selectable(ui, *sel == Some(c), m.deformers[d].info.display_name()) {
+                            *sel = Some(c);
+                        }
+                    })
+                    .body(|ui| deformer_children(ui, m, ch, d, sel, depth + 1, open, prev));
             }
             Selection::ArtMesh(a) => {
                 ui.horizontal(|ui| {

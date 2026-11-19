@@ -834,7 +834,7 @@ fn preset_list_window(ctx: &egui::Context, st: &mut MotionSyncDialog) {
 fn audio_row(ui: &mut egui::Ui, st: &mut MotionSyncDialog, doc: &mut Document, log: &mut Log) {
     ui.horizontal(|ui| {
         if ui.button(crate::i18n::tr("Load Audio…")).clicked() {
-            if let Some(p) = rfd::FileDialog::new()
+            if let Some(p) = crate::file_dialog::FileDialog::new()
                 .add_filter("WAV", &["wav"])
                 .pick_file()
             {

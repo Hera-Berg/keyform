@@ -182,7 +182,7 @@ pub fn dialog(
         .path
         .file_stem()
         .map_or("model".into(), |s| s.to_string_lossy().into_owned());
-    let mut fd = rfd::FileDialog::new()
+    let mut fd = crate::file_dialog::FileDialog::new()
         .add_filter("PNG Image (*.png)", &["png"])
         .add_filter("JPEG Image (*.jpg)", &["jpg", "jpeg"])
         .set_file_name(format!("{stem}.png"));

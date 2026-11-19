@@ -19,6 +19,7 @@ mod export_media;
 mod external_api;
 mod external_host;
 mod external_server;
+mod file_dialog;
 mod fonts;
 mod form_dialogs;
 mod form_edit;
@@ -46,6 +47,7 @@ mod template_list;
 mod texture_atlas;
 mod theme;
 mod track_layers;
+mod ui_map;
 mod viewer_settings;
 
 use std::path::PathBuf;
@@ -152,6 +154,7 @@ fn main() -> eframe::Result<()> {
         "Keyform",
         options,
         Box::new(move |cc| {
+            ui_map::install(&cc.egui_ctx);
             let mut a = app::KeyformApp::new(cc, files, shot);
             a.initial_values = values;
             a.initial_motion = play;

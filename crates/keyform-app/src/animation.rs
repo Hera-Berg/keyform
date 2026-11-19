@@ -1537,7 +1537,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     .clicked()
                 {
                     ui.close();
-                    if let Some(p) = rfd::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
+                    if let Some(p) = crate::file_dialog::FileDialog::new().add_filter("WAV", &["wav"]).pick_file() {
                         op = Some(SceneOp::AddSound(p));
                     }
                 }
@@ -1562,13 +1562,13 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 });
                 if ui.button(crate::i18n::tr("Add image track…")).clicked() {
                     ui.close();
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png"]).pick_file() {
+                    if let Some(p) = crate::file_dialog::FileDialog::new().add_filter("Image", &["png"]).pick_file() {
                         op = Some(SceneOp::AddImage(p));
                     }
                 }
                 if ui.button(crate::i18n::tr("Import motion3.json…")).clicked() {
                     ui.close();
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Motion", &["json"]).pick_file() {
+                    if let Some(p) = crate::file_dialog::FileDialog::new().add_filter("Motion", &["json"]).pick_file() {
                         op = Some(SceneOp::ImportMotion(p));
                     }
                 }

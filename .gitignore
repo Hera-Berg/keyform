@@ -11,3 +11,4 @@
 /vendor/
 /.cargo/vendor.toml
 /dist/
+__pycache__/

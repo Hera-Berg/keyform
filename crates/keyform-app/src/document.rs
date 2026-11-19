@@ -166,6 +166,79 @@ pub struct SelectionSet {
     pub point_weights: Vec<f32>,
 }
 
+/// `sel` (made on `old`) for `new`: objects matched by GUID; points kept
+/// only when their object's index, kind and point count are unchanged.
+pub fn remap_selection(old: &Model, new: &Model, sel: &SelectionSet) -> SelectionSet {
+    fn guid(m: &Model, o: Selection) -> Option<&str> {
+        Some(match o {
+            Selection::Part(i) => m.parts.get(i)?.info.guid.as_str(),
+            Selection::Deformer(i) => m.deformers.get(i)?.info.guid.as_str(),
+            Selection::ArtMesh(i) => m.art_meshes.get(i)?.info.guid.as_str(),
+            Selection::Glue(i) => m.glues.get(i)?.info.guid.as_str(),
+        })
+    }
+    fn find(m: &Model, o: Selection, g: &str) -> Option<Selection> {
+        let pos = |v: &[&str]| v.iter().position(|x| *x == g);
+        match o {
+            Selection::Part(_) => pos(&m
+                .parts
+                .iter()
+                .map(|x| x.info.guid.as_str())
+                .collect::<Vec<_>>())
+            .map(Selection::Part),
+            Selection::Deformer(_) => pos(&m
+                .deformers
+                .iter()
+                .map(|x| x.info.guid.as_str())
+                .collect::<Vec<_>>())
+            .map(Selection::Deformer),
+            Selection::ArtMesh(_) => pos(&m
+                .art_meshes
+                .iter()
+                .map(|x| x.info.guid.as_str())
+                .collect::<Vec<_>>())
+            .map(Selection::ArtMesh),
+            Selection::Glue(_) => pos(&m
+                .glues
+                .iter()
+                .map(|x| x.info.guid.as_str())
+                .collect::<Vec<_>>())
+            .map(Selection::Glue),
+        }
+    }
+    fn points(m: &Model, o: Selection) -> usize {
+        match o {
+            Selection::ArtMesh(i) => m.art_meshes.get(i).map_or(0, |a| a.positions.len() / 2),
+            Selection::Deformer(i) => m.deformers.get(i).map_or(0, |d| match &d.kind {
+                keyform_model::DeformerKind::Warp(w) => {
+                    w.grid.keyforms.first().map_or(0, |f| f.positions.len() / 2)
+                }
+                keyform_model::DeformerKind::Rotation(_) => 1,
+            }),
+            _ => 0,
+        }
+    }
+    let map = |o: Selection| guid(old, o).and_then(|g| find(new, o, g));
+    let objects: Vec<Selection> = sel.objects.iter().filter_map(|&o| map(o)).collect();
+    let mut out = SelectionSet {
+        objects,
+        points: Vec::new(),
+        point_weights: Vec::new(),
+    };
+    for (k, &(o, i)) in sel.points.iter().enumerate() {
+        if map(o) == Some(o) && points(old, o) == points(new, o) {
+            out.points.push((o, i));
+            if let Some(w) = sel.point_weights.get(k) {
+                out.point_weights.push(*w);
+            }
+        }
+    }
+    if out.point_weights.len() != out.points.len() {
+        out.point_weights.clear();
+    }
+    out
+}
+
 impl SelectionSet {
     /// Soft-selection weight of point entry `i` (1 when unweighted).
     pub fn weight(&self, i: usize) -> f32 {
@@ -1213,8 +1286,10 @@ impl Document {
         let mut m = self.model.clone();
         let r = f(&mut m)?;
         if !m.same_data(&self.model) {
+            // Objects keep their selection across the edit (matched by GUID:
+            // structural edits renumber them); deleted ones drop out.
+            self.selection = remap_selection(&self.model, &m, &self.selection);
             self.model = m;
-            self.selection = SelectionSet::default();
             self.history
                 .commit(name, StepKind::Real, self.edit_state(), false);
             self.model_changed();
@@ -1620,6 +1695,40 @@ impl Document {
     /// (undo.md §3).
     pub fn select(&mut self, sel: Option<Selection>) {
         self.set_selection(SelectionSet::of(sel));
+    }
+
+    /// Edit ▸ Select All: every point of the selected objects (vertices,
+    /// warp grid / net points, rotation origin); with nothing selected, every
+    /// visible, unlocked art mesh.
+    pub fn select_all(&mut self) {
+        let objects = self.selection.objects.clone();
+        if objects.is_empty() {
+            let all = self
+                .model
+                .art_meshes
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.info.visible && !a.info.locked)
+                .map(|(i, _)| Selection::ArtMesh(i))
+                .collect();
+            self.set_selection(SelectionSet {
+                objects: all,
+                points: Vec::new(),
+                point_weights: Vec::new(),
+            });
+            return;
+        }
+        let mut pts = Vec::new();
+        for o in &objects {
+            for k in 0..self.object_points(*o).len() {
+                pts.push((*o, k));
+            }
+        }
+        self.set_selection(SelectionSet {
+            objects,
+            points: pts,
+            point_weights: Vec::new(),
+        });
     }
 
     /// Replaces the selection as a selection-only undo step.
@@ -3024,5 +3133,32 @@ mod tests {
         assert!(!d.untitled && !d.is_modified());
         let back = Document::open(&path, &mut log).unwrap();
         assert!(back.model.same_data(&d.model));
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+
+    /// Deleting an earlier mesh keeps the later one selected at its new
+    /// index; a deleted object drops out; points survive only unchanged.
+    #[test]
+    fn selection_follows_objects() {
+        let mut a = Model::default();
+        for id in ["A", "B", "C"] {
+            let mut p = keyform_model::Part::new(id);
+            p.info.guid = keyform_model::new_guid();
+            a.parts.push(std::sync::Arc::new(p));
+        }
+        let sel = SelectionSet {
+            objects: vec![Selection::Part(0), Selection::Part(2)],
+            points: Vec::new(),
+            point_weights: Vec::new(),
+        };
+        let mut b = a.clone();
+        b.parts.remove(0);
+        let r = remap_selection(&a, &b, &sel);
+        assert_eq!(r.objects, vec![Selection::Part(1)]);
+        assert_eq!(remap_selection(&a, &a, &sel), sel);
     }
 }

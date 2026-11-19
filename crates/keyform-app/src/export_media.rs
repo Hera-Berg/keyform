@@ -450,12 +450,12 @@ pub fn dialog(ctx: &egui::Context, st: &mut MediaState, doc: Option<&Document>, 
         .and_then(|a| a.scene())
         .map_or_else(String::new, |s| s.name.clone());
     let dest = match st.kind {
-        MediaKind::Png | MediaKind::Jpeg => rfd::FileDialog::new().pick_folder(),
-        MediaKind::Gif => rfd::FileDialog::new()
+        MediaKind::Png | MediaKind::Jpeg => crate::file_dialog::FileDialog::new().pick_folder(),
+        MediaKind::Gif => crate::file_dialog::FileDialog::new()
             .set_file_name(format!("{name}.gif"))
             .add_filter("GIF", &["gif"])
             .save_file(),
-        MediaKind::Video => rfd::FileDialog::new()
+        MediaKind::Video => crate::file_dialog::FileDialog::new()
             .set_file_name(format!("{name}.mp4"))
             .add_filter("Video", &["mp4"])
             .save_file(),

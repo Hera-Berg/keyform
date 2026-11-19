@@ -653,7 +653,7 @@ pub fn menu(
         .clicked()
     {
         ui.close();
-        op = rfd::FileDialog::new()
+        op = crate::file_dialog::FileDialog::new()
             .add_filter("Parameter controller", &["json"])
             .set_file_name("controllers.paramctrl3.json")
             .save_file()
@@ -664,7 +664,7 @@ pub fn menu(
         .clicked()
     {
         ui.close();
-        op = rfd::FileDialog::new()
+        op = crate::file_dialog::FileDialog::new()
             .add_filter("Parameter controller", &["json"])
             .pick_file()
             .map(CtrlFileOp::Import);

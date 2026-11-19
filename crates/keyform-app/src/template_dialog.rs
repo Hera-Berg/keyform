@@ -84,7 +84,7 @@ pub fn dialog(
             }
             ui.horizontal(|ui| {
                 if ui.button(crate::i18n::tr("Select Model Template…")).clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Model (*.cmo3)", &["cmo3"]).pick_file() {
+                    if let Some(p) = crate::file_dialog::FileDialog::new().add_filter("Model (*.cmo3)", &["cmo3"]).pick_file() {
                         load_template(st, doc, &p, p.display().to_string(), log);
                     }
                 }
