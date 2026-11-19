@@ -16,6 +16,10 @@ from Xlib import X, XK, display
 from Xlib.ext import xtest
 
 
+class HonestyError(RuntimeError):
+    """The script tried something a person at the screen couldn't do."""
+
+
 class Harness:
     def __init__(self, workdir, keyform, env_display, size=(1600, 1000), lang=None, extra_args=()):
         # Synthetic input must only reach the private test display: :7
@@ -159,10 +163,23 @@ class Harness:
             out.append(n)
         return out
 
+    def reachable(self, n):
+        """Visible (unclipped part), on top, enabled, inside the window."""
+        v = n.get("visible")
+        if n.get("disabled") or n.get("covered") or not v:
+            return False
+        if v[2] - v[0] < 2 or v[3] - v[1] < 2:
+            return False
+        g = self.win.get_geometry()
+        c = ((v[0] + v[2]) / 2, (v[1] + v[3]) / 2)
+        return 0 <= c[0] < g.width and 0 <= c[1] < g.height
+
     def find(self, label, role=None, contains=False, timeout=8, index=0):
+        """The `index`-th reachable widget with this label (a person could
+        see and click it)."""
         end = time.time() + timeout
         while time.time() < end:
-            ns = [n for n in self.nodes(label, role, contains) if not n.get("disabled")]
+            ns = [n for n in self.nodes(label, role, contains) if self.reachable(n)]
             if len(ns) > index:
                 return ns[index]
             time.sleep(0.2)
@@ -174,7 +191,7 @@ class Harness:
         while time.time() < end:
             for n in self.nodes():
                 t = n["label"] or n["value"]
-                if not n.get("disabled") and (t == label or t.startswith(label + " ")):
+                if self.reachable(n) and (t == label or t.startswith(label + " ")):
                     return n
             time.sleep(0.2)
         raise RuntimeError(f"menu item not found: {label!r}")
@@ -185,7 +202,9 @@ class Harness:
         r = w["rect"]
         out = []
         for n in self.nodes(label, role):
-            c = self.center(n)
+            if not self.reachable(n):
+                continue
+            c = self.vcenter(n)
             if n is not w and r[0] <= c[0] <= r[2] and r[1] <= c[1] <= r[3] and n["role"] != "Window":
                 out.append(n)
         out.sort(key=lambda n: (round(n["rect"][1]), n["rect"][0]))
@@ -260,13 +279,55 @@ class Harness:
         self.button(button, False)
         self.settle(3)
 
-    def center(self, node):
-        r = node["rect"]
-        return ((r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+    def vcenter(self, node):
+        """Centre of the widget's visible part; fails (HonestyError) when a
+        person couldn't click it: disabled, clipped away, zero-size, covered
+        by a window or popup, or outside the window."""
+        if not self.reachable(node):
+            raise HonestyError(f"widget not reachable by a person: {node}")
+        v = node["visible"]
+        return ((v[0] + v[2]) / 2, (v[1] + v[3]) / 2)
+
+    center = vcenter
+
+    def click_node(self, node, button=1, double=False):
+        self.click(self.vcenter(node), button=button, double=double)
+
+    def canvas_point(self, p):
+        """Fails when canvas point `p` isn't on the visible canvas or is under
+        a window / popup."""
+        c = self.canvas()
+        r = c["rect"]
+        if not (r[0] <= p[0] <= r[2] and r[1] <= p[1] <= r[3]):
+            raise HonestyError(f"canvas point {p} is off the visible canvas {r}")
+        for n in self.nodes(role="Window"):
+            v = n.get("visible")
+            if v and v[0] <= p[0] <= v[2] and v[1] <= p[1] <= v[3]:
+                raise HonestyError(f"canvas point {p} is covered by window {n['label']!r}")
+        return p
+
+    def shortcut(self, combo, menu):
+        """Presses a keyboard shortcut after checking that the menu item
+        `menu` (path) shows it, as a person would learn it."""
+        *path, item = menu
+        for i, label in enumerate(path):
+            n = self.find(label + " ⏵", timeout=2) if i > 0 and self.exists(label + " ⏵") else self.find(label)
+            if i == 0:
+                self.click_node(n)
+            else:
+                self.move(self.vcenter(n))
+                time.sleep(0.4)
+        it = self.find_item(item)
+        shown = (it["label"] or it["value"]).lower().replace(" ", "")
+        if combo.lower().replace(" ", "") not in shown:
+            raise HonestyError(f"shortcut {combo} is not shown on menu item {it['label']!r}")
+        # Close the menu again (click its title), then use the shortcut.
+        self.click_node(self.find(path[0]))
+        self.key(combo)
 
     def click_label(self, label, role=None, contains=False, double=False, index=0):
         n = self.find(label, role, contains, index=index)
-        self.click(self.center(n), double=double)
+        self.click_node(n, double=double)
         return n
 
     def menu(self, *path):

@@ -93,7 +93,7 @@ def select_all_meshes(h):
     ys = [m["bbox"][1] for m in c["meshes"]] + [m["bbox"][3] for m in c["meshes"]]
     a = (max(r[0] + 4, min(xs) - 20), max(r[1] + 4, min(ys) - 20))
     b = (min(r[2] - 4, max(xs) + 20), min(r[3] - 4, max(ys) + 20))
-    h.drag(a, b)
+    h.drag(h.canvas_point(a), b)
 
 
 def inside(p, b, pad=2):
@@ -235,7 +235,9 @@ def set_param(h, name, where, lo=None, hi=None):
     if where == "mid":
         reset_params(h)
         return
-    r = param_slider(h, name)["rect"]
+    sl = param_slider(h, name)
+    h.vcenter(sl)  # reachable (visible, on top, enabled)
+    r = sl["rect"]
     inset = (r[3] - r[1]) / 2
     v = param_value(h, name)
     lo = -30.0 if lo is None else lo
@@ -311,7 +313,7 @@ def select_mesh(h, name):
 def canvas_drag_object(h, mesh_id, dx, dy):
     """Drags the selected object on the canvas from an exposed point of one
     of its meshes (moves it in the current keyform)."""
-    p = exposed_point(h, mesh_id)
+    p = h.canvas_point(exposed_point(h, mesh_id))
     h.drag(p, (p[0] + dx, p[1] + dy), steps=15)
 
 
@@ -322,7 +324,7 @@ def rubber_band_points(h, mesh_id, region):
     w, ht = b[2] - b[0], b[3] - b[1]
     a = (b[0] + w * region[0] - 6, b[1] + ht * region[1] - 6)
     z = (b[0] + w * region[2] + 6, b[1] + ht * region[3] + 6)
-    h.drag(a, z, steps=10)
+    h.drag(h.canvas_point(a), z, steps=10)
 
 
 def drag_selected_points(h, mesh_id, region, dx, dy):
@@ -334,7 +336,7 @@ def drag_selected_points(h, mesh_id, region, dx, dy):
     pts = [p for p in m["points"] if x0 <= p[0] <= x1 and y0 <= p[1] <= y1]
     if not pts:
         raise RuntimeError(f"no points of {mesh_id} in {region}")
-    p = pts[0]
+    p = h.canvas_point(tuple(pts[0]))
     h.drag(p, (p[0] + dx, p[1] + dy), steps=15)
 
 
@@ -371,7 +373,7 @@ def keys_eyes(h, psd, out):
         set_param(h, param, "min", 0.0, 1.0)
         # Workflow fix found here: Edit ▸ Select All (Ctrl+A) selects the
         # points of the selected object; Escape now deselects as the menu said.
-        h.key("ctrl+a")
+        h.shortcut("ctrl+a", ("Edit", "Select All"))
         drag_selected_points(h, mesh, (0.0, 0.0, 1.0, 1.0), 0, 22)
         reset_params(h)
 
@@ -387,12 +389,12 @@ def keys_mouth(h, psd, out):
     low = [p for p in m["points"] if p[1] > b[1] + 0.55 * (b[3] - b[1])]
     if not low:
         raise RuntimeError("no lower mouth vertices")
-    h.click(tuple(low[0]))
+    h.click(h.canvas_point(tuple(low[0])))
     for p in low[1:]:
         h.key_down("Shift_L")
-        h.click(tuple(p))
+        h.click(h.canvas_point(tuple(p)))
         h.key_up("Shift_L")
-    h.drag(tuple(low[0]), (low[0][0], low[0][1] + 18), steps=15)
+    h.drag(h.canvas_point(tuple(low[0])), (low[0][0], low[0][1] + 18), steps=15)
     reset_params(h)
 
 
@@ -536,14 +538,28 @@ def new_animation(h, psd, out):
 
 
 def timeline_row(h, name):
-    rows = [n for n in h.nodes(name, role="Row")]
-    if not rows:
-        raise RuntimeError(f"no timeline row {name!r}")
-    return rows[0]
+    """A timeline attribute row, scrolled into view (wheel over the rows)."""
+    for i in range(40):
+        rows = [n for n in h.nodes(name, role="Row")]
+        if not rows:
+            raise RuntimeError(f"no timeline row {name!r}")
+        vis = [n for n in rows if h.reachable(n)]
+        if vis:
+            return vis[0]
+        ruler = h.find("Frame", role="Slider")
+        over = (ruler["rect"][0] - 60, ruler["rect"][3] + 40)
+        # Rows scrolled out of view have empty bounds at their own y.
+        down = rows[0]["rect"][1] > ruler["rect"][3]
+        h.move(over)
+        h.button(5 if down else 4, True)
+        h.button(5 if down else 4, False)
+        h.settle(2)
+    raise RuntimeError(f"timeline row {name!r} not reachable")
 
 
 def set_frame(h, frame):
     ruler = h.find("Frame", role="Slider")
+    h.vcenter(ruler)
     total = float(ruler["value"].split("/")[1])
     r = ruler["rect"]
     x = r[0] + (r[2] - r[0]) * frame / total

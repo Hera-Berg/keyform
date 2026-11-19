@@ -3394,6 +3394,33 @@ mod e2e_regressions {
         assert_eq!(d.selected_hit(c, 5.0), None);
     }
 
+    /// Moving a slider in the Animation workspace keys the value at the
+    /// playhead: a new key on a frame without one, an updated key on a frame
+    /// with one (reference behaviour, no toggle).
+    #[test]
+    fn slider_keys_at_the_playhead() {
+        let (d0, path) = character("e2e-slider-key");
+        let p = d0
+            .model
+            .parameters
+            .iter()
+            .position(|q| q.id == "ParamAngleX")
+            .unwrap();
+        let mut log = Log::default();
+        let mut a = Document::new_animation(&path, &mut log).unwrap();
+        a.anim.as_mut().unwrap().frame = 15.0;
+        assert!(a.anim_key_param(p, 12.0));
+        let keys = |a: &Document| a.anim.as_ref().unwrap().attr().unwrap().curve.keys.clone();
+        assert_eq!(keys(&a).len(), 1);
+        assert_eq!((keys(&a)[0].frame, keys(&a)[0].value as f32), (15, 12.0));
+        assert!(a.anim_key_param(p, -5.0));
+        assert_eq!(keys(&a).len(), 1, "updated, not added");
+        assert_eq!(keys(&a)[0].value as f32, -5.0);
+        a.anim.as_mut().unwrap().frame = 40.0;
+        a.anim_key_param(p, 3.0);
+        assert_eq!(keys(&a).len(), 2);
+    }
+
     /// "Add key at playhead" selects the new key.
     #[test]
     fn add_key_selects_the_new_key() {

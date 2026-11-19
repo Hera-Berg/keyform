@@ -38,7 +38,11 @@ fn row_label(
     } else {
         Sense::click()
     };
-    let r = ui.add(egui::Button::selectable(selected, text).sense(sense));
+    let r = ui
+        .add(egui::Button::selectable(selected, text).sense(sense))
+        .on_hover_text(crate::i18n::tr(
+            "Click to select; Ctrl+click or Shift+click adds to or removes from the selection",
+        ));
     if dnd && r.drag_started() {
         egui::DragAndDrop::set_payload(ui.ctx(), DragRow(me));
     }
@@ -943,7 +947,13 @@ fn param_row(
                     .clamping(egui::SliderClamping::Always),
             );
             if r.changed() {
-                doc.set_manual(p, v);
+                // Animation workspace: the value is keyed at the playhead
+                // (as in the reference); elsewhere it is set by hand.
+                if doc.mode == crate::document::Mode::Animation && doc.anim.is_some() {
+                    doc.anim_key_param(p, v);
+                } else {
+                    doc.set_manual(p, v);
+                }
             }
             if r.double_clicked() {
                 doc.release_manual(p);

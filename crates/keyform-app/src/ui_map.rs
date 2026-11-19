@@ -82,8 +82,26 @@ impl egui::Plugin for UiMap {
             return;
         };
         self.frame += 1;
+        // Clipped interact rects and layers of this pass's widgets (keyed by
+        // the AccessKit node id): what is actually visible and on top.
+        let widgets: std::collections::HashMap<
+            egui::accesskit::NodeId,
+            (egui::Rect, egui::LayerId, bool),
+        > = ctx.viewport(|vp| {
+            vp.prev_pass
+                .widgets
+                .layers()
+                .flat_map(|(_, ws)| ws.iter())
+                .map(|w| {
+                    (
+                        w.id.accesskit_id(),
+                        (w.interact_rect, w.layer_id, w.enabled),
+                    )
+                })
+                .collect()
+        });
         let mut nodes = Vec::new();
-        for (_, n) in &update.nodes {
+        for (id, n) in &update.nodes {
             let Some(b) = n.bounds() else { continue };
             let label = n.label().unwrap_or_default().to_owned();
             let value = n.value().unwrap_or_default().to_owned();
@@ -100,11 +118,32 @@ impl egui::Plugin for UiMap {
             if label.is_empty() && value.is_empty() && !interactive {
                 continue;
             }
+            // Visible part (clipped to its scroll area / panel) and whether a
+            // higher layer (window, popup) covers its centre.
+            let (visible, covered) = match widgets.get(id) {
+                Some((r, layer, _)) => {
+                    let covered = r.is_positive()
+                        && ctx.layer_id_at(r.center()).is_some_and(|top| top != *layer);
+                    (
+                        r.is_positive()
+                            .then(|| [r.min.x, r.min.y, r.max.x, r.max.y]),
+                        covered,
+                    )
+                }
+                // Nodes without a widget (custom-painted rows) clip their own
+                // bounds before they are published.
+                None => (
+                    Some([b.x0 as f32, b.y0 as f32, b.x1 as f32, b.y1 as f32]),
+                    false,
+                ),
+            };
             nodes.push(json!({
                 "role": format!("{:?}", n.role()),
                 "label": label,
                 "value": value,
                 "rect": [b.x0, b.y0, b.x1, b.y1],
+                "visible": visible,
+                "covered": covered,
                 "disabled": n.is_disabled(),
                 "toggled": n.toggled().map(|t| format!("{t:?}")),
                 "selected": n.is_selected(),

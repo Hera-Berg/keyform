@@ -344,7 +344,6 @@ impl AnimState {
         true
     }
 
-    /// Undo (`redo` = false) or redo; returns the step's name.
     /// "Add key at playhead" on the selected attribute: a key with the
     /// curve's current value; the new key becomes the selected key, so its
     /// value can be typed at once. Returns its index.
@@ -365,6 +364,7 @@ impl AnimState {
         self.key
     }
 
+    /// Undo (`redo` = false) or redo; returns the step's name.
     pub fn step(&mut self, redo: bool) -> Option<String> {
         let (name, step) = if redo {
             self.redo.pop()?
@@ -466,6 +466,41 @@ fn linked_model(doc: &Can3Document, can3: &Path) -> Option<PathBuf> {
 }
 
 impl Document {
+    /// A parameter value set by hand in the Animation workspace: a key at the
+    /// playhead on the model track's attribute for parameter `p` — created
+    /// when the frame has none, updated when it has one; no auto-key toggle
+    /// (observed in the reference 5.3.04, 2026-11-19). The attribute becomes
+    /// the selected row. Returns whether the animation changed.
+    pub fn anim_key_param(&mut self, p: usize, v: f32) -> bool {
+        use keyform_anim::scene::set_key;
+        let model = &self.model;
+        let Some(st) = self.anim.as_mut() else {
+            return false;
+        };
+        let Some((ti, k, ct)) = st.model_track_in(st.scene).and_then(|(ti, m)| {
+            let k = m
+                .params
+                .iter()
+                .position(|a| param_index(model, a) == Some(p))?;
+            let ct = st
+                .scene()
+                .map(|s| s.default_param_curve)
+                .unwrap_or_default();
+            Some((ti, k, ct))
+        }) else {
+            return false;
+        };
+        st.selected = Some((ti, AttrRef::Param(k)));
+        let changed = st.edit("Set key", |c, f| {
+            set_key(c, f as i32, v.into(), ct);
+        });
+        let f0 = st.frame.round() as i32;
+        st.key = st
+            .attr()
+            .and_then(|a| a.curve.keys.iter().position(|x| x.frame == f0));
+        changed
+    }
+
     /// Opens a `.can3` with its linked model in the Animation workspace.
     pub fn open_animation(path: &Path, log: &mut Log) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1938,8 +1973,13 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             );
             let p = ui.painter_at(rect);
             let x_of = |f: f64| rect.min.x + LABEL_W + (f as f32) * ppf;
-            // Ruler with the work area.
-            let ruler = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), ROW_H));
+            // Ruler with the work area, pinned to the top of the visible area
+            // so the playhead can be set while the rows are scrolled.
+            let ruler_top = rect.min.y.max(ui.clip_rect().min.y);
+            let ruler = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, ruler_top),
+                egui::vec2(rect.width(), ROW_H),
+            );
             p.rect_filled(ruler, 0.0, tokens.list_background);
             // The ruler as an accessible slider: frame 0 … duration.
             ui.ctx()
@@ -1988,6 +2028,17 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     );
                 }
             }
+            // The playhead on the ruler, then rows clipped below the ruler.
+            {
+                let xh = x_of(st.frame);
+                p.line_segment(
+                    [egui::pos2(xh, ruler.top()), egui::pos2(xh, ruler.bottom())],
+                    egui::Stroke::new(1.5, tokens.error),
+                );
+            }
+            let rows_clip = egui::Rect::from_min_max(egui::pos2(rect.min.x, ruler.max.y), rect.max)
+                .intersect(ui.clip_rect());
+            let p = p.with_clip_rect(rows_clip);
             // Rows.
             for (r, (which, a)) in rows.iter().enumerate() {
                 let y = rect.min.y + ROW_H * (r as f32 + 1.0);
@@ -1998,19 +2049,33 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 let selected = st.selected == Some((ti, *which));
                 // Painted rows get an accessible node each (name, bounds,
                 // selected): screen readers and scripted tests find them.
+                let clip_rect = rows_clip;
                 ui.ctx()
                     .accesskit_node_builder(ui.id().with(("timeline-row", r)), |b| {
+                        let clip = clip_rect;
                         b.set_role(egui::accesskit::Role::Row);
                         b.set_label(if a.name.is_empty() {
                             a.id.clone()
                         } else {
                             a.name.clone()
                         });
+                        // Only the visible part: rows scrolled out of view
+                        // are published with empty bounds.
+                        let v = egui::Rect::from_min_max(
+                            row.min,
+                            egui::pos2(row.min.x + LABEL_W, row.max.y),
+                        )
+                        .intersect(clip);
+                        let v = if v.is_positive() {
+                            v
+                        } else {
+                            egui::Rect::from_min_max(row.min, row.min)
+                        };
                         b.set_bounds(egui::accesskit::Rect {
-                            x0: row.min.x.into(),
-                            y0: row.min.y.into(),
-                            x1: (row.min.x + LABEL_W).into(),
-                            y1: row.max.y.into(),
+                            x0: v.min.x.into(),
+                            y0: v.min.y.into(),
+                            x1: v.max.x.into(),
+                            y1: v.max.y.into(),
                         });
                         if selected {
                             b.set_selected(true);
@@ -2088,7 +2153,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     st.playing = false;
                 }
                 if resp.clicked() && pos.y > ruler.bottom() {
-                    let r = ((pos.y - ruler.bottom()) / ROW_H) as usize;
+                    let r = ((pos.y - rect.min.y - ROW_H) / ROW_H) as usize;
                     if let Some((which, _)) = rows.get(r) {
                         st.selected = Some((ti, *which));
                     }

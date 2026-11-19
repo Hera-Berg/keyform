@@ -677,3 +677,4 @@ The ArtPaths have different keyforms.	アートパスのキーフォームが異
 ArtPaths are edited in the Modeling workspace of a project.	アートパスはプロジェクトのモデリングワークスペースで編集します。
 Aliases aren't saved by the editor (5.3.04): shown only	エイリアスはエディタに保存されません（5.3.04）：表示のみ
 Select All	すべて選択
+Click to select; Ctrl+click or Shift+click adds to or removes from the selection	クリックで選択、Ctrl+クリックまたは Shift+クリックで選択に追加／解除
