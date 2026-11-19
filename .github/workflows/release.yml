@@ -42,7 +42,7 @@ jobs:
         with: { name: vendored-src }
       - run: tar -xJf keyform-*-vendored-src.tar.xz --strip-components=1 && rm keyform-*-vendored-src.tar.xz
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libfuse2
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev libfuse2
       - run: cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app -p keyform-cli
       - name: appimagetool (pinned release)
         run: |

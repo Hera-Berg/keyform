@@ -33,7 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux system libraries (windowing for the app crate)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev
       - run: cargo clippy --workspace --all-targets --locked
       # Sample-model tests pass vacuously without KEYFORM_SAMPLES (licensed
       # data is never in the repository); GPU tests skip without an adapter.

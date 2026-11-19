@@ -9,7 +9,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       mesa-vulkan-drivers libvulkan1 \
       libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
-      libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config xz-utils \
+      libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev pkg-config xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && rustup component add clippy rustfmt
 
