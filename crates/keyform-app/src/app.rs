@@ -933,7 +933,7 @@ impl KeyformApp {
             ui.menu_button(crate::i18n::tr("Show"), |ui| {
                 ui.checkbox(
                     &mut self.settings.mask_warnings,
-                    "Always show warnings regarding masks",
+                    crate::i18n::tr("Always show warnings regarding masks"),
                 );
                 ui.menu_button(crate::i18n::tr("Language"), |ui| {
                     for l in crate::i18n::Lang::ALL {
@@ -1004,7 +1004,7 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         has,
-                        egui::Checkbox::new(&mut mirror, "Reflect Horizontally"),
+                        egui::Checkbox::new(&mut mirror, crate::i18n::tr("Reflect Horizontally")),
                     )
                     .changed()
                 {
@@ -1582,11 +1582,11 @@ impl KeyformApp {
             let (mode, editable) = doc
                 .as_ref()
                 .map_or((Mode::Viewer, false), |d| (d.mode, d.editable()));
-            let label = match mode {
+            let label = crate::i18n::tr(match mode {
                 Mode::Modeling => "Modeling",
                 Mode::Viewer => "Viewer",
                 Mode::Animation => "Animation",
-            };
+            });
             let has_anim = doc.as_ref().is_some_and(|d| d.anim.is_some());
             let mut chosen = mode;
             egui::ComboBox::from_id_salt("workspace")
@@ -1634,7 +1634,11 @@ impl KeyformApp {
                 (3, "Edit Level 3 (rough)"),
             ] {
                 let b = egui::Button::selectable(current == l && modeling, l.to_string());
-                if ui.add_enabled(modeling, b).on_hover_text(tip).clicked() {
+                if ui
+                    .add_enabled(modeling, b)
+                    .on_hover_text(crate::i18n::tr(tip))
+                    .clicked()
+                {
                     chosen = Some(l);
                 }
             }
@@ -1653,7 +1657,7 @@ impl KeyformApp {
                     && d.soft_select.is_none()
                     && d.path_tool.is_none();
                 if ui
-                    .add(egui::Button::selectable(arrow, "Arrow"))
+                    .add(egui::Button::selectable(arrow, crate::i18n::tr("Arrow")))
                     .on_hover_text(crate::i18n::tr(
                         "Arrow tool (A): click to select, drag for a rectangle",
                     ))
@@ -1664,7 +1668,7 @@ impl KeyformApp {
                     let _ = d.set_path_tool(false);
                 }
                 if ui
-                    .add(egui::Button::selectable(d.lasso, "Lasso"))
+                    .add(egui::Button::selectable(d.lasso, crate::i18n::tr("Lasso")))
                     .on_hover_text(crate::i18n::tr(
                         "Lasso Tool (L): drag on empty space to lasso points",
                     ))
@@ -1674,7 +1678,10 @@ impl KeyformApp {
                     let _ = d.set_soft_select(false);
                 }
                 if ui
-                    .add(egui::Button::selectable(d.soft_select.is_some(), "Soft"))
+                    .add(egui::Button::selectable(
+                        d.soft_select.is_some(),
+                        crate::i18n::tr("Soft"),
+                    ))
                     .on_hover_text(crate::i18n::tr(
                         "Brush Selection tool (B): paint weighted point selections",
                     ))
@@ -1684,7 +1691,10 @@ impl KeyformApp {
                     let _ = d.set_soft_select(on);
                 }
                 if ui
-                    .add(egui::Button::selectable(d.path_tool.is_some(), "Path"))
+                    .add(egui::Button::selectable(
+                        d.path_tool.is_some(),
+                        crate::i18n::tr("Path"),
+                    ))
                     .on_hover_text(crate::i18n::tr("Control Point edit (P): deform paths"))
                     .clicked()
                 {
@@ -1694,7 +1704,10 @@ impl KeyformApp {
                     }
                 }
                 if ui
-                    .add(egui::Button::selectable(d.temp_path.is_some(), "Temp path"))
+                    .add(egui::Button::selectable(
+                        d.temp_path.is_some(),
+                        crate::i18n::tr("Temp path"),
+                    ))
                     .on_hover_text(crate::i18n::tr(
                         "Temporary path: bend the selected points along a temporary line",
                     ))
@@ -2035,7 +2048,7 @@ impl KeyformApp {
                 ui.horizontal(|ui| {
                     ui.checkbox(
                         &mut self.settings.mask_dialog_suppressed,
-                        "Do not show again",
+                        crate::i18n::tr("Do not show again"),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ok = ui.button(crate::i18n::tr("OK")).clicked();
@@ -2990,7 +3003,7 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
         .show(ui, |ui| {
             if let Some(s) = doc.mesh_edit.as_mut() {
                 use crate::mesh_edit::MeshTool;
-                ui.strong("Mesh edit");
+                ui.strong(crate::i18n::tr("Mesh edit"));
                 ui.horizontal_wrapped(|ui| {
                     for (t, name, tip) in [
                         (
@@ -3016,7 +3029,7 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
                     ] {
                         if ui
                             .add(egui::Button::selectable(s.tool == t, name))
-                            .on_hover_text(tip)
+                            .on_hover_text(crate::i18n::tr(tip))
                             .clicked()
                         {
                             s.tool = t;
@@ -3104,12 +3117,12 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
                 return;
             }
             if doc.lasso {
-                ui.strong("Lasso Tool");
+                ui.strong(crate::i18n::tr("Lasso Tool"));
                 ui.label(crate::i18n::tr(
                     "Drag on empty space to lasso points of the selected objects (Shift adds).",
                 ));
             } else {
-                ui.strong("Arrow tool");
+                ui.strong(crate::i18n::tr("Arrow tool"));
                 ui.label(crate::i18n::tr(
                     "Click to select (Shift toggles); drag on empty space for a rectangle.",
                 ));

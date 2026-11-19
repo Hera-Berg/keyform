@@ -137,7 +137,7 @@ pub fn sway_dialog(
             );
             ui.checkbox(
                 &mut st.sync,
-                "Synchronize left and right side setting values",
+                crate::i18n::tr("Synchronize left and right side setting values"),
             );
             ui.label(egui::RichText::new(crate::i18n::tr("Left side keyform")).strong());
             side_ui(ui, "sway-left", &mut st.settings.left);
@@ -151,7 +151,9 @@ pub fn sway_dialog(
                 run = ui.button(crate::i18n::tr("Update keyform")).clicked();
                 ui.checkbox(
                     &mut st.auto,
-                    "Automatically update the keyform when the setting value changes",
+                    crate::i18n::tr(
+                        "Automatically update the keyform when the setting value changes",
+                    ),
                 );
             });
             if let Some(m) = &st.message {

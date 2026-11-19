@@ -1345,7 +1345,7 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
                     ui.label(crate::i18n::tr(""));
                     ui.checkbox(
                         &mut s.bezier_restricted,
-                        "Restriction for SDK (handles move vertically only)",
+                        crate::i18n::tr("Restriction for SDK (handles move vertically only)"),
                     );
                     ui.end_row();
                     ui.label(crate::i18n::tr(""));
@@ -1618,7 +1618,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 None => (None, None),
             };
             if let (Some(ti), Some((mut local, mut apply))) = (ti, mode) {
-                ui.toggle_value(&mut st.form_tool, "Form Edit")
+                ui.toggle_value(&mut st.form_tool, crate::i18n::tr("Form Edit"))
                     .on_hover_text(crate::i18n::tr("Drag art mesh vertices on the canvas to make a form key at the playhead"));
                 let (l0, a0) = (local, apply);
                 egui::ComboBox::from_id_salt("form_mode")
@@ -1655,7 +1655,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             ui.menu_button(crate::i18n::tr("Events"), |ui| {
                 let f = st.frame.round() as i32;
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text("event text").desired_width(140.0));
+                    ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text(crate::i18n::tr("event text")).desired_width(140.0));
                     if ui.button(format!("Add at frame {f}")).clicked() && !st.event_text.is_empty() {
                         let t = std::mem::take(&mut st.event_text);
                         st.set_event(f, Some(t));

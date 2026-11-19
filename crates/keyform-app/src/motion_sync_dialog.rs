@@ -618,7 +618,7 @@ fn audio_tab(ui: &mut egui::Ui, s: &mut MotionSyncSetting) {
         .striped(true)
         .show(ui, |ui| {
             for h in ["Audio element", "Scale", "Enabled"] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(crate::i18n::tr(h)).strong());
             }
             ui.end_row();
             for a in &mut s.audio {
@@ -642,7 +642,7 @@ fn parameter_tab(ui: &mut egui::Ui, m: &Model, s: &mut MotionSyncSetting, missin
         .striped(true)
         .show(ui, |ui| {
             for h in ["Parameter", "Damper", "Smooth", "", ""] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(crate::i18n::tr(h)).strong());
             }
             ui.end_row();
             for (k, c) in s.cubism.iter_mut().enumerate() {

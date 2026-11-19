@@ -145,7 +145,7 @@ fn motions_ui(
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut st.new_group)
-                            .hint_text("Group (e.g. Idle)")
+                            .hint_text(crate::i18n::tr("Group (e.g. Idle)"))
                             .desired_width(110.0),
                     );
                     if ui.button(crate::i18n::tr("Add motions…")).clicked() {
@@ -244,7 +244,7 @@ fn expressions_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState,
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut st.new_expression)
-                            .hint_text("Name")
+                            .hint_text(crate::i18n::tr("Name"))
                             .desired_width(110.0),
                     );
                     let name = st.new_expression.trim().to_owned();
@@ -451,7 +451,7 @@ fn pose_editor(ui: &mut egui::Ui, doc: &mut Document) {
                     g.remove(ni);
                 }
                 egui::ComboBox::from_id_salt(("poseadd", gi))
-                    .selected_text("Add part…")
+                    .selected_text(crate::i18n::tr("Add part…"))
                     .show_ui(ui, |ui| {
                         for id in &part_ids {
                             if ui.selectable_label(false, id).clicked()
@@ -495,7 +495,7 @@ fn hit_areas_ui(ui: &mut egui::Ui, doc: &mut Document) {
                 ui.add(
                     egui::TextEdit::singleline(name)
                         .desired_width(90.0)
-                        .hint_text("Name"),
+                        .hint_text(crate::i18n::tr("Name")),
                 );
                 ui.label(id.as_str());
                 if icons::icon_button(ui, Icon::Stop, "Remove").clicked() {
@@ -522,9 +522,9 @@ fn hit_areas_ui(ui: &mut egui::Ui, doc: &mut Document) {
 fn groups_ui(ui: &mut egui::Ui, doc: &mut Document) {
     egui::CollapsingHeader::new("Eye blinking and lip-sync").show(ui, |ui| {
         egui::Grid::new("effects").striped(true).show(ui, |ui| {
-            ui.strong("Parameter");
-            ui.strong("Eye blink");
-            ui.strong("Lip-sync");
+            ui.strong(crate::i18n::tr("Parameter"));
+            ui.strong(crate::i18n::tr("Eye blink"));
+            ui.strong(crate::i18n::tr("Lip-sync"));
             ui.end_row();
             for (i, p) in doc.model.parameters.iter().enumerate() {
                 ui.label(&p.name).on_hover_text(&p.id);

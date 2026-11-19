@@ -176,7 +176,7 @@ pub fn dialog(
                 );
                 ui.checkbox(
                     &mut p.register_only,
-                    "< Register PSD file without adding ArtMeshes >",
+                    crate::i18n::tr("< Register PSD file without adding ArtMeshes >"),
                 );
                 // Existing PSDs, newest first: Replace (§7).
                 for (k, li) in doc.model.layered_images.iter().enumerate().rev() {

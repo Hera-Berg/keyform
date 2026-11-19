@@ -268,7 +268,10 @@ pub fn settings_window(
     egui::Window::new(crate::i18n::tr("External Application Integration Settings"))
         .open(open)
         .show(ctx, |ui| {
-            ui.checkbox(enabled, "Enable external application integration");
+            ui.checkbox(
+                enabled,
+                crate::i18n::tr("Enable external application integration"),
+            );
             ui.horizontal(|ui| {
                 ui.label(crate::i18n::tr("Port (127.0.0.1 only):"));
                 ui.add_enabled(!*enabled, egui::DragValue::new(port).range(1024..=65535));
@@ -314,7 +317,7 @@ pub fn settings_window(
                 .show(ui, |ui| {
                     for (i, (name, _, ok)) in plugins.list.iter_mut().enumerate() {
                         ui.label(name.as_str());
-                        ui.checkbox(ok, "Approved");
+                        ui.checkbox(ok, crate::i18n::tr("Approved"));
                         if ui.small_button(crate::i18n::tr("Remove")).clicked() {
                             remove = Some(i);
                         }

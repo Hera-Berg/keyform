@@ -113,7 +113,7 @@ pub fn parts_ui(
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(filter)
-                .hint_text("Filter by Text")
+                .hint_text(crate::i18n::tr("Filter by Text"))
                 .desired_width(ui.available_width() - 60.0),
         );
         ui.toggle_value(show_deformers, "D")
@@ -142,7 +142,7 @@ pub fn parts_ui(
                 open_settings = true;
                 ui.close();
             }
-            ui.checkbox(dnd_disabled, "Disable drag & drop");
+            ui.checkbox(dnd_disabled, crate::i18n::tr("Disable drag & drop"));
             let mut bulk = None;
             parts_menu(ui, &mut bulk);
             if let Some(b) = bulk {
@@ -712,7 +712,7 @@ pub fn parameter_ui(
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(filter)
-                .hint_text("Filter by Text")
+                .hint_text(crate::i18n::tr("Filter by Text"))
                 .desired_width(ui.available_width() - 90.0),
         );
         if ui
@@ -1050,7 +1050,10 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
     if let Selection::ArtMesh(a) = s {
         let mut culling = doc.model.art_meshes[a].culling;
         if ui
-            .add_enabled(editable, egui::Checkbox::new(&mut culling, "Culling"))
+            .add_enabled(
+                editable,
+                egui::Checkbox::new(&mut culling, crate::i18n::tr("Culling")),
+            )
             .changed()
         {
             doc.edit("Change Culling", |m| {
@@ -1119,7 +1122,10 @@ fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Lo
     });
     let mut invert = doc.model.art_meshes[a].invert_clip;
     if ui
-        .add_enabled(editable, egui::Checkbox::new(&mut invert, "Invert Mask"))
+        .add_enabled(
+            editable,
+            egui::Checkbox::new(&mut invert, crate::i18n::tr("Invert Mask")),
+        )
         .changed()
     {
         let v = doc.model.target_version;
@@ -1155,7 +1161,7 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &mut Document, log: &mut Log) {
     let m = &doc.model;
     let row = |ui: &mut egui::Ui, k: &str, v: String| {
         ui.horizontal(|ui| {
-            ui.weak(k);
+            ui.weak(crate::i18n::tr(k));
             ui.label(v);
         });
     };

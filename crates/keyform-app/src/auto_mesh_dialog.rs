@@ -129,7 +129,7 @@ pub fn dialog(
         .show(ctx, |ui| {
             let presets = presets();
             let label = st.preset.map_or("(custom)", |p| presets[p].0);
-            egui::ComboBox::from_label("Preset")
+            egui::ComboBox::from_label(crate::i18n::tr("Preset"))
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     for (k, (name, s, d)) in presets.iter().enumerate() {

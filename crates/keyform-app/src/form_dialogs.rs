@@ -247,7 +247,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
             };
             let enabled = doc.editable() && keys >= 3;
             ui.add_enabled_ui(enabled, |ui| {
-                ui.strong("Interpolation method");
+                ui.strong(crate::i18n::tr("Interpolation method"));
                 let label = |k: K| match k {
                     K::Linear => "Linear Interpolation",
                     K::Ellipse => "Ellipse Interpolation",
@@ -261,7 +261,7 @@ fn extended_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document
                             ui.selectable_value(&mut k2, k, label(k));
                         }
                     });
-                ui.strong("Interpolation adjustment");
+                ui.strong(crate::i18n::tr("Interpolation adjustment"));
                 let (mut n2, mut s2) = (n, s);
                 ui.add_enabled_ui(kind != K::Linear, |ui| {
                     ui.horizontal(|ui| {
@@ -403,10 +403,10 @@ fn mirror_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, 
                 ui.label(crate::i18n::tr("Source parameter"));
                 param_combo(ui, "mirror-param", m, &choices, &mut d.p);
             });
-            ui.strong("Basic Settings");
+            ui.strong(crate::i18n::tr("Basic Settings"));
             ui.checkbox(&mut d.horizontal, crate::i18n::tr("Flip horizontally"));
             ui.checkbox(&mut d.vertical, crate::i18n::tr("Flip vertically"));
-            ui.strong("Mirror Axis Settings");
+            ui.strong(crate::i18n::tr("Mirror Axis Settings"));
             ui.add_enabled_ui(!all_deformers, |ui| {
                 ui.radio_value(&mut d.axis, None, crate::i18n::tr("Use Center of Canvas"));
                 ui.horizontal(|ui| {
@@ -719,14 +719,14 @@ fn flip_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, lo
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.strong("Flip");
+            ui.strong(crate::i18n::tr("Flip"));
             ui.checkbox(&mut s.horizontal, crate::i18n::tr("Flip horizontally"));
             ui.checkbox(&mut s.vertical, crate::i18n::tr("Flip vertically"));
             ui.checkbox(
                 &mut s.all_keyforms,
-                "All keyforms (not only the current one)",
+                crate::i18n::tr("All keyforms (not only the current one)"),
             );
-            ui.collapsing("Parameters to reflect", |ui| {
+            ui.collapsing(crate::i18n::tr("Parameters to reflect"), |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(160.0)
                     .show(ui, |ui| {
@@ -742,10 +742,10 @@ fn flip_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document, lo
                         }
                     });
             });
-            ui.strong("Other");
+            ui.strong(crate::i18n::tr("Other"));
             ui.checkbox(
                 &mut s.flip_rotation_position,
-                "Flip rotation deformer position",
+                crate::i18n::tr("Flip rotation deformer position"),
             );
             ui.checkbox(
                 &mut s.keep_culling,
@@ -788,7 +788,7 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
         .resizable(false)
         .open(&mut open)
         .show(ctx, |ui| {
-            ui.strong("Parameter");
+            ui.strong(crate::i18n::tr("Parameter"));
             egui::Grid::new("corner-params")
                 .num_columns(2)
                 .show(ui, |ui| {
@@ -799,14 +799,14 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
                     param_combo(ui, "corner-p2", m, &choices, &mut d.p2);
                     ui.end_row();
                 });
-            ui.strong("Parameter Value to Reference");
+            ui.strong(crate::i18n::tr("Parameter Value to Reference"));
             ui.radio_value(&mut d.centre, false, crate::i18n::tr("Default value"));
             ui.radio_value(
                 &mut d.centre,
                 true,
                 crate::i18n::tr("Centre (min + max) / 2"),
             );
-            ui.strong("Keys to Overwrite");
+            ui.strong(crate::i18n::tr("Keys to Overwrite"));
             egui::Grid::new("corner-keys")
                 .num_columns(2)
                 .show(ui, |ui| {
@@ -817,7 +817,7 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
                     ui.checkbox(&mut d.corners[3], crate::i18n::tr("Bottom right"));
                     ui.end_row();
                 });
-            ui.strong("Target");
+            ui.strong(crate::i18n::tr("Target"));
             ui.horizontal_wrapped(|ui| {
                 ui.radio_value(
                     &mut d.target,
@@ -840,7 +840,7 @@ fn corners_dialog(ctx: &egui::Context, st: &mut FormDialogs, doc: &mut Document,
                     crate::i18n::tr("Selected objects"),
                 );
             });
-            ui.strong("Option");
+            ui.strong(crate::i18n::tr("Option"));
             ui.checkbox(&mut d.skip_locked, crate::i18n::tr("Skip locked objects"));
             ui.checkbox(
                 &mut d.skip_invisible,

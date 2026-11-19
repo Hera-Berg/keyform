@@ -442,7 +442,7 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
             if ui
                 .add_enabled(
                     editable,
-                    egui::Checkbox::new(&mut group, "Draw order group"),
+                    egui::Checkbox::new(&mut group, crate::i18n::tr("Draw order group")),
                 )
                 .changed()
             {
@@ -451,7 +451,10 @@ fn source_ui(ui: &mut egui::Ui, doc: &mut Document, s: Selection, editable: bool
                 });
             }
             if ui
-                .add_enabled(editable, egui::Checkbox::new(&mut off, "Offscreen drawing"))
+                .add_enabled(
+                    editable,
+                    egui::Checkbox::new(&mut off, crate::i18n::tr("Offscreen drawing")),
+                )
                 .changed()
             {
                 doc.edit("Change Offscreen Drawing", |m| {

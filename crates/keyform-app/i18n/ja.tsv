@@ -224,3 +224,415 @@ Remove redundant keys	冗長なキーを削除
 Kept as stored: shown and saved, not editable in Keyform yet	保存されたまま保持：表示と保存のみ（Keyform ではまだ編集できません）
 The parameter is used by art paths or aliases and cannot be deleted.	このパラメータはアートパスまたはエイリアスで使用されているため削除できません。
 Art paths are placed on this deformer; move them first.	このデフォーマにはアートパスが配置されています。先に移動してください。
+# Coverage round (session 18): animation, editing tools, dialogs, palettes.
+Scene settings	シーン設定
+Scene Name	シーン名
+Size	サイズ
+Frame rate	フレームレート
+Last frame	最終フレーム
+Work area	作業範囲
+Fade in / out (ms, −1 = unset)	フェードイン／アウト（ms、−1 = 未設定）
+Loop motion	モーションをループ
+Include in motion export	モーション書き出しに含める
+New parameter keys	新しいパラメータキー
+New part keys	新しいパーツキー
+Settings of Baking Animation from Physics	物理演算からのアニメーション焼き込み設定
+Parameters to apply physics to:	物理演算を適用するパラメータ：
+Select all	すべて選択
+Unselect all	すべて選択解除
+Keyframe Insertion Method	キーフレームの挿入方法
+Insert key to every frame	全フレームにキーを挿入
+Scene	シーン
+Scene settings…	シーン設定…
+Create new scene	新しいシーンを作成
+Delete scene	シーンを削除
+Add model track	モデルトラックを追加
+Add sound track (WAV)…	サウンドトラックを追加（WAV）…
+Currently only wav files are supported (16 bit or less PCM, 44100 Hz recommended). Use Bake Lip-sync to drive the mouth from it.	現在は WAV ファイルのみ対応しています（16 bit 以下の PCM、44100 Hz 推奨）。口を動かすには「リップシンクを焼き込み」を使います。
+Add scene track	シーントラックを追加
+Add image track…	画像トラックを追加…
+Import motion3.json…	motion3.json を読み込み…
+Bake Animation from Physics…	物理演算からアニメーションを焼き込み…
+Bake Animation from Motion-sync	モーションシンクからアニメーションを焼き込み
+Bake Lip-sync	リップシンクを焼き込み
+Write this sound's level as keys on the lip-sync volume	このサウンドの音量をリップシンク量のキーとして書き込みます
+Drag art mesh vertices on the canvas to make a form key at the playhead	キャンバス上でアートメッシュの頂点をドラッグすると、再生位置にフォームキーを作ります
+Adjustment Mode 1	調整モード 1
+Added to the final form	最終形状に加算
+Adjustment Mode 2	調整モード 2
+Added to the local form; the deformer still moves it	ローカル形状に加算（デフォーマの動きは残ります）
+Apply form edit	フォーム編集を適用
+Delete Form Edit	フォーム編集を削除
+Controllers	コントローラー
+Events	イベント
+No events.	イベントはありません。
+Delete Event	イベントを削除
+Play / Pause (Space)	再生／一時停止（Space）
+Stop: back to the work area start	停止：作業範囲の先頭へ戻る
+Loop	ループ
+Keyed only	キーのある項目のみ
+This scene has no model track.	このシーンにはモデルトラックがありません。
+Add key at playhead	再生位置にキーを追加
+Delete key	キーを削除
+Click a key first.	先にキーをクリックしてください。
+Animation…	アニメーション…
+(none)	（なし）
+Generate and Register Glue	接着を生成して登録
+Unbind Glue Vertices	接着頂点の結合を解除
+Options for Paste Form Special…	特殊貼り付けのオプション…
+Flip…	反転…
+Auto attach Edge (line)	エッジを自動接続（線）
+Automatically join vertices	頂点を自動で接続
+Reset Mesh	メッシュをリセット
+Edge swap	辺の入れ替え
+4 Division	4 分割
+Divide one triangle into four triangles	三角形を 4 つの三角形に分割します
+Merge Vertices	頂点を統合
+Delete Vertex	頂点を削除
+Apply Expression	表情を適用
+Enable Pose Switching	ポーズ切り替えを有効にする
+Parameter repeat	パラメータのループ
+Edit Level:	編集レベル：
+Control Point edit (P): deform paths	コントロールポイント編集（P）：デフォームパス
+Finish	完了
+Finish Mesh editing (Ctrl+E)	メッシュ編集を終了（Ctrl+E）
+Drop a .cmo3, .moc3 or .model3.json here	.cmo3、.moc3、.model3.json をここにドロップ
+Axis: vertical (left ↔ right)	軸：垂直（左 ↔ 右）
+Axis: horizontal (top ↔ bottom)	軸：水平（上 ↔ 下）
+Axis	軸
+Reset Axis Position	軸の位置をリセット
+Center of Canvas	キャンバスの中心
+Center of Selected Vertices	選択頂点の中心
+Connect	接続
+Automatically join vertices (Ctrl+R)	頂点を自動で接続（Ctrl+R）
+Bind	結合
+Unbind	結合解除
+Protect Edge exterior	外周のエッジを保護
+Mesh reconstruction	メッシュの再構成
+Mirror	ミラー
+Mirror Editing in Progress	ミラー編集中
+Glue:	接着：
+Done	完了
+Back to the Arrow tool	矢印ツールに戻る
+Automatic Mesh Generator	メッシュ自動生成
+The model has no blend-shape parameters.	このモデルにはブレンドシェイプパラメータがありません。
+Select objects that use this blend shape.	このブレンドシェイプを使うオブジェクトを選択します。
+Rules: 5 rows or fewer; no duplicate values; values within the parameter range; weights 0–100 %.	条件：5 行以下、値の重複なし、値はパラメータ範囲内、重みは 0〜100 %。
+Add To	追加先
+Warp Division	ワープの分割数
+Bezier Division	ベジェの分割数
+Continuous creation	連続作成
+Create	作成
+Image Output Settings	画像出力設定
+Number of Pixels	ピクセル数
+Magnification	倍率
+JPEG quality	JPEG 品質
+Image/Video Output Settings	画像・動画出力設定
+Output	出力
+Still images (PNG)	静止画（PNG）
+Still images (JPEG)	静止画（JPEG）
+GIF	GIF
+Video (MP4)	動画（MP4）
+Range	範囲
+Output All	すべて出力
+Output Work Area	作業範囲を出力
+Selected frame	選択フレーム
+(16 fps or less recommended)	（16 fps 以下を推奨）
+scene	シーン
+Make Background Transparent	背景を透明にする
+Port (127.0.0.1 only):	ポート（127.0.0.1 のみ）：
+Extended Interpolation	拡張補間
+Select an object with keys on this parameter.	このパラメータにキーを持つオブジェクトを選択してください。
+Points:	点：
+This parameter has fewer than 3 keys on the object.	このオブジェクトでは、このパラメータのキーが 3 つ未満です。
+About Number of Keys for Extended Interpolation	拡張補間のキー数について
+Extended interpolation requires at least 3 keyforms.\nWhen setting extended interpolation and changing to 2 keyforms or less, please select Linear Interpolation.	拡張補間にはキーフォームが 3 つ以上必要です。\nキーフォームを 2 つ以下にする場合は、線形補間に戻してください。
+Don't show again.	今後表示しない。
+Don't show again	今後表示しない
+Motion Mirroring	モーションの反転
+Source parameter	元のパラメータ
+Flip horizontally	左右反転
+Flip vertically	上下反転
+Use Center of Canvas	キャンバスの中心を使う
+Paste Form: pair copies with targets	フォーム貼り付け：コピー元と貼り付け先の対応
+Blend Form	フォームをブレンド
+Apply Rate	適用率
+Preview	プレビュー
+Options for Paste Form Special	特殊貼り付けのオプション
+Flip horizontally about x =	左右反転の軸 x =
+Centre	中心
+Flip vertically about y =	上下反転の軸 y =
+Flip	反転
+Cancel auto-adjusted culling	自動調整したカリングを取り消す
+Synthesize corners	四隅を合成
+Parameter 1	パラメータ 1
+Parameter 2	パラメータ 2
+Default value	既定値
+Centre (min + max) / 2	中央（最小 + 最大）/ 2
+Top left	左上
+Top right	右上
+Bottom left	左下
+Bottom right	右下
+All objects	すべてのオブジェクト
+All drawables	すべての描画オブジェクト
+All deformers	すべてのデフォーマ
+Selected objects	選択したオブジェクト
+Skip locked objects	ロック中のオブジェクトを除く
+Skip invisible objects	非表示のオブジェクトを除く
+Batch Reflect	一括反映
+Parameter:	パラメータ：
+Delete the existing keys and add 3 keys	既存のキーを削除して 3 つのキーを追加
+Pivot position:	回転中心の位置：
+Select an art mesh or a warp deformer.	アートメッシュかワープデフォーマを選択してください。
+Range of angle X / Y (°)	角度 X / Y の範囲（°）
+Perspective strength	遠近の強さ
+Centre of rotation	回転の中心
+Camera position	カメラ位置
+Z-direction offset	Z 方向のオフセット
+Rotation type	回転の種類
+From X-direction to −Y-direction	X 方向から −Y 方向へ
+From Y-direction to X-direction	Y 方向から X 方向へ
+XY-directions simultaneously	XY 方向を同時に
+Estimate depth from the keyform at the current values	現在の値のキーフォームから奥行きを推定
+Deformer generated successfully. Please specify each deformer and click the \"Generate Motion\" button to continue.	デフォーマを生成しました。各デフォーマを指定してから「動きを生成」ボタンを押してください。
+Angle X	角度 X
+Angle Y	角度 Y
+Draw Order	描画順
+The selected objects differ	選択したオブジェクトで値が異なります
+(mixed)	（混在）
+Bulk Set	一括設定
+Transparency	不透明度
+Multiply Color	乗算色
+Screen Color	スクリーン色
+Angle	角度
+Would you like to overwrite the draw order of all forms linked to this object with the current value?	このオブジェクトのすべてのフォームの描画順を、現在の値で上書きしますか？
+Blend mode	合成モード
+Handle length	ハンドルの長さ
+Circle radius	円の半径
+Intensity	強さ
+Setting:	設定：
+Sample Rate:	サンプルレート：
+Blending Ratio:	ブレンド比率：
+Smoothing:	スムージング：
+Audio analysis type:	音声解析の種類：
+Lip-sync (Keyform analyser)	リップシンク（Keyform の解析）
+Audio Elements:	音声要素：
+Show this element's shape on the model	この要素の形をモデルに表示
+Set	設定
+Add parameter…	パラメータを追加…
+Setting name:	設定名：
+Lip-sync	リップシンク
+Setting preset:	設定プリセット：
+New Model	新規モデル
+Create with specified size	サイズを指定して作成
+Width	幅
+pixel	ピクセル
+Height	高さ
+Fix Aspect Ratio	縦横比を固定
+New part	新規パーツ
+Show palette menu	パレットメニューを表示
+(no part tree)	（パーツ構成なし）
+Move Here	ここに移動
+Reverse Clipping ID Lookup	クリッピング ID の逆引き
+Reset	リセット
+Blend Shape parameter	ブレンドシェイプパラメータ
+Draw	描画
+Clipping	クリッピング
+Add mask…	マスクを追加…
+Select the clipping mask objects.	クリッピングマスクにするオブジェクトを選択してください。
+(layers not loaded)	（レイヤー未読み込み）
+Select/Edit Controller	コントローラーを選択・編集
+Add Single Point Controller	一点コントローラーを追加
+No controller tool	コントローラーツールなし
+Target follow	ターゲット追従
+Bake Animation from Parameter Controller	パラメータコントローラーからアニメーションを焼き込み
+Delete Controller	コントローラーを削除
+Export Parameter Controller…	パラメータコントローラーを書き出し…
+Import Parameter Controller…	パラメータコントローラーを読み込み…
+Letters, numbers and underscores; up to 63 characters; not starting with a number.	英数字とアンダースコア、63 文字まで、先頭は数字以外。
+Minimum	最小
+Default	既定
+Maximum	最大
+Blend Shape	ブレンドシェイプ
+Parts Settings	パーツ設定
+ID naming rules (hover)	ID の命名規則（ポインタを重ねて表示）
+Add control point	コントロールポイントを追加
+Delete control point	コントロールポイントを削除
+Delete path	パスを削除
+Fold line	折れ線
+add line automatically	線を自動で追加
+Deform Path width	デフォームパスの幅
+Deform Path hardness	デフォームパスの硬さ
+Path range reduction: 0 reduces the range gradually, 100 lets the path greatly affect the surroundings	パスの影響範囲：0 で範囲が徐々に狭まり、100 で周囲に大きく影響します
+Click to add points to the selected ArtMesh's path; drag points to deform. Alt deletes a point, Ctrl+Alt toggles a fold point, Shift keeps the selection.	クリックで選択中のアートメッシュのパスに点を追加し、点をドラッグして変形します。Alt で点を削除、Ctrl+Alt で折れ点を切り替え、Shift で選択を保ちます。
+Click to add points to the line; drag them to bend the selected points. Alt+click deletes a point; Shift constrains a drag.	クリックで線に点を追加し、ドラッグで選択した点を曲げます。Alt+クリックで点を削除、Shift でドラッグ方向を制限します。
+Confirm (Enter)	確定（Enter）
+Cancel (Esc)	キャンセル（Esc）
+No physics groups. Add one to start.	物理演算グループがありません。追加して始めてください。
+Calculate FPS:	計算 FPS：
+Group:	グループ：
+Center	中心
+Position X	位置 X
+The pendulum has not been set. Please add a pendulum in the Physics model settings.	振り子が設定されていません。物理モデル設定で振り子を追加してください。
+Fit to parameter range	パラメータ範囲に合わせる
+Set output maximum by 0%	出力の最大を 0% で設定
+Copy	コピー
+Paste	貼り付け
+Show parameter name and effectiveness in tooltip	ツールチップにパラメータ名と影響度を表示
+Show parameter ID and effectiveness in tooltip	ツールチップにパラメータ ID と影響度を表示
+Pay caution to the input and output parameters when the background of the table cell is colored.	表のセルに背景色が付いているときは、入力と出力のパラメータに注意してください。
+Group name:	グループ名：
+Rename	名前を変更
+Add Physics Group	物理演算グループを追加
+Similar changes	類似の変更
+< Add all layers as new ArtMesh >	＜すべてのレイヤーを新しいアートメッシュとして追加＞
+Weight	ウェイト
+Brush shape	ブラシの形
+Hardness	硬さ
+Drag to paint the selection weight of the selected objects' points; Shift adds, Ctrl+Shift subtracts. B / C / V + drag: size / angle / hardness.	ドラッグで選択オブジェクトの点に選択ウェイトを塗ります。Shift で加算、Ctrl+Shift で減算。B / C / V + ドラッグでサイズ／角度／硬さ。
+Offset X	オフセット X
+Draw order:	描画順：
+Also apply:	同時に適用：
+Add texture…	テクスチャを追加…
+(no page image)	（ページ画像なし）
+Auto Layout…	自動配置…
+Margin (px)	余白（px）
+Rotation	回転
+Allow 90° rotation	90° 回転を許可
+Automatic	自動
+Run Auto Layout	自動配置を実行
+Create texture atlas	テクスチャアトラスを作成
+Insert	挿入
+Visible model images	表示中のモデル画像
+All model images	すべてのモデル画像
+None	なし
+Save model3.json	model3.json を保存
+Viewer settings are edited on runtime models (.model3.json). Playback works for projects too.	ビューアの設定はランタイムモデル（.model3.json）で編集します。再生はプロジェクトでも使えます。
+could not be loaded	を読み込めませんでした
+Remove from model3.json	model3.json から削除
+Add motions…	モーションを追加…
+No motions.	モーションはありません。
+Reset expression	表情をリセット
+New from current values	現在の値から新規作成
+Target value	目標値
+Add parameter	パラメータを追加
+Add group	グループを追加
+Add HitArea meshes	当たり判定メッシュを追加
+On/off: Animation ▸ Apply Physics	オン／オフ：アニメーション ▸ 物理演算を適用
+Restriction for SDK (handles move vertically only)	SDK 向けの制限（ハンドルは縦方向のみ移動）
+Do not show again	今後表示しない
+Lasso Tool	投げ縄ツール
+Arrow tool	矢印ツール
+Interpolation method	補間方法
+Interpolation adjustment	補間の調整
+Basic Settings	基本設定
+Mirror Axis Settings	反転軸の設定
+All keyforms (not only the current one)	すべてのキーフォーム（現在のものだけでなく）
+Other	その他
+Flip rotation deformer position	回転デフォーマの位置を反転
+Parameter Value to Reference	参照するパラメータ値
+Keys to Overwrite	上書きするキー
+Option	オプション
+Automatically update the keyform when the setting value changes	設定値の変更時にキーフォームを自動更新
+Disable drag & drop	ドラッグ＆ドロップを無効にする
+No.	No.
+Part ID	パーツ ID
+Control Point edit	コントロールポイント編集
+Temporary path	一時パス
+< Register PSD file without adding ArtMeshes >	＜アートメッシュを追加せずに PSD を登録＞
+Soft Selection	ソフト選択
+Whole model images (not only the mesh bounds)	モデル画像全体（メッシュの範囲だけでなく）
+Eye blink	まばたき
+Frame rate used for baking: the scene frame rate.	焼き込みのフレームレート：シーンのフレームレートを使います。
+Select an attribute in the timeline to edit its curve.	カーブを編集するには、タイムラインで属性を選択してください。
+Clean-room 2D-mesh rigging and animation editor.	クリーンルームで作られた 2D メッシュのリギング・アニメーションエディタ。
+Glue the selected vertex of each of two ArtMeshes	2 つのアートメッシュで選択した頂点同士を接着します
+Remove the glue between the selected vertex of each of two ArtMeshes	2 つのアートメッシュで選択した頂点同士の接着を外します
+Automatically Generate Meshes(Mesh Editing Mode)	メッシュを自動生成（メッシュ編集モード）
+Restores the mesh to the state immediately after the ArtMesh was created.	アートメッシュを作った直後の状態にメッシュを戻します。
+Lip sync from the playing motion's sound (motionsync3.json)	再生中のモーションのサウンドからリップシンク（motionsync3.json）
+Drag over the view: left button = primary, right = secondary target	ビュー上でドラッグ：左ボタン = 主ターゲット、右 = 副ターゲット
+Repeat parameters wrap around instead of stopping at min/max	ループするパラメータは最小・最大で止まらず折り返します
+Arrow tool (A): click to select, drag for a rectangle	矢印ツール（A）：クリックで選択、ドラッグで矩形選択
+Lasso Tool (L): drag on empty space to lasso points	投げ縄ツール（L）：何もない所をドラッグして点を囲みます
+Brush Selection tool (B): paint weighted point selections	ブラシ選択ツール（B）：ウェイト付きで点の選択を塗ります
+Temporary path: bend the selected points along a temporary line	一時パス：選択した点を一時的な線に沿って曲げます
+Glue the selected vertices of the two ArtMeshes (Ctrl+G)	2 つのアートメッシュの選択頂点を接着（Ctrl+G）
+Remove the glue between the selected vertices (Ctrl+Shift+G)	選択頂点の接着を外す（Ctrl+Shift+G）
+Mirror Edit: edits are mirrored across the axis	ミラー編集：編集を軸で反転して反映します
+Drag on empty space to lasso points of the selected objects (Shift adds).	何もない所をドラッグして選択オブジェクトの点を囲みます（Shift で追加）。
+Click to select (Shift toggles); drag on empty space for a rectangle.	クリックで選択（Shift で切り替え）、何もない所をドラッグで矩形選択。
+Glue Weight A : B  —	接着ウェイト A : B  —
+Intervals and margins are pixel values after re-sizing to 1024.	間隔と余白は 1024 に縮小した後のピクセル値です。
+Several copied forms fit these objects. Choose the form to paste into each:	コピーしたフォームのうち複数がこれらのオブジェクトに合います。それぞれに貼り付けるフォームを選んでください：
+Paste Form and Blend Form mirror the copied shape first.	フォーム貼り付けとフォームのブレンドは、先にコピーした形を反転します。
+Select the parameters for batch reflection.	一括反映するパラメータを選択してください。
+The parameter needs exactly 3 keys (minimum, default, maximum).	パラメータにはちょうど 3 つのキー（最小、既定、最大）が必要です。
+Bulk Set Draw Order: all keyforms of this object	描画順の一括設定：このオブジェクトのすべてのキーフォーム
+Multiply and screen colors need SDK 4.2 or later as the target version.	乗算色とスクリーン色には、対象バージョン SDK 4.2 以降が必要です。
+There is no keyform to edit at the current parameter values.	現在のパラメータ値には編集できるキーフォームがありません。
+Motion-sync is only available in Cubism5.0 or later	モーションシンクは Cubism 5.0 以降でのみ使えます
+Saves the current setting as a new preset.	現在の設定を新しいプリセットとして保存します。
+Use the model's current parameter values as this element's shape	モデルの現在のパラメータ値をこの要素の形として使います
+Show/hide Warp Deformers and Rotation Deformers	ワープデフォーマと回転デフォーマの表示／非表示
+Move the selected objects into this part	選択したオブジェクトをこのパーツへ移動します
+Select the ArtMeshes that use this one as a clipping mask	これをクリッピングマスクとして使うアートメッシュを選択します
+Select an object in the Parts or Deformer palette.	パーツパレットかデフォーマパレットでオブジェクトを選択してください。
+Create ArtMesh	アートメッシュを作成
+During playback, controllers with a target follow it	再生中、ターゲットを持つコントローラーはそれに追従します
+Related physics setting will also be deleted.	関連する物理演算設定も削除されます。
+Would you like to save the changes to your part settings?	パーツ設定の変更を保存しますか？
+The following IDs were replaced with other parts:	次の ID は他のパーツで置き換えられました：
+Delete deform paths for current edit level	現在の編集レベルのデフォームパスを削除
+Input parameter can be added by right clicking on menu.	入力パラメータはメニューの右クリックで追加できます。
+Adjust all output magnification of objects which are under 100%	100% 未満のオブジェクトの出力倍率をすべて調整
+Adjust all output magnification of objects which are over 100%	100% を超えるオブジェクトの出力倍率をすべて調整
+When a multi-stage pendulum is set, it will be numbered in order from the top.	多段の振り子では、上から順に番号が付きます。
+Similar change candidates exist. Change them as well?	類似の変更候補があります。それらも変更しますか？
+Please select the resolution for displaying the model image	モデル画像を表示する解像度を選んでください
+Select an action or a model to integrate PSD	操作か、PSD を統合するモデルを選んでください
+Select an action or an existing PSD file to replace	操作か、置き換える既存の PSD ファイルを選んでください
+Use the stored page image as is; it is not re-rendered	保存されているページ画像をそのまま使います（再描画しません）
+Input	入力
+Type	種類
+Effectiveness (%)	影響度（%）
+Pendulum No	振り子 No
+Output Maximum (%)	出力の最大（%）
+Duration	長さ
+Shaking influence	揺れやすさ
+Reaction time	反応速度
+Convergence speed	収束の速さ
+The smaller the value, the faster the swaying; the larger the value, the slower the swaying.	値が小さいほど速く揺れ、大きいほどゆっくり揺れます。
+The larger the value, the larger the swaying even with the slightest input. Set the value within the range of 0.7-0.99 as a guideline.	値が大きいほど、わずかな入力でも大きく揺れます。目安として 0.7〜0.99 の範囲で設定してください。
+1 as the standard speed. Reacts faster if set to a value larger than 1; reacts slower if set to a value smaller than 1.	1 が標準の速さです。1 より大きいと速く、小さいと遅く反応します。
+1 as the standard speed. Converges faster if set to a value larger than 1; converges slower if set to a value smaller than 1.	1 が標準の速さです。1 より大きいと速く、小さいと遅く収束します。
+Position Y	位置 Y
+Scale: 	スケール：
+Reflect Horizontally	左右反転して反映
+Parameters to reflect	反映するパラメータ
+Draw order group	描画順グループ
+Offscreen drawing	オフスクリーン描画
+Invert Mask	マスクを反転
+Notes on Replacing Part ID	パーツ ID の置き換えについて
+Page	ページ
+Add part…	パーツを追加…
+Linear Interpolation	線形補間
+Angle:	角度：
+Position X:	位置 X：
+Base angle	基準角度
+Draw order	描画順
+Keyforms	キーフォーム
+Offscreen	オフスクリーン
+Opacity	不透明度
+Pairs	ペア
+Polygons	ポリゴン
+Vertices	頂点
+Canvas	キャンバス
+Filter by Text	テキストで絞り込み
+Arrow	矢印
+Lasso	投げ縄
+Soft	ソフト
+Path	パス
+Temp path	一時パス
+event text	イベントのテキスト
+Group (e.g. Idle)	グループ（例：Idle）

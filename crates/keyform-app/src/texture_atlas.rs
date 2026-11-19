@@ -163,7 +163,7 @@ pub fn dialog(
         .show(ctx, |ui| {
             let m = &doc.model;
             ui.horizontal(|ui| {
-                egui::ComboBox::from_label("Page")
+                egui::ComboBox::from_label(crate::i18n::tr("Page"))
                     .selected_text(&m.textures[st.page].name)
                     .show_ui(ui, |ui| {
                         for (k, t) in m.textures.iter().enumerate() {
@@ -227,7 +227,7 @@ pub fn dialog(
                         ui.label(crate::i18n::tr("Layout"));
                         ui.checkbox(
                             &mut st.model_image_layout,
-                            "Whole model images (not only the mesh bounds)",
+                            crate::i18n::tr("Whole model images (not only the mesh bounds)"),
                         );
                         ui.end_row();
                         ui.label(crate::i18n::tr("Scale"));

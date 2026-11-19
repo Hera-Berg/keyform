@@ -207,7 +207,7 @@ pub fn input(
 
 /// Tool Details of the Soft Selection tool.
 pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
-    ui.strong("Soft Selection");
+    ui.strong(crate::i18n::tr("Soft Selection"));
     let p = &mut doc.soft_prefs;
     egui::Grid::new("soft-select")
         .num_columns(2)

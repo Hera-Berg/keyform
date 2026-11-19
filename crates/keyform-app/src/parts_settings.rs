@@ -128,9 +128,9 @@ pub fn dialog(
                         .num_columns(3)
                         .striped(true)
                         .show(ui, |ui| {
-                            ui.strong("No.");
-                            ui.strong("Name");
-                            ui.strong("Part ID");
+                            ui.strong(crate::i18n::tr("No."));
+                            ui.strong(crate::i18n::tr("Name"));
+                            ui.strong(crate::i18n::tr("Part ID"));
                             ui.end_row();
                             for (n, (_, name, id)) in st.rows.iter_mut().enumerate() {
                                 ui.label((n + 1).to_string());
@@ -207,7 +207,7 @@ pub fn dialog(
                 ui.monospace(id);
             }
             ui.add_space(6.0);
-            ui.collapsing("Notes on Replacing Part ID", |ui| {
+            ui.collapsing(crate::i18n::tr("Notes on Replacing Part ID"), |ui| {
                 ui.label(
                     "Animations that refer to these part IDs will now affect the other \
                      parts, and data for the old IDs may no longer apply.",

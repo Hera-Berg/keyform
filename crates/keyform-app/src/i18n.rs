@@ -47,18 +47,38 @@ pub fn current() -> Lang {
     }
 }
 
+/// `\n`, `\t`, `\"` and `\\` escapes (keys mirror Rust string literals).
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some(o) => out.push(o),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Parses a table; lines starting with `#` and blank lines are skipped.
-fn parse(text: &'static str) -> HashMap<&'static str, &'static str> {
+fn parse(text: &'static str) -> HashMap<String, String> {
     text.lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .filter_map(|l| l.split_once('\t'))
         .filter(|(_, t)| !t.is_empty())
+        .map(|(k, v)| (unescape(k), unescape(v)))
         .collect()
 }
 
-fn table(lang: Lang) -> &'static HashMap<&'static str, &'static str> {
-    static JA: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    static EMPTY: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+fn table(lang: Lang) -> &'static HashMap<String, String> {
+    static JA: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static EMPTY: OnceLock<HashMap<String, String>> = OnceLock::new();
     match lang {
         Lang::Ja => JA.get_or_init(|| parse(Lang::Ja.table_text())),
         Lang::En => EMPTY.get_or_init(HashMap::new),
@@ -69,7 +89,7 @@ fn table(lang: Lang) -> &'static HashMap<&'static str, &'static str> {
 pub fn tr(s: &str) -> &str {
     match current() {
         Lang::En => s,
-        l => table(l).get(s).copied().unwrap_or(s),
+        l => table(l).get(s).map_or(s, String::as_str),
     }
 }
 
@@ -98,6 +118,9 @@ mod tests {
         set(Lang::Ja);
         assert_eq!(tr("File"), "ファイル");
         assert_eq!(tr("No such string anywhere"), "No such string anywhere");
+        // Escaped keys match the Rust literals (newlines, quotes).
+        assert!(tr("Extended interpolation requires at least 3 keyforms.\nWhen setting extended interpolation and changing to 2 keyforms or less, please select Linear Interpolation.").contains('\n'));
+        assert!(!tr("Deformer generated successfully. Please specify each deformer and click the \"Generate Motion\" button to continue.").starts_with("Deformer"));
         set(Lang::En);
         assert_eq!(tr("File"), "File");
     }

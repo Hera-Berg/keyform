@@ -768,7 +768,7 @@ pub fn draw(
 
 /// Tool Details of the Control Point edit tool.
 pub fn controls(ui: &mut egui::Ui, doc: &mut Document) {
-    ui.strong("Control Point edit");
+    ui.strong(crate::i18n::tr("Control Point edit"));
     ui.horizontal_wrapped(|ui| {
         for (s, name) in PathSub::ALL {
             ui.selectable_value(&mut doc.path_prefs.sub, s, name);
@@ -1201,7 +1201,7 @@ pub fn temp_draw(
 }
 
 pub fn temp_controls(ui: &mut egui::Ui, doc: &mut Document) {
-    ui.strong("Temporary path");
+    ui.strong(crate::i18n::tr("Temporary path"));
     ui.label(crate::i18n::tr("Click to add points to the line; drag them to bend the selected points. Alt+click deletes a point; Shift constrains a drag."));
     ui.horizontal(|ui| {
         if ui.button(crate::i18n::tr("Confirm (Enter)")).clicked() {

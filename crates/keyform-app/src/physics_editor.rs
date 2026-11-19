@@ -75,11 +75,11 @@ impl PhysicsEditor {
 }
 
 fn kind_label(k: PhysicsKind) -> &'static str {
-    match k {
+    crate::i18n::tr(match k {
         PhysicsKind::X => "Position X",
         PhysicsKind::Y => "Position Y",
         PhysicsKind::Angle => "Angle",
-    }
+    })
 }
 
 fn caution_fill(c: Caution, warn: Color32) -> Option<Color32> {
@@ -478,7 +478,9 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
         });
         ui.label(crate::i18n::tr("Fading:"));
         egui::ComboBox::from_id_salt("phys-fading")
-            .selected_text(["None", "Linear", "Easing"][usize::from(st.fading.0.min(2))])
+            .selected_text(crate::i18n::tr(
+                ["None", "Linear", "Easing"][usize::from(st.fading.0.min(2))],
+            ))
             .show_ui(ui, |ui| {
                 for (i, n) in ["None", "Linear", "Easing"].iter().enumerate() {
                     ui.selectable_value(&mut st.fading.0, i as u8, crate::i18n::tr(n));
@@ -707,7 +709,7 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
                 ("Angle:", &mut s.angle, 180.0f32),
                 ("Position X:", &mut s.position, 100.0),
             ] {
-                ui.label(label);
+                ui.label(crate::i18n::tr(label));
                 // Minimum ≤ Center ≤ Maximum: each field is bounded by its neighbours.
                 ui.add(
                     egui::DragValue::new(&mut n.minimum)
@@ -756,7 +758,7 @@ fn inputs(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mut P
         .striped(true)
         .show(ui, |ui| {
             for h in ["Input", "Type", "Effectiveness (%)", "Reflect", "", ""] {
-                ui.label(RichText::new(h).strong());
+                ui.label(RichText::new(crate::i18n::tr(h)).strong());
             }
             ui.end_row();
             for (k, inp) in s.inputs.iter_mut().enumerate() {
@@ -927,7 +929,7 @@ fn outputs(
                         "",
                         "",
                     ] {
-                        ui.label(RichText::new(h).strong());
+                        ui.label(RichText::new(crate::i18n::tr(h)).strong());
                     }
                     ui.end_row();
                     for (k, o) in s.outputs.iter_mut().enumerate() {
@@ -1058,7 +1060,7 @@ fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mu
             let mut action = None;
             egui::Grid::new("physics-pendulums").num_columns(7).striped(true).show(ui, |ui| {
                 for (h, tip) in [
-                    ("No", ""),
+                    ("No.", ""),
                     ("Duration", "The smaller the value, the faster the swaying; the larger the value, the slower the swaying."),
                     ("Shaking influence", "The larger the value, the larger the swaying even with the slightest input. Set the value within the range of 0.7-0.99 as a guideline."),
                     ("Reaction time", "1 as the standard speed. Reacts faster if set to a value larger than 1; reacts slower if set to a value smaller than 1."),
@@ -1066,9 +1068,9 @@ fn pendulums(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &Document, rig: &mu
                     ("", ""),
                     ("", ""),
                 ] {
-                    let r = ui.label(RichText::new(h).strong());
+                    let r = ui.label(RichText::new(crate::i18n::tr(h)).strong());
                     if !tip.is_empty() {
-                        r.on_hover_text(tip);
+                        r.on_hover_text(crate::i18n::tr(tip));
                     }
                 }
                 ui.end_row();
@@ -1157,7 +1159,7 @@ fn pendulum_preview(ui: &mut egui::Ui, s: &keyform_model::PhysicsSetting) {
     p.text(
         rect.left_top() + egui::vec2(6.0, 4.0),
         egui::Align2::LEFT_TOP,
-        format!("Scale: {len:.1}"),
+        format!("{}{len:.1}", crate::i18n::tr("Scale: ")),
         egui::FontId::proportional(11.0),
         ui.visuals().weak_text_color(),
     );
@@ -1194,7 +1196,7 @@ fn group_dialog(
         ui.horizontal_top(|ui| {
             egui::Grid::new("physics-groups").num_columns(7).striped(true).show(ui, |ui| {
                 for h in ["Enable", "Priority", "Group name", "Number of pendulums", "Input parameters (positionX)", "Input parameters (angle)", "Output parameter"] {
-                    ui.label(RichText::new(h).strong());
+                    ui.label(RichText::new(crate::i18n::tr(h)).strong());
                 }
                 ui.end_row();
                 for (i, s) in rig.settings.iter_mut().enumerate() {
