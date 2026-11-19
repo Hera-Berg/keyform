@@ -153,6 +153,56 @@ impl Blend for PartForm {
     }
 }
 
+impl Blend for keyform_model::ArtPathForm {
+    fn zeroed(&self) -> Self {
+        Self {
+            points: self
+                .points
+                .iter()
+                .map(|p| keyform_model::ArtPathPoint {
+                    position: [0.0; 2],
+                    width: 0.0,
+                    opacity: 0.0,
+                    color: [0.0; 4],
+                    corner: p.corner,
+                })
+                .collect(),
+            draw_order: 0.0,
+            opacity: 0.0,
+            multiply: [0.0; 4],
+            screen: [0.0; 4],
+        }
+    }
+    fn add_scaled(&mut self, o: &Self, w: f32) {
+        // Positions, widths, colours, opacities lerped (art-path.md §1).
+        for (a, b) in self.points.iter_mut().zip(&o.points) {
+            a.position[0] += w * b.position[0];
+            a.position[1] += w * b.position[1];
+            a.width += w * b.width;
+            a.opacity += w * b.opacity;
+            add_color(&mut a.color, &b.color, w);
+        }
+        self.draw_order += w * o.draw_order;
+        self.opacity += w * o.opacity;
+        add_color(&mut self.multiply, &o.multiply, w);
+        add_color(&mut self.screen, &o.screen, w);
+    }
+    fn finish(&mut self) {
+        self.draw_order = truncate_draw_order(self.draw_order);
+    }
+    fn clamp(&mut self) {
+        self.draw_order = self.draw_order.clamp(0.0, 1000.0);
+        self.opacity = self.opacity.clamp(0.0, 1.0);
+        for p in &mut self.points {
+            p.width = p.width.max(0.0);
+            p.opacity = p.opacity.clamp(0.0, 1.0);
+            clamp_color(&mut p.color);
+        }
+        clamp_color(&mut self.multiply);
+        clamp_color(&mut self.screen);
+    }
+}
+
 impl Blend for ArtMeshForm {
     fn zeroed(&self) -> Self {
         Self {

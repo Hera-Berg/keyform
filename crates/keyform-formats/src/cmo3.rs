@@ -439,11 +439,14 @@ impl<'a, 'd> Loader<'a, 'd> {
                 keep
             })
             .collect();
-        let skipped = drawable_objs.len() - meshes.len();
+        let art_path_objs: Vec<O> = drawable_objs
+            .iter()
+            .copied()
+            .filter(|d| d.tag() == "CArtPathSource")
+            .collect();
+        let skipped = drawable_objs.len() - meshes.len() - art_path_objs.len();
         if skipped > 0 {
-            self.warn(format!(
-                "{skipped} drawables of unsupported kinds (art paths) skipped"
-            ));
+            self.warn(format!("{skipped} drawables of unsupported kinds skipped"));
         }
         for (i, d) in meshes.iter().enumerate() {
             self.idx
@@ -483,6 +486,12 @@ impl<'a, 'd> Loader<'a, 'd> {
         }
         // Kept sorted by object GUID (one extension per object).
         m.rotate3d.sort_by(|a, b| a.0.cmp(&b.0));
+        for d in &art_path_objs {
+            let a = self.load_art_path(d, &m)?;
+            // Art paths are kept as stored (not rewritten): drop the source.
+            let _ = self.take_source(d);
+            m.art_paths.push(std::sync::Arc::new(a));
+        }
         for d in &meshes {
             m.art_meshes
                 .push(std::sync::Arc::new(self.load_art_mesh(d, &m)?));
@@ -733,6 +742,71 @@ impl<'a, 'd> Loader<'a, 'd> {
             m.motion_sync.push(st);
         }
         Ok(())
+    }
+
+    /// An art path (`CArtPathSource`; layout observed in a reference-made
+    /// file). spec: 70-advanced/art-path.md §1
+    fn load_art_path(&mut self, o: &O<'a, 'd>, m: &Model) -> Result<keyform_model::ArtPath> {
+        use keyform_model::{ArtPathForm, ArtPathPoint, LineAlgorithm, LineAlignment};
+        let info = self.info(o)?;
+        let target = self.target_deformer(o, &info.id)?;
+        let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+            let mut points = Vec::new();
+            for p in f.list("positions")? {
+                let pos = p
+                    .field("curvePointPosition")?
+                    .and_then(|c| c.field("point").ok().flatten());
+                let xy = match pos {
+                    Some(v) => [v.f32("x")?.unwrap_or(0.0), v.f32("y")?.unwrap_or(0.0)],
+                    None => [0.0, 0.0],
+                };
+                points.push(ArtPathPoint {
+                    position: xy,
+                    width: p.f32("width")?.unwrap_or(1.0),
+                    opacity: p.f32("opacity")?.unwrap_or(1.0),
+                    color: [
+                        p.f32("colorRed")?.unwrap_or(0.0),
+                        p.f32("colorGreen")?.unwrap_or(0.0),
+                        p.f32("colorBlue")?.unwrap_or(0.0),
+                        p.f32("colorAlpha")?.unwrap_or(1.0),
+                    ],
+                    corner: p.bool("isCorner")?.unwrap_or(false),
+                });
+            }
+            Ok(ArtPathForm {
+                points,
+                draw_order: f.i32("drawOrder")?.unwrap_or(500) as f32,
+                opacity: f.f32("opacity")?.unwrap_or(1.0),
+                multiply: color(f.field("multiplyColor")?, WHITE)?,
+                screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+            })
+        })?;
+        Ok(keyform_model::ArtPath {
+            info,
+            target,
+            grid,
+            blend_shapes,
+            div_num: o.i32("divNum")?.unwrap_or(20).clamp(1, 200) as u32,
+            algorithm: match o.enum_value("lineAlgorithm")? {
+                Some("SNS") => LineAlgorithm::Sns,
+                _ => LineAlgorithm::Lcns,
+            },
+            alignment: match o.enum_value("lineAlignment")? {
+                Some("LEFT_CCW") => LineAlignment::LeftCcw,
+                Some("RIGHT_CCW") => LineAlignment::RightCcw,
+                _ => LineAlignment::Center,
+            },
+            closed: o.bool("isClosed")?.unwrap_or(false),
+            // TODO(Q-0046): art-path clip lists.
+            clip: Vec::new(),
+            invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
+            brush: o
+                .field("brushGuid")?
+                .and_then(|b| b.attr("uuid"))
+                .unwrap_or_default()
+                .to_owned(),
+            user_data: o.string("userData")?.unwrap_or_default(),
+        })
     }
 
     /// `CRotate3DExtension` of a deformer or art mesh (generators.md §1

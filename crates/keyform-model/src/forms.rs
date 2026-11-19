@@ -105,3 +105,24 @@ impl Default for GlueForm {
         Self { intensity: 1.0 }
     }
 }
+
+/// One control point of an art-path keyform (`CArtPathPoint`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtPathPoint {
+    /// In the target deformer's local space.
+    pub position: [f32; 2],
+    pub width: f32,
+    pub opacity: f32,
+    pub color: Color,
+    pub corner: bool,
+}
+
+/// An art-path keyform (`CArtPathForm`). spec: 70-advanced/art-path.md §1
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ArtPathForm {
+    pub points: Vec<ArtPathPoint>,
+    pub draw_order: f32,
+    pub opacity: f32,
+    pub multiply: Color,
+    pub screen: Color,
+}

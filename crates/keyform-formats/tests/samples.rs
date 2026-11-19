@@ -4160,3 +4160,39 @@ fn rotate3d_settings_save() {
     assert!(back.warnings.is_empty(), "{:?}", back.warnings);
     assert_eq!(back.model.rotate3d, edited.rotate3d);
 }
+
+/// An art path made in the reference loads (11 points, LCNS, div 20) and
+/// evaluates to a stroke; an unchanged save keeps it. spec: art-path.md
+#[test]
+fn art_path_loads_and_strokes() {
+    use keyform_formats::cmo3::Cmo3Document;
+    let Some(dir) = std::env::var_os("KEYFORM_BB_P5") else {
+        return;
+    };
+    let mut doc = Cmo3Document::read(
+        &std::fs::read(std::path::Path::new(&dir).join("artpath.cmo3")).unwrap(),
+    )
+    .unwrap();
+    assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
+    let m = &doc.model;
+    assert_eq!(m.art_paths.len(), 1);
+    let a = &m.art_paths[0];
+    assert_eq!(a.grid.keyforms[0].points.len(), 11);
+    assert_eq!(
+        (a.div_num, a.algorithm),
+        (20, keyform_model::LineAlgorithm::Lcns)
+    );
+    assert!(a.target.is_some());
+    let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
+    let frame = keyform_eval::Evaluator::new(m).evaluate(&values);
+    let st = keyform_eval::artpath::evaluate(m, a, &frame, &values).unwrap();
+    assert!(st.stroke.indices.len() > 100);
+    // Canvas coordinates (not the warp's 0–1 local space).
+    assert!(st.stroke.positions.iter().any(|v| *v > 10.0));
+    // A small unrelated edit saves with the art path intact.
+    let p0 = std::sync::Arc::make_mut(&mut doc.model.parameters[0]);
+    p0.name.push('!');
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert_eq!(back.model.art_paths, doc.model.art_paths);
+}

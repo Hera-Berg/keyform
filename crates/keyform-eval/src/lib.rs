@@ -3,6 +3,7 @@
 //!
 //! spec: 30-algorithms/evaluation-pipeline.md
 
+pub mod artpath;
 pub mod deform;
 pub mod draw_order;
 pub mod interp;

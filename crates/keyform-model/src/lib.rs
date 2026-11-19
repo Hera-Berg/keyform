@@ -103,6 +103,9 @@ pub struct Model {
     pub physics: PhysicsRig,
     /// Motion-sync settings. spec: 70-advanced/motion-sync.md §1
     pub motion_sync: Vec<MotionSyncSetting>,
+    /// Art paths (video / non-SDK drawables; loaded, rendered, kept as
+    /// stored). spec: 70-advanced/art-path.md
+    pub art_paths: Vec<Arc<ArtPath>>,
     /// Apply 3D Rotation Expression settings per object GUID
     /// (`CRotate3DExtension`). spec: 70-advanced/generators.md §1
     pub rotate3d: Vec<(Guid, Rotate3dConfig)>,
@@ -143,6 +146,7 @@ impl Model {
             && self.physics == other.physics
             && self.motion_sync == other.motion_sync
             && self.rotate3d == other.rotate3d
+            && self.art_paths == other.art_paths
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -177,6 +181,7 @@ impl Model {
             && self.physics == other.physics
             && self.motion_sync == other.motion_sync
             && self.rotate3d == other.rotate3d
+            && self.art_paths == other.art_paths
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -1089,4 +1094,39 @@ impl Default for Rotate3dConfig {
             filter: 0,
         }
     }
+}
+
+/// Line generation method (`LineAlgorithm`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LineAlgorithm {
+    Sns,
+    #[default]
+    Lcns,
+}
+
+/// Stroke alignment (`LineAlignment`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LineAlignment {
+    #[default]
+    Center,
+    LeftCcw,
+    RightCcw,
+}
+
+/// An art path (`CArtPathSource`). spec: 70-advanced/art-path.md §1
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtPath {
+    pub info: ObjectInfo,
+    pub target: Option<DeformerIndex>,
+    pub grid: KeyformGrid<ArtPathForm>,
+    pub blend_shapes: BlendShapes<ArtPathForm>,
+    pub div_num: u32,
+    pub algorithm: LineAlgorithm,
+    pub alignment: LineAlignment,
+    pub closed: bool,
+    pub clip: Vec<MeshIndex>,
+    pub invert_clip: bool,
+    /// Brush GUID (the null GUID = unset).
+    pub brush: Guid,
+    pub user_data: String,
 }
