@@ -428,6 +428,18 @@ fn paint_image_layer(
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// Where the current press began; on the frame a click is released (egui
+/// clears the press origin in that frame) where the click happened. Plain
+/// clicks on the canvas used to be ignored because of that (found by the
+/// e2e session: clicking a vertex didn't select it).
+pub fn press_pos(ui: &egui::Ui) -> Option<Pos2> {
+    ui.input(|i| {
+        i.pointer
+            .press_origin()
+            .or_else(|| i.pointer.interact_pos())
+    })
+}
+
 /// Arrow tool (canvas-and-tools.md §3):
 /// - click selects the top-most object, Shift toggles it; clicking an
 ///   object that is already selected keeps the selection;
@@ -463,7 +475,7 @@ fn arrow_tool(
     let lasso = doc.lasso;
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
     let primary = egui::PointerButton::Primary;
-    let press = ui.input(|i| i.pointer.press_origin());
+    let press = press_pos(ui);
     if response.drag_started_by(primary) || response.clicked_by(primary) {
         let Some(press) = press else { return };
         let q = to_canvas(press);
@@ -621,7 +633,7 @@ fn mesh_tool(
         return;
     };
     let primary = egui::PointerButton::Primary;
-    let press = ui.input(|i| i.pointer.press_origin());
+    let press = press_pos(ui);
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let started = response.drag_started_by(primary) || response.clicked_by(primary);
     match s.tool {
@@ -1202,4 +1214,52 @@ fn selection_polygon(
     ]
     .map(to_canvas)
     .to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    /// A quick click (press and release in one frame) must still report
+    /// where it happened when `clicked()` fires; egui clears the press
+    /// origin in that frame. Found by the e2e
+    /// session: clicking a vertex didn't select it.
+    #[test]
+    fn click_position_is_known_on_release() {
+        let ctx = egui::Context::default();
+        let at = egui::pos2(40.0, 30.0);
+        let ev = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // A quick click: press and release arrive in the same frame (the
+        // app repaints on input, so both events can queue up).
+        let frames = [
+            vec![egui::Event::PointerMoved(at)],
+            vec![ev(true), ev(false)],
+        ];
+        let mut seen = None;
+        for (k, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = ui.allocate_rect(ui.max_rect(), egui::Sense::click_and_drag());
+                if r.clicked() {
+                    seen = Some((k, super::press_pos(ui)));
+                }
+            });
+            out.textures_delta.clear();
+        }
+        let (frame, pos) = seen.expect("the click was reported");
+        assert_eq!(frame, 1, "on the release frame");
+        assert_eq!(pos, Some(at));
+    }
 }

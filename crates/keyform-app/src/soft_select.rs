@@ -193,7 +193,7 @@ pub fn input(
     let flip = doc.view.mirror;
     let primary = egui::PointerButton::Primary;
     if response.drag_started_by(primary) || response.clicked_by(primary) {
-        if let Some(q) = ui.input(|i| i.pointer.press_origin()) {
+        if let Some(q) = crate::canvas::press_pos(ui) {
             doc.soft_paint(to_canvas(q), mode, true, flip);
         }
     } else if response.dragged_by(primary) && moved {

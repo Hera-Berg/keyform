@@ -1160,7 +1160,7 @@ pub fn temp_input(
     let zoom = doc.view.zoom;
     let primary = egui::PointerButton::Primary;
     if response.drag_started_by(primary) || response.clicked_by(primary) {
-        if let Some(q) = ui.input(|i| i.pointer.press_origin()) {
+        if let Some(q) = crate::canvas::press_pos(ui) {
             doc.temp_press(to_canvas(q), zoom, alt);
         }
     }

@@ -211,7 +211,7 @@ pub fn input(
             doc.notice = Some(e);
             return;
         }
-        if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+        if let Some(p) = crate::canvas::press_pos(ui) {
             doc.glue_brush_step(to_canvas(p), shift, flip, 1.0);
         }
     } else if response.dragged_by(primary) && moved {
