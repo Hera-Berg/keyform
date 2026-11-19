@@ -3421,6 +3421,60 @@ mod e2e_regressions {
         assert_eq!(keys(&a).len(), 2);
     }
 
+    /// The Deformer palette opens the selected object's ancestors (it was
+    /// collapsed, hiding a new deformer's children).
+    #[test]
+    fn deformer_tree_opens_to_the_selection() {
+        let (mut d, _) = character("e2e-tree-open");
+        let face = mesh(&d, "Face");
+        let values = d.values.clone();
+        let mut parent = None;
+        for name in ["Outer", "Inner"] {
+            let w = d
+                .try_edit("Create Warp Deformer", |m| {
+                    let nd = keyform_edit::objects::NewDeformer {
+                        name: name.into(),
+                        part: None,
+                        parent,
+                        children: &[face],
+                        values: &values,
+                    };
+                    keyform_edit::objects::create_warp_deformer(m, &nd, 3, 3, (2, 2))
+                })
+                .unwrap();
+            parent = Some(w);
+        }
+        let Selection::ArtMesh(f) = face else {
+            unreachable!()
+        };
+        let inner = d.model.art_meshes[f].target.unwrap();
+        let outer = d.model.deformers[inner].target.expect("nested warps");
+        let open = crate::palettes::open_deformers(&d.model, Some(face));
+        assert_eq!(open, [inner, outer].into_iter().collect());
+        assert!(crate::palettes::open_deformers(&d.model, None).is_empty());
+    }
+
+    /// File ▸ Save as… in an animation saves the .can3 under the new name
+    /// (it saved the model). The menu routing is covered by the e2e
+    /// session's "Save as model.can3" step.
+    #[test]
+    fn save_as_in_an_animation_writes_the_can3() {
+        let (_, path) = character("e2e-save-as");
+        let model_bytes = std::fs::read(&path).unwrap();
+        let mut log = Log::default();
+        let mut a = Document::new_animation(&path, &mut log).unwrap();
+        let to = path.with_file_name("renamed.can3");
+        let p = a.save_animation_to(Some(&to)).unwrap();
+        assert_eq!(p, to);
+        assert_eq!(a.title, "renamed.can3");
+        keyform_formats::can3::Can3Document::read(&std::fs::read(&to).unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            model_bytes,
+            "model untouched"
+        );
+    }
+
     /// "Add key at playhead" selects the new key.
     #[test]
     fn add_key_selects_the_new_key() {

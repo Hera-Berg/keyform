@@ -1710,7 +1710,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             ui.menu_button(crate::i18n::tr("Events"), |ui| {
                 let f = st.frame.round() as i32;
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text(crate::i18n::tr("event text")).desired_width(140.0));
+                    crate::icons::accessible_name(&ui.add(egui::TextEdit::singleline(&mut st.event_text).hint_text(crate::i18n::tr("event text")).desired_width(140.0)), crate::i18n::tr("event text"));
                     if ui.button(format!("Add at frame {f}")).clicked() && !st.event_text.is_empty() {
                         let t = std::mem::take(&mut st.event_text);
                         st.set_event(f, Some(t));

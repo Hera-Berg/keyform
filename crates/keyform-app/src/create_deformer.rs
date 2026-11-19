@@ -99,11 +99,14 @@ pub fn dialog(
                 .num_columns(2)
                 .show(ui, |ui| {
                     ui.label(crate::i18n::tr("Name"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut st.name).hint_text(match kind {
-                            Kind::Warp => "Untitled Deformer",
-                            Kind::Rotation => "Rotation Deformer",
-                        }),
+                    crate::icons::accessible_name(
+                        &ui.add(
+                            egui::TextEdit::singleline(&mut st.name).hint_text(match kind {
+                                Kind::Warp => "Untitled Deformer",
+                                Kind::Rotation => "Rotation Deformer",
+                            }),
+                        ),
+                        crate::i18n::tr("Name"),
                     );
                     ui.end_row();
                     ui.label(crate::i18n::tr("Add To"));

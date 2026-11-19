@@ -143,10 +143,13 @@ fn motions_ui(
             }
             if editable {
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut st.new_group)
-                            .hint_text(crate::i18n::tr("Group (e.g. Idle)"))
-                            .desired_width(110.0),
+                    crate::icons::accessible_name(
+                        &ui.add(
+                            egui::TextEdit::singleline(&mut st.new_group)
+                                .hint_text(crate::i18n::tr("Group (e.g. Idle)"))
+                                .desired_width(110.0),
+                        ),
+                        crate::i18n::tr("Group (e.g. Idle)"),
                     );
                     if ui.button(crate::i18n::tr("Add motions…")).clicked() {
                         add_motions(doc, st, log);
@@ -242,10 +245,13 @@ fn expressions_ui(ui: &mut egui::Ui, doc: &mut Document, st: &mut SettingsState,
             }
             if editable {
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut st.new_expression)
-                            .hint_text(crate::i18n::tr("Name"))
-                            .desired_width(110.0),
+                    crate::icons::accessible_name(
+                        &ui.add(
+                            egui::TextEdit::singleline(&mut st.new_expression)
+                                .hint_text(crate::i18n::tr("Name"))
+                                .desired_width(110.0),
+                        ),
+                        crate::i18n::tr("Expression name"),
                     );
                     let name = st.new_expression.trim().to_owned();
                     if ui
@@ -492,10 +498,13 @@ fn hit_areas_ui(ui: &mut egui::Ui, doc: &mut Document) {
         let mut remove = None;
         for (i, (id, name)) in doc.hit_areas.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(name)
-                        .desired_width(90.0)
-                        .hint_text(crate::i18n::tr("Name")),
+                crate::icons::accessible_name(
+                    &ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(90.0)
+                            .hint_text(crate::i18n::tr("Name")),
+                    ),
+                    crate::i18n::tr("Hit area name"),
                 );
                 ui.label(id.as_str());
                 if icons::icon_button(ui, Icon::Stop, "Remove").clicked() {

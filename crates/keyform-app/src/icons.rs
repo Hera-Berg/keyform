@@ -213,3 +213,10 @@ pub fn icon_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str) -> egui::Respon
     );
     r.on_hover_text(tooltip)
 }
+
+/// Gives a widget an accessible name, e.g. a text field whose only caption
+/// is its hint text (egui doesn't expose hints to assistive tools).
+pub fn accessible_name(r: &egui::Response, name: &str) {
+    let name = name.to_owned();
+    r.ctx.accesskit_node_builder(r.id, |b| b.set_label(name));
+}

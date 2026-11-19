@@ -115,10 +115,13 @@ pub fn parts_ui(
 ) -> bool {
     let mut open_settings = false;
     ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(filter)
-                .hint_text(crate::i18n::tr("Filter by Text"))
-                .desired_width(ui.available_width() - 60.0),
+        crate::icons::accessible_name(
+            &ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text(crate::i18n::tr("Filter by Text"))
+                    .desired_width(ui.available_width() - 60.0),
+            ),
+            crate::i18n::tr("Filter by Text"),
         );
         ui.toggle_value(show_deformers, "D")
             .on_hover_text(crate::i18n::tr(
@@ -664,6 +667,26 @@ fn deformer_icon(m: &Model, d: usize) -> Icon {
 
 // ---------------------------------------------------------------- Deformer
 
+/// The deformers shown open in the Deformer palette: the selected object's
+/// deformer ancestors, so a new or picked object is always visible in the
+/// tree.
+pub fn open_deformers(
+    m: &keyform_model::Model,
+    sel: Option<Selection>,
+) -> std::collections::HashSet<usize> {
+    let n = m.deformers.len();
+    let mut open = std::collections::HashSet::new();
+    let mut t = match sel {
+        Some(Selection::ArtMesh(a)) => m.art_meshes.get(a).and_then(|x| x.target),
+        Some(Selection::Deformer(d)) => m.deformers.get(d).and_then(|x| x.target),
+        _ => None,
+    };
+    while let Some(d) = t.filter(|&d| d < n && open.insert(d)) {
+        t = m.deformers[d].target;
+    }
+    open
+}
+
 /// Deformer palette (read-only): the target-deformer tree.
 pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
     let m = &doc.model;
@@ -677,17 +700,7 @@ pub fn deformer_ui(ui: &mut egui::Ui, doc: &mut Document) {
         children[slot(a.target)].push(Selection::ArtMesh(i));
     }
     let mut sel = doc.primary();
-    // The selected object's deformer ancestors are shown open, so a new or
-    // picked object is always visible in the tree.
-    let mut open = std::collections::HashSet::new();
-    let mut t = match sel {
-        Some(Selection::ArtMesh(a)) => m.art_meshes.get(a).and_then(|x| x.target),
-        Some(Selection::Deformer(d)) => m.deformers.get(d).and_then(|x| x.target),
-        _ => None,
-    };
-    while let Some(d) = t.filter(|&d| d < n && open.insert(d)) {
-        t = m.deformers[d].target;
-    }
+    let open = open_deformers(m, sel);
     let prev = sel;
     egui::ScrollArea::both()
         .auto_shrink([false, false])
@@ -783,10 +796,13 @@ pub fn parameter_ui(
     log: &mut Log,
 ) {
     ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(filter)
-                .hint_text(crate::i18n::tr("Filter by Text"))
-                .desired_width(ui.available_width() - 90.0),
+        crate::icons::accessible_name(
+            &ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text(crate::i18n::tr("Filter by Text"))
+                    .desired_width(ui.available_width() - 90.0),
+            ),
+            crate::i18n::tr("Filter by Text"),
         );
         if ui
             .button(crate::i18n::tr("Reset"))

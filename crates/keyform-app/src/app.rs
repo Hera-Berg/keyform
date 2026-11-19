@@ -2358,11 +2358,14 @@ impl KeyformApp {
             }
         }
         // Edit ▸ Select All [Ctrl+A] / Deselect [Escape] (menus.md "Edit").
+        // Escape with a menu or popup open only closes it (found by the
+        // reachability audit: dismissing a menu dropped the selection).
         if !ctx.egui_wants_keyboard_input() {
+            let popup_open = egui::Popup::is_any_open(ctx) || ctx.any_popup_open();
             let (all, none) = ctx.input_mut(|i| {
                 (
                     i.consume_shortcut(&K::new(M::COMMAND, Key::A)),
-                    i.consume_key(M::NONE, Key::Escape),
+                    !popup_open && i.consume_key(M::NONE, Key::Escape),
                 )
             });
             if let Some(d) = self.active_doc() {
