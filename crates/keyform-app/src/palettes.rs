@@ -167,6 +167,8 @@ pub fn parts_ui(
             let (mut lock_toggled, mut move_here, mut bulk) = (Vec::new(), None, None);
             let mut drop = None;
             let mut stored_toggled = Vec::new();
+            let mut art_clicked = None;
+            let art_selected = doc.art_tool.as_ref().and_then(|t| t.path);
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -194,8 +196,13 @@ pub fn parts_ui(
                 drop: &mut drop,
                 open_settings: &mut open_settings,
                 stored_toggled: &mut stored_toggled,
+                art_clicked: &mut art_clicked,
+                art_selected,
             };
             part_children(ui, model, root, &mut t, 0);
+            if let Some(k) = art_clicked {
+                doc.art_select(k);
+            }
             for (kind, k, is_lock) in stored_toggled {
                 doc.edit(
                     if is_lock {
@@ -405,6 +412,10 @@ struct TreeCtx<'a> {
     open_settings: &'a mut bool,
     /// Art paths / aliases whose eye or lock was clicked: (kind, index, lock).
     stored_toggled: &'a mut Vec<(Stored, usize, bool)>,
+    /// The art path whose row was clicked (selects it in the ArtPath tool).
+    art_clicked: &'a mut Option<usize>,
+    /// The art path the ArtPath tool edits (highlighted).
+    art_selected: Option<usize>,
 }
 
 /// Objects kept as stored (art-path.md, alias.md): listed in their part,
@@ -452,9 +463,18 @@ fn stored_rows(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx) {
                     Icon::Alias
                 },
             );
-            ui.label(info.display_name()).on_hover_text(crate::i18n::tr(
-                "Kept as stored: shown and saved, not editable in Keyform yet",
-            ));
+            if kind == Stored::ArtPath {
+                if ui
+                    .selectable_label(t.art_selected == Some(k), info.display_name())
+                    .clicked()
+                {
+                    *t.art_clicked = Some(k);
+                }
+            } else {
+                ui.label(info.display_name()).on_hover_text(crate::i18n::tr(
+                    "Aliases aren't saved by the editor (5.3.04): shown only",
+                ));
+            }
         });
     }
 }

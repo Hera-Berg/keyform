@@ -643,3 +643,36 @@ Shuffle	シャッフル
 Linked animation file	リンクしたアニメーションファイル
 Link animation file…	アニメーションファイルをリンク…
 Unlink	リンク解除
+ArtPath	アートパス
+ArtPath tools: stroke, edit points, width / opacity brushes, split, join	アートパスツール：ストローク、点の編集、幅／不透明度ブラシ、分割、結合
+Stroke ArtPath	ストロークでアートパスを作成
+Edit points	点を編集
+Adjust Width	幅を調整
+Adjust Opacity	不透明度を調整
+Split	分割
+Join	結合
+Drag on the canvas to draw an ArtPath; it is fitted to control points.	キャンバス上をドラッグしてアートパスを描きます。コントロールポイントに変換されます。
+Interval	間隔
+New ArtPaths:	新しいアートパス：
+Line Width	線の幅
+Line Color	線の色
+Drag a point to move it; click a line to add a point; Ctrl+click extends the path; Alt+click deletes a point; Ctrl+Alt+click toggles a fold point.	点をドラッグして移動、線をクリックで点を追加、Ctrl+クリックでパスを延長、Alt+クリックで点を削除、Ctrl+Alt+クリックで折れ点を切り替えます。
+Thickness	太さ
+Click an inner point to split the ArtPath there (a closed path opens there).	内側の点をクリックすると、そこでアートパスを分割します（閉じたパスはそこで開きます）。
+Click the end point of an ArtPath, then the end point of another ArtPath to connect them.	アートパスの端点をクリックし、次に別のアートパスの端点をクリックすると結合します。
+Click the end point of an ArtPath.	アートパスの端点をクリックしてください。
+Division number	分割数
+Close ArtPath	アートパスを閉じる
+Line Generation Method	線の生成方法
+Alignment	配置
+Left	左
+Right	右
+Point	点
+Delete ArtPath	アートパスを削除
+An ArtPath needs at least 2 points.	アートパスには 2 点以上が必要です。
+Split at an inner point.	内側の点で分割してください。
+Closed ArtPaths can't be joined.	閉じたアートパスは結合できません。
+Select another ArtPath to join.	結合する別のアートパスを選択してください。
+The ArtPaths have different keyforms.	アートパスのキーフォームが異なります。
+ArtPaths are edited in the Modeling workspace of a project.	アートパスはプロジェクトのモデリングワークスペースで編集します。
+Aliases aren't saved by the editor (5.3.04): shown only	エイリアスはエディタに保存されません（5.3.04）：表示のみ

@@ -83,6 +83,7 @@ impl Document {
         self.glue_tool = Some(GlueTool { tool, stroke: None });
         self.soft_select = None;
         self.path_tool = None;
+        self.art_tool = None;
         Ok(())
     }
 

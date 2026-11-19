@@ -172,15 +172,35 @@ impl Cmo3Document {
                 )?;
             }
         }
-        write_stored_infos(
-            &mut root,
-            &s.art_paths,
-            &old.art_paths,
-            &new.art_paths,
-            |a| &a.info,
-            |a, info| keyform_model::ArtPath { info, ..a.clone() },
-            "CDrawableId",
-        )?;
+        // Art paths: new, edited, deleted. spec: art-path.md §1, §5
+        let old_paths = objects::index_by_guid(&old.art_paths, |a| &a.info.guid);
+        let new_paths = objects::index_by_guid(&new.art_paths, |a| &a.info.guid);
+        for n in &new.art_paths {
+            match old_paths.get(&n.info.guid) {
+                Some(&i) => {
+                    let o = &old.art_paths[i];
+                    if !Arc::ptr_eq(o, n) && **o != **n {
+                        write_art_path(&mut root, ctx, source(&s.art_paths, i)?, o, n)?;
+                    }
+                }
+                None => {
+                    objects::create_art_path(&mut root, ctx, new, n)?;
+                    ctx.structural = true;
+                }
+            }
+        }
+        for (i, o) in old.art_paths.iter().enumerate() {
+            if !new_paths.contains_key(&o.info.guid) {
+                let path = source(&s.art_paths, i)?.element.clone();
+                objects::delete_object(
+                    &mut root,
+                    ctx,
+                    &o.info.guid,
+                    path.as_deref().unwrap_or_default(),
+                    "drawableSourceSet",
+                )?;
+            }
+        }
         write_stored_infos(
             &mut root,
             &s.aliases,
@@ -450,6 +470,11 @@ fn first_difference(a: &Model, b: &Model) -> String {
             })
         })
         .or_else(|| diff("glue", &a.glues, &b.glues, |p| p.info.id.clone()))
+        .or_else(|| {
+            diff("art path", &a.art_paths, &b.art_paths, |p| {
+                p.info.id.clone()
+            })
+        })
         .or_else(|| diff("texture", &a.textures, &b.textures, |p| p.name.clone()))
         .or_else(|| {
             diff("model image", &a.model_images, &b.model_images, |p| {
@@ -1411,6 +1436,107 @@ fn write_art_mesh_fields(
         ctx.pending_paths.push((path, n.info.guid.clone()));
     }
     Ok(())
+}
+
+/// Writes an edited art path in place: object info, parent part, settings
+/// and every keyform's fields and points. Key / blend-shape / clip / target
+/// changes aren't supported yet. spec: art-path.md §1
+fn write_art_path(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    src: &ObjectSource,
+    o: &ArtPath,
+    n: &ArtPath,
+) -> Result<()> {
+    if o.grid.bindings != n.grid.bindings
+        || o.grid.keyforms.len() != n.grid.keyforms.len()
+        || o.blend_shapes != n.blend_shapes
+        || o.clip != n.clip
+        || o.invert_clip != n.invert_clip
+        || o.target != n.target
+    {
+        return unsupported(format!(
+            "art path {}: changing its keys, blend shapes, clipping or deformer",
+            o.info.id
+        ));
+    }
+    write_parents(
+        root,
+        ctx,
+        src,
+        (o.info.parent_part, n.info.parent_part),
+        None,
+    )?;
+    {
+        let mut f = Fields {
+            e: element_at(root, src.element.as_deref())?,
+        };
+        write_info(&mut f, "CDrawableId", &o.info, &n.info)?;
+        f.i32("divNum", o.div_num as i32, n.div_num as i32);
+        f.enumv(
+            "lineAlgorithm",
+            "LineAlgorithm",
+            objects::line_algorithm_name(o.algorithm),
+            objects::line_algorithm_name(n.algorithm),
+        );
+        f.enumv(
+            "lineAlignment",
+            "LineAlignment",
+            objects::line_alignment_name(o.alignment),
+            objects::line_alignment_name(n.alignment),
+        );
+        f.bool("isClosed", o.closed, n.closed);
+        f.string("userData", &o.user_data, &n.user_data);
+    }
+    for (i, (of, nf)) in o.grid.keyforms.iter().zip(&n.grid.keyforms).enumerate() {
+        if of == nf {
+            continue;
+        }
+        let Some(Some(cell)) = src.cells.get(i) else {
+            return invalid(format!(
+                "art path {}: keyform {i} has no element",
+                o.info.id
+            ));
+        };
+        let e = element_at(root, Some(cell))?;
+        let mut f = Fields { e };
+        f.draw_order(of.draw_order, nf.draw_order);
+        f.f32("opacity", of.opacity, nf.opacity);
+        f.color("multiplyColor", &of.multiply, &nf.multiply);
+        f.color("screenColor", &of.screen, &nf.screen);
+        if of.points != nf.points {
+            let e = element_at(root, Some(cell))?;
+            let (owner, uuids) = objects::art_path_point_ids(e);
+            let owner = match owner {
+                Some(x) => x,
+                None => guid_ref_of(root, src)?,
+            };
+            let e = element_at(root, Some(cell))?;
+            // Point GUIDs stay with their index when the count is unchanged.
+            let keep = if of.points.len() == nf.points.len() {
+                &uuids[..]
+            } else {
+                &[]
+            };
+            objects::set_art_path_points(e, &owner, &nf.points, keep)?;
+        }
+    }
+    Ok(())
+}
+
+/// The id of an object's own GUID object (its `guid` field reference).
+fn guid_ref_of(root: &mut Element, src: &ObjectSource) -> Result<String> {
+    let e = element_at(root, src.element.as_deref())?;
+    let Some(d) = holder_depth(e, "guid") else {
+        return invalid("object has no guid");
+    };
+    level_mut(e, d)
+        .children
+        .iter()
+        .find(|c| c.field_name() == Some("guid"))
+        .and_then(|c| c.attr("xs.ref"))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Invalid("object guid is not a reference".into()))
 }
 
 /// Art paths and aliases are kept as stored: only their name, visibility

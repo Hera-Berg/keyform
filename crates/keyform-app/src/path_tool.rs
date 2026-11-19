@@ -99,6 +99,7 @@ impl Document {
             self.soft_select = None;
             self.lasso = false;
             self.temp_path = None;
+            self.art_tool = None;
             if self.path_tool.is_none() {
                 self.path_tool = Some(PathTool::default());
             }
@@ -932,6 +933,7 @@ impl Document {
             return Err("Please select the points to deform.".into());
         }
         self.path_tool = None;
+        self.art_tool = None;
         self.temp_path = Some(TempPath {
             points: Vec::new(),
             selected: None,

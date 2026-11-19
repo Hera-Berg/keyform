@@ -1,6 +1,7 @@
 //! Keyform editing core, independent of the UI: undo/redo history and
 //! model edit operations.
 
+pub mod artpath;
 pub mod automesh;
 pub mod blend_limits;
 pub mod checks;

@@ -38,6 +38,7 @@ impl Document {
         if on {
             let _ = self.set_glue_tool(None);
             let _ = self.set_path_tool(false);
+            let _ = self.set_art_tool(false);
             self.lasso = false;
         }
         Ok(())

@@ -4208,6 +4208,60 @@ fn art_path_loads_and_strokes() {
     let back = Cmo3Document::read(&doc.save_bytes().unwrap()).unwrap();
     assert!(!back.model.art_paths[0].info.visible);
     assert_eq!(back.model.art_paths[0].info.name, "Path renamed");
-    std::sync::Arc::make_mut(&mut doc.model.art_paths[0]).div_num = 5;
-    assert!(doc.save_bytes().is_err());
+    // Settings and points are written; a new art path is created; both
+    // reload as saved.
+    {
+        let a = std::sync::Arc::make_mut(&mut doc.model.art_paths[0]);
+        a.div_num = 5;
+        a.algorithm = keyform_model::LineAlgorithm::Sns;
+        let f = &mut a.grid.keyforms[0];
+        f.points[0].color = [1.0, 0.0, 0.0, 1.0];
+        f.points[0].width = 3.5;
+        f.points.remove(1);
+    }
+    let root = doc.model.root_part;
+    let k = keyform_edit::artpath::create(
+        &mut doc.model,
+        root,
+        &[[100.0, 100.0], [300.0, 150.0], [500.0, 100.0]],
+        keyform_edit::artpath::Defaults::default(),
+    )
+    .unwrap();
+    let bytes = doc.save_bytes().unwrap();
+    let back = Cmo3Document::read(&bytes).unwrap();
+    assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+    assert_eq!(back.model.art_paths.len(), 2);
+    assert_eq!(
+        back.model.art_paths[0].grid.keyforms,
+        doc.model.art_paths[0].grid.keyforms
+    );
+    assert_eq!(back.model.art_paths[0].div_num, 5);
+    let nb = back
+        .model
+        .art_paths
+        .iter()
+        .find(|a| a.info.guid == doc.model.art_paths[k].info.guid)
+        .unwrap();
+    assert_eq!(nb.grid.keyforms, doc.model.art_paths[k].grid.keyforms);
+    let root = back.model.root_part.unwrap();
+    assert!(back.model.parts[root]
+        .children
+        .iter()
+        .any(|c| matches!(c, keyform_model::PartChild::ArtPath(_))));
+    // Deleting it saves too.
+    let mut doc = back;
+    let k = doc
+        .model
+        .art_paths
+        .iter()
+        .position(|a| a.info.id.starts_with("ArtPath") && a.grid.keyforms[0].points.len() == 3)
+        .unwrap();
+    keyform_edit::artpath::delete(&mut doc.model, k).unwrap();
+    let back = Cmo3Document::read(&doc.save_bytes().unwrap()).unwrap();
+    assert_eq!(back.model.art_paths.len(), 1);
+    std::fs::write(
+        std::env::temp_dir().join("keyform-artpath-edit.cmo3"),
+        &bytes,
+    )
+    .unwrap();
 }

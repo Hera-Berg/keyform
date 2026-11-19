@@ -366,6 +366,9 @@ pub struct Document {
     pub soft_prefs: crate::glue_tool::GluePrefs,
     /// Control Point edit tool [P] (deform paths), when active.
     pub path_tool: Option<crate::path_tool::PathTool>,
+    /// ArtPath tool group (art-path.md §5) and its settings.
+    pub art_tool: Option<crate::artpath_tool::ArtTool>,
+    pub art_prefs: crate::artpath_tool::ArtPrefs,
     /// Its Tool Details settings, kept while the tool is off.
     pub path_prefs: crate::path_tool::PathPrefs,
     /// Temporary path handler, while active (deform-paths.md §6).
@@ -705,6 +708,8 @@ impl Document {
             lasso: false,
             soft_select: None,
             path_tool: None,
+            art_tool: None,
+            art_prefs: Default::default(),
             paste_pairing: None,
             anim: None,
             path_prefs: Default::default(),

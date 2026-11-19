@@ -22,7 +22,7 @@ pub enum FormError {
 
 /// Grid cell of the keyform at `values`, if every binding is on a key
 /// (within the parameter's snap epsilon; repeat values wrap).
-fn cell_at(
+pub(crate) fn cell_at(
     bindings: &[Binding],
     params: &[Arc<Parameter>],
     values: &[f32],

@@ -7,6 +7,7 @@
 
 mod animation;
 mod app;
+mod artpath_tool;
 mod audio_out;
 mod auto_mesh_dialog;
 mod blend_limits_dialog;

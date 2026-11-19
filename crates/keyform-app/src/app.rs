@@ -1721,6 +1721,21 @@ impl KeyformApp {
                         d.notice = Some(e);
                     }
                 }
+                if ui
+                    .add(egui::Button::selectable(
+                        d.art_tool.is_some(),
+                        crate::i18n::tr("ArtPath"),
+                    ))
+                    .on_hover_text(crate::i18n::tr(
+                        "ArtPath tools: stroke, edit points, width / opacity brushes, split, join",
+                    ))
+                    .clicked()
+                {
+                    let on = d.art_tool.is_none();
+                    if let Err(e) = d.set_art_tool(on) {
+                        d.notice = Some(e);
+                    }
+                }
                 ui.separator();
             }
             if self.active_doc().is_some_and(|d| d.mesh_edit.is_some()) {
@@ -3129,6 +3144,10 @@ fn tool_details_ui(ui: &mut egui::Ui, doc: Option<&mut Document>, log: &mut Log,
             }
             if doc.path_tool.is_some() {
                 crate::path_tool::controls(ui, doc);
+                return;
+            }
+            if doc.art_tool.is_some() {
+                crate::artpath_tool::controls(ui, doc);
                 return;
             }
             if doc.lasso {

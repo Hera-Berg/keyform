@@ -482,6 +482,7 @@ fn prototype(tag: &str) -> Option<Element> {
 <AlphaComposition xs.n="alphaComposition" v="OVER" />
 </CArtMeshSource>"##
         }
+        "CArtPathSource" => ART_PATH_PROTOTYPE,
         "CWarpDeformerSource" => WARP_PROTOTYPE,
         "CRotationDeformerSource" => ROTATION_PROTOTYPE,
         _ => return None,
@@ -1611,4 +1612,275 @@ pub(super) fn index_by_guid<T>(
         .enumerate()
         .map(|(i, x)| (guid(x).to_owned(), i))
         .collect()
+}
+
+/// A new art path's element, in the layout of a reference-made file
+/// (art-path.md §1; `test-data/blackbox/p5/artpath.cmo3`).
+const ART_PATH_PROTOTYPE: &str = r##"<CArtPathSource xs.id="#PROTO">
+<ACDrawableSource xs.n="super">
+<ACParameterControllableSource xs.n="super">
+<s xs.n="localName">ArtPath</s>
+<b xs.n="isVisible">true</b>
+<b xs.n="isLocked">false</b>
+<null xs.n="parentGuid" />
+<KeyformGridSource xs.n="keyformGridSource" />
+<KeyFormMorphTargetSet xs.n="keyformMorphTargetSet">
+<carray_list xs.n="_morphTargets" count="0" />
+<MorphTargetBlendWeightConstraintSet xs.n="blendWeightConstraintSet">
+<carray_list xs.n="_constraints" count="0" />
+</MorphTargetBlendWeightConstraintSet>
+</KeyFormMorphTargetSet>
+<carray_list xs.n="_extensions" count="0" />
+<null xs.n="internalColor_direct_argb" />
+<CLabelColor xs.n="labelColor" customizedColorInt="-1">
+<CLabelColorType xs.n="labelType" v="UNDEFINED" />
+</CLabelColor>
+</ACParameterControllableSource>
+<CDrawableId xs.n="id" idstr="ArtPath" />
+<null xs.n="guid" />
+<null xs.n="targetDeformerGuid" />
+<carray_list xs.n="clipGuidList" count="0" />
+<b xs.n="invertClippingMask">false</b>
+<CImageIcon xs.n="icon32">
+<null xs.n="image" />
+</CImageIcon>
+<CImageIcon xs.n="icon16">
+<null xs.n="image" />
+</CImageIcon>
+</ACDrawableSource>
+<CArtPathBrushGuid xs.n="brushGuid" uuid="00000000-0000-0000-0000-000000000000" note="(no debug info)" />
+<carray_list xs.n="keyforms" count="1">
+<CArtPathForm>
+<ACDrawableForm xs.n="super">
+<ACForm xs.n="super">
+<null xs.n="guid" />
+<b xs.n="isAnimatedForm">false</b>
+<b xs.n="isLocalAnimatedForm">false</b>
+<CArtPathSource xs.n="_source" xs.ref="#PROTO" />
+<null xs.n="name" />
+<s xs.n="notes" />
+</ACForm>
+<i xs.n="drawOrder">500</i>
+<f xs.n="opacity">1.0</f>
+<CFloatColor xs.n="multiplyColor" red="1.0" green="1.0" blue="1.0" alpha="1.0" />
+<CFloatColor xs.n="screenColor" red="0.0" green="0.0" blue="0.0" alpha="1.0" />
+<CoordType xs.n="coordType">
+<s xs.n="coordName">DeformerLocal</s>
+</CoordType>
+</ACDrawableForm>
+<carray_list xs.n="positions" count="0" />
+</CArtPathForm>
+</carray_list>
+<i xs.n="divNum">20</i>
+<LineAlgorithm xs.n="lineAlgorithm" v="LCNS" />
+<LineAlignment xs.n="lineAlignment" v="CENTER" />
+<s xs.n="userData" />
+<b xs.n="isClosed">false</b>
+</CArtPathSource>"##;
+
+pub(super) fn line_algorithm_name(a: keyform_model::LineAlgorithm) -> &'static str {
+    match a {
+        keyform_model::LineAlgorithm::Sns => "SNS",
+        keyform_model::LineAlgorithm::Lcns => "LCNS",
+    }
+}
+
+pub(super) fn line_alignment_name(a: keyform_model::LineAlignment) -> &'static str {
+    match a {
+        keyform_model::LineAlignment::Center => "CENTER",
+        keyform_model::LineAlignment::LeftCcw => "LEFT_CCW",
+        keyform_model::LineAlignment::RightCcw => "RIGHT_CCW",
+    }
+}
+
+/// `CArtPathPoint` elements of `pts`; point GUIDs reuse `uuids` by index
+/// (new points get new ones). `owner` is the art path's CDrawableGuid id.
+fn art_path_points(
+    owner: &str,
+    pts: &[keyform_model::ArtPathPoint],
+    uuids: &[String],
+) -> Result<Vec<Element>> {
+    let v = |x: f32| format_f32(x);
+    let mut out = Vec::with_capacity(pts.len());
+    for (i, p) in pts.iter().enumerate() {
+        let uuid = uuids
+            .get(i)
+            .cloned()
+            .unwrap_or_else(keyform_model::new_guid);
+        let xml = format!(
+            r#"<CArtPathPoint>
+<CDrawableGuid xs.n="ownerGuid" xs.ref="{owner}" />
+<CArtPathPointGuid xs.n="ctrlPtId" uuid="{uuid}" note="(no debug info)" />
+<CSplineCurvePoint xs.n="curvePointPosition">
+<GVector2 xs.n="point">
+<f xs.n="x">{x}</f>
+<f xs.n="y">{y}</f>
+</GVector2>
+<GVector2 xs.n="startVelocity">
+<f xs.n="x">0.0</f>
+<f xs.n="y">0.0</f>
+</GVector2>
+<GVector2 xs.n="endVelocity">
+<f xs.n="x">0.0</f>
+<f xs.n="y">0.0</f>
+</GVector2>
+</CSplineCurvePoint>
+<f xs.n="width">{w}</f>
+<f xs.n="opacity">{o}</f>
+<f xs.n="colorRed">{r}</f>
+<f xs.n="colorGreen">{g}</f>
+<f xs.n="colorBlue">{b}</f>
+<f xs.n="colorAlpha">{a}</f>
+<b xs.n="isCorner">{c}</b>
+</CArtPathPoint>"#,
+            x = v(p.position[0]),
+            y = v(p.position[1]),
+            w = v(p.width),
+            o = v(p.opacity),
+            r = v(p.color[0]),
+            g = v(p.color[1]),
+            b = v(p.color[2]),
+            a = v(p.color[3]),
+            c = p.corner,
+        );
+        out.push(crate::xml::XmlDocument::parse(xml.as_bytes())?.root);
+    }
+    Ok(out)
+}
+
+/// The owner id and point GUIDs of an art-path form's point list.
+pub(super) fn art_path_point_ids(form: &Element) -> (Option<String>, Vec<String>) {
+    let Some(list) = form
+        .children
+        .iter()
+        .find(|c| c.field_name() == Some("positions"))
+    else {
+        return (None, Vec::new());
+    };
+    let owner = list
+        .children
+        .first()
+        .and_then(|p| {
+            p.children
+                .iter()
+                .find(|c| c.field_name() == Some("ownerGuid"))
+        })
+        .and_then(|c| c.attr("xs.ref"))
+        .map(str::to_owned);
+    let uuids = list
+        .children
+        .iter()
+        .filter_map(|p| {
+            p.children
+                .iter()
+                .find(|c| c.field_name() == Some("ctrlPtId"))
+        })
+        .filter_map(|c| c.attr("uuid").map(str::to_owned))
+        .collect();
+    (owner, uuids)
+}
+
+/// Replaces an art-path form's point list.
+pub(super) fn set_art_path_points(
+    form: &mut Element,
+    owner: &str,
+    pts: &[keyform_model::ArtPathPoint],
+    uuids: &[String],
+) -> Result<()> {
+    let items = art_path_points(owner, pts, uuids)?;
+    let Some(list) = form
+        .children
+        .iter_mut()
+        .find(|c| c.field_name() == Some("positions"))
+    else {
+        return invalid("art path form has no positions");
+    };
+    list.children = items;
+    set_count(list);
+    Ok(())
+}
+
+/// Creates the element of a new art path (one keyform, no bindings).
+pub(super) fn create_art_path(
+    root: &mut Element,
+    ctx: &mut Ctx,
+    new: &Model,
+    a: &keyform_model::ArtPath,
+) -> Result<ElementPath> {
+    if !a.grid.bindings.is_empty() || !a.blend_shapes.shapes.is_empty() || !a.clip.is_empty() {
+        return unsupported(format!(
+            "art path {}: a new art path with keys or clipping",
+            a.info.id
+        ));
+    }
+    let fg = a
+        .grid
+        .guids
+        .first()
+        .cloned()
+        .unwrap_or_else(keyform_model::new_guid);
+    let f0 = a.grid.keyforms.first().cloned().unwrap_or_default();
+    let path = new_object(
+        root,
+        ctx,
+        new,
+        "CArtPathSource",
+        "drawableSourceSet",
+        &a.info,
+        "CDrawableId",
+        &|_root, _ctx, e| {
+            let owner = holder_depth(e, "guid")
+                .and_then(|d| {
+                    super::level_mut(e, d)
+                        .children
+                        .iter()
+                        .find(|c| c.field_name() == Some("guid"))
+                        .and_then(|c| c.attr("xs.ref"))
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            clear_list(e, "clipGuidList");
+            clear_list(e, "_extensions");
+            set_scalar(e, "invertClippingMask", "b", a.invert_clip.to_string());
+            set_scalar(e, "divNum", "i", a.div_num.to_string());
+            super::set_field_attrs(
+                e,
+                "lineAlgorithm",
+                "LineAlgorithm",
+                &[("v", line_algorithm_name(a.algorithm).into())],
+            );
+            super::set_field_attrs(
+                e,
+                "lineAlignment",
+                "LineAlignment",
+                &[("v", line_alignment_name(a.alignment).into())],
+            );
+            set_scalar(e, "userData", "s", xml_text(&a.user_data));
+            set_scalar(e, "isClosed", "b", a.closed.to_string());
+            if let Some(f) = first_form_mut(e) {
+                set_scalar(
+                    f,
+                    "drawOrder",
+                    "i",
+                    (f0.draw_order.round() as i32).to_string(),
+                );
+                set_scalar(f, "opacity", "f", format_f32(f0.opacity));
+                let col = |c: &keyform_model::Color| {
+                    ["red", "green", "blue", "alpha"]
+                        .iter()
+                        .zip(c)
+                        .map(|(k, v)| (*k, format_f32(*v)))
+                        .collect::<Vec<_>>()
+                };
+                super::set_field_attrs(f, "multiplyColor", "CFloatColor", &col(&f0.multiply));
+                super::set_field_attrs(f, "screenColor", "CFloatColor", &col(&f0.screen));
+                set_art_path_points(f, &owner, &f0.points, &[])?;
+            }
+            Ok(())
+        },
+        &fg,
+    )?;
+    // The template may be another art path: always set the target.
+    write_target(root, ctx, &path, new, a.target)?;
+    Ok(path)
 }

@@ -136,6 +136,14 @@ pub fn canvas_ui(
         crate::form_edit::input(ui, &response, doc, rect, ppp);
     } else if doc.temp_path.is_some() {
         crate::path_tool::temp_input(ui, &response, doc, rect, ppp);
+    } else if doc.art_tool.is_some()
+        && !ui.input(|i| {
+            i.modifiers.command
+                && !i.modifiers.alt
+                && !doc.art_prefs.sub.eq(&crate::artpath_tool::ArtSub::Edit)
+        })
+    {
+        crate::artpath_tool::input(ui, &response, doc, rect, ppp);
     } else if doc.path_tool.is_some()
         && !ui.input(|i| i.modifiers.command && !i.modifiers.alt)
         && !doc.is_dragging()
@@ -310,6 +318,9 @@ pub fn canvas_ui(
         }
         if doc.path_tool.is_some() {
             crate::path_tool::draw(&painter, doc, &to_screen, tokens);
+        }
+        if doc.art_tool.is_some() {
+            crate::artpath_tool::draw(&painter, doc, &to_screen, tokens);
         }
         if doc.temp_path.is_some() {
             crate::path_tool::temp_draw(&painter, doc, &to_screen, tokens);
