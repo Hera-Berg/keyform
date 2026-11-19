@@ -163,6 +163,7 @@ struct Index {
     deformers: HashMap<String, DeformerIndex>,
     meshes: HashMap<String, MeshIndex>,
     glues: HashMap<String, GlueIndex>,
+    art_paths: HashMap<String, usize>,
     /// CImageResource identity → texture index.
     texture_images: HashMap<*const crate::xml::Element, usize>,
     textures_by_guid: HashMap<String, usize>,
@@ -446,6 +447,11 @@ impl<'a, 'd> Loader<'a, 'd> {
             .copied()
             .filter(|d| d.tag() == "CArtPathSource")
             .collect();
+        for (k, d) in art_path_objs.iter().enumerate() {
+            self.idx
+                .art_paths
+                .insert(d.guid("guid")?.unwrap_or_default().to_owned(), k);
+        }
         let skipped = drawable_objs.len() - meshes.len() - art_path_objs.len();
         if skipped > 0 {
             self.warn(format!("{skipped} drawables of unsupported kinds skipped"));
@@ -1551,7 +1557,12 @@ impl<'a, 'd> Loader<'a, 'd> {
                     .deformers
                     .get(uuid)
                     .map(|&i| PartChild::Deformer(i)),
-                "CDrawableGuid" => self.idx.meshes.get(uuid).map(|&i| PartChild::ArtMesh(i)),
+                "CDrawableGuid" => self
+                    .idx
+                    .meshes
+                    .get(uuid)
+                    .map(|&i| PartChild::ArtMesh(i))
+                    .or_else(|| self.idx.art_paths.get(uuid).map(|&k| PartChild::ArtPath(k))),
                 "CAffecterGuid" => self.idx.glues.get(uuid).map(|&i| PartChild::Glue(i)),
                 _ => None,
             };

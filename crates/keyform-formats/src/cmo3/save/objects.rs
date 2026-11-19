@@ -225,6 +225,10 @@ pub(super) fn write_children(
                 "CAffecterGuid",
                 new.glues.get(i).map(|x| x.info.guid.clone()),
             ),
+            PartChild::ArtPath(i) => (
+                "CDrawableGuid",
+                new.art_paths.get(i).map(|x| x.info.guid.clone()),
+            ),
             PartChild::Other => {
                 if let Some(e) = others.next() {
                     out.push(e);
@@ -247,6 +251,7 @@ fn new_has_guid(m: &Model, u: &str) -> bool {
         || m.deformers.iter().any(|x| x.info.guid == u)
         || m.art_meshes.iter().any(|x| x.info.guid == u)
         || m.glues.iter().any(|x| x.info.guid == u)
+        || m.art_paths.iter().any(|x| x.info.guid == u)
 }
 
 /// Replaces every `xs.ref="from"` in `e` by `to`.

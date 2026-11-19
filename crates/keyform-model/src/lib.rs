@@ -439,7 +439,9 @@ pub enum PartChild {
     Deformer(DeformerIndex),
     ArtMesh(MeshIndex),
     Glue(GlueIndex),
-    /// Something Keyform does not model yet (art path, alias, …).
+    /// An art path (`art_paths` index).
+    ArtPath(usize),
+    /// Something Keyform does not model (kept in place on save).
     Other,
 }
 

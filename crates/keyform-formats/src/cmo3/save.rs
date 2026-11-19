@@ -958,6 +958,7 @@ fn child_guids<'m>(m: &'m Model, part: &Part) -> Vec<(u8, Option<&'m str>)> {
             PartChild::Deformer(i) => (1, m.deformers.get(i).map(|x| x.info.guid.as_str())),
             PartChild::ArtMesh(i) => (2, m.art_meshes.get(i).map(|x| x.info.guid.as_str())),
             PartChild::Glue(i) => (3, m.glues.get(i).map(|x| x.info.guid.as_str())),
+            PartChild::ArtPath(i) => (5, m.art_paths.get(i).map(|x| x.info.guid.as_str())),
             PartChild::Other => (4, None),
         })
         .collect()
