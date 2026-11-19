@@ -207,7 +207,10 @@ fn print_summary(m: &Model) {
 }
 
 fn roundtrip(input: &Path, output: &Path) -> R {
-    if input.extension().is_some_and(|e| e.eq_ignore_ascii_case("can3")) {
+    if input
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("can3"))
+    {
         let mut doc = keyform_formats::can3::Can3Document::read(&std::fs::read(input)?)?;
         let bytes = doc.save_bytes()?;
         std::fs::write(output, &bytes)?;
@@ -444,7 +447,8 @@ fn new_animation(model: &Path, out: &Path) -> R {
 fn physics_check(model: &Path, physics3: &Path, input: &str, output: &str) -> R {
     let m = load_any(model)?;
     let id_of = |id: &str| m.parameters.iter().position(|p| p.id == id);
-    let (rig, warnings) = keyform_physics::json3::parse(&std::fs::read_to_string(physics3)?, &id_of)?;
+    let (rig, warnings) =
+        keyform_physics::json3::parse(&std::fs::read_to_string(physics3)?, &id_of)?;
     for w in warnings {
         eprintln!("warning: {w}");
     }

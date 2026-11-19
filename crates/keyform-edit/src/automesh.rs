@@ -298,7 +298,10 @@ fn contours(f: &Field, level: f32) -> Vec<Vec<[f32; 2]>> {
         }
     }
     let mut loops = Vec::new();
-    let keys: Vec<_> = next.keys().copied().collect();
+    // Start each loop at its smallest edge, not in hash order, so the same
+    // image always gives the same outline (and the same mesh).
+    let mut keys: Vec<_> = next.keys().copied().collect();
+    keys.sort_unstable();
     let mut done = std::collections::HashSet::new();
     for k0 in keys {
         if done.contains(&k0) {
@@ -866,6 +869,28 @@ mod tests {
         let heavy = generate(&img, IDENTITY, &presets()[2].1, 1.0);
         assert!(little.points.len() < g.points.len());
         assert!(heavy.points.len() > g.points.len());
+    }
+
+    /// Found by the e2e session: the same layer gave a different mesh on
+    /// each run because contour loops started in hash-map order.
+    #[test]
+    fn same_image_same_mesh() {
+        let mut img = disc(300, 110.0);
+        // An irregular shape, so where a loop starts changes the outline.
+        for i in 0..300 * 300usize {
+            let (x, y) = ((i % 300) as f32, (i / 300) as f32);
+            if (x - 210.0).hypot(y - 90.0) < 45.0
+                || (x > 60.0 && x < 140.0 && y > 200.0 && y < 270.0)
+            {
+                img.alpha[i] = 255;
+            }
+        }
+        let first = generate(&img, IDENTITY, &presets()[1].1, 1.0);
+        for _ in 0..8 {
+            let g = generate(&img, IDENTITY, &presets()[1].1, 1.0);
+            assert_eq!(g.points, first.points);
+            assert_eq!(g.edges, first.edges);
+        }
     }
 
     #[test]

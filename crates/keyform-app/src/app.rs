@@ -748,7 +748,7 @@ impl KeyformApp {
                     }
                 });
                 if ui
-                    .add(egui::Button::new(crate::i18n::tr("Open")).shortcut_text("Ctrl+O"))
+                    .add(egui::Button::new(crate::i18n::tr("Open…")).shortcut_text("Ctrl+O"))
                     .clicked()
                 {
                     self.open_dialog();
@@ -2693,6 +2693,13 @@ impl TabViewer for Viewer<'_> {
     }
 
     fn on_tab_button(&mut self, tab: &mut Tab, response: &egui::Response) {
+        // Dock tabs are painted by egui_dock without accessible names: name
+        // them (role Tab) so assistive tools and the UI map can reach them.
+        let title = self.title(tab).text().to_owned();
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &title));
+        response.ctx.accesskit_node_builder(response.id, |b| {
+            b.set_role(egui::accesskit::Role::Tab);
+        });
         if let (Tab::View(uid), true) = (*tab, response.clicked()) {
             *self.active = self.slots.iter().position(|s| s.uid == uid);
         }

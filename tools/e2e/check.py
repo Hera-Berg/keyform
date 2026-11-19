@@ -8,8 +8,8 @@ usage: check.py OUTDIR [--keyform BIN] [--kf BIN] [--golden DIR] [--update]
 - the .cmo3 and .can3 re-save byte-identically (kf roundtrip);
 - every rigged parameter visibly changes the render at its minimum and its
   maximum (kf render of the exported runtime model);
-- those renders match golden snapshots (mean difference < 1 level and few
-  differing pixels, as in the GPU-vs-CPU test); --update writes them;
+- those renders match golden snapshots (the session is deterministic, so
+  almost exactly); --update writes them;
 - physics moves each OUT when IN swings (kf physics);
 - the exported motion has the expected curves.
 Writes OUTDIR/check.json and exits 1 on any failure."""
@@ -48,11 +48,11 @@ def ranges(model3, kf):
     return r
 
 
-def diff_stats(a, b):
+def diff_stats(a, b, threshold=3):
     d = ImageChops.difference(a.convert("RGBA"), b.convert("RGBA"))
     px = list(d.get_flattened_data()) if hasattr(d, 'get_flattened_data') else list(d.getdata())
     total = sum(sum(p) for p in px)
-    bad = sum(1 for p in px if max(p) > 3)
+    bad = sum(1 for p in px if max(p) > threshold)
     return total / (len(px) * 4), bad
 
 
@@ -137,8 +137,10 @@ def main():
                 Image.open(path).save(g)
                 record(f"golden {name} written", True)
                 continue
+            # The session is deterministic (same input, same moc3), so the
+            # renders must match almost exactly.
             mean, bad = diff_stats(Image.open(g), Image.open(path))
-            record(f"golden {name}", mean < 1.0 and bad < 200, f"mean {mean:.3f}, {bad} pixels > 3")
+            record(f"golden {name}", mean < 0.05 and bad < 20, f"mean {mean:.3f}, {bad} pixels > 3")
     for pair in filter(None, a.physics.split(",")):
         i, o = pair.split(":")
         code, msg = run([a.kf, "physics", model3, physics3, i, o])

@@ -622,6 +622,30 @@ def export_motions(h, psd, out):
         time.sleep(0.2)
 
 
+def viewer_motion(h, psd, out):
+    """Open the exported model3.json, add the motion in Model Settings
+    (group Idle) and save the model3.json, so a viewer plays it."""
+    rt = os.path.join(out, "runtime")
+    model3 = next(os.path.join(rt, f) for f in sorted(os.listdir(rt)) if f.endswith(".model3.json"))
+    motion = next(os.path.join(rt, f) for f in sorted(os.listdir(rt)) if f.endswith(".motion3.json"))
+    h.answer_dialog(model3)
+    h.menu("File", "Open…")
+    time.sleep(2)
+    h.click_label("Model Settings")
+    h.settle(2)
+    h.answer_dialog(motion)
+    h.click_label("Add motions…")
+    h.settle(2)
+    h.click_label("Save model3.json")
+    for _ in range(50):
+        if "Motions" in json.load(open(model3)).get("FileReferences", {}):
+            break
+        time.sleep(0.2)
+    refs = json.load(open(model3)).get("FileReferences", {})
+    if os.path.basename(motion) not in json.dumps(refs.get("Motions", {})):
+        raise RuntimeError(f"model3.json lists no motion: {refs}")
+
+
 def auto_mesh(h, psd, out):
     select_all_meshes(h)
     h.menu("Modeling", "ArtMesh", "Automatic Mesh generator…")
@@ -657,6 +681,7 @@ STEPS = [
     ("Scene keys: head turn, blink, mouth", anim_keys),
     ("File ▸ Save as model.can3", save_can3),
     ("Export motion files (motion3.json)", export_motions),
+    ("Model Settings: add the motion to model3.json", viewer_motion),
 ]
 
 if __name__ == "__main__":

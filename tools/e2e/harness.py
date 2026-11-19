@@ -92,8 +92,12 @@ class Harness:
     def focus(self):
         """Gives the window keyboard focus (no window manager does it on a
         bare test display)."""
-        self.win.set_input_focus(X.RevertToParent, X.CurrentTime)
-        self.d.sync()
+        try:
+            self.win.set_input_focus(X.RevertToParent, X.CurrentTime)
+            self.d.sync()
+        except Exception:
+            # Not mapped yet (BadMatch): retried before the next key press.
+            pass
         time.sleep(0.1)
 
     def _windows(self, w):

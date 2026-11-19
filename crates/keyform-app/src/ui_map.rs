@@ -126,7 +126,7 @@ impl egui::Plugin for UiMap {
                         && ctx.layer_id_at(r.center()).is_some_and(|top| top != *layer);
                     (
                         r.is_positive()
-                            .then(|| [r.min.x, r.min.y, r.max.x, r.max.y]),
+                            .then_some([r.min.x, r.min.y, r.max.x, r.max.y]),
                         covered,
                     )
                 }
