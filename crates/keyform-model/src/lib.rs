@@ -106,6 +106,9 @@ pub struct Model {
     /// Art paths (video / non-SDK drawables; loaded, rendered, kept as
     /// stored). spec: 70-advanced/art-path.md
     pub art_paths: Vec<Arc<ArtPath>>,
+    /// Aliases (editor / video only; loaded and drawn, kept as stored).
+    /// spec: 70-advanced/alias.md
+    pub aliases: Vec<Arc<Alias>>,
     /// Apply 3D Rotation Expression settings per object GUID
     /// (`CRotate3DExtension`). spec: 70-advanced/generators.md §1
     pub rotate3d: Vec<(Guid, Rotate3dConfig)>,
@@ -147,6 +150,7 @@ impl Model {
             && self.motion_sync == other.motion_sync
             && self.rotate3d == other.rotate3d
             && self.art_paths == other.art_paths
+            && self.aliases == other.aliases
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -182,6 +186,7 @@ impl Model {
             && self.motion_sync == other.motion_sync
             && self.rotate3d == other.rotate3d
             && self.art_paths == other.art_paths
+            && self.aliases == other.aliases
             && self.export == other.export
             && self.canvas == other.canvas
             && self.name == other.name
@@ -1129,4 +1134,30 @@ pub struct ArtPath {
     /// Brush GUID (the null GUID = unset).
     pub brush: Guid,
     pub user_data: String,
+}
+
+/// What an alias draws again (`referenceObjectGuid`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AliasRef {
+    Part(PartIndex),
+    Mesh(MeshIndex),
+    ArtPath(usize),
+    Alias(usize),
+    /// "The reference object does not exist."
+    Missing,
+}
+
+/// An alias (`CAliasSource`). spec: 70-advanced/alias.md
+#[derive(Clone, Debug, PartialEq)]
+pub struct Alias {
+    pub info: ObjectInfo,
+    pub target: Option<DeformerIndex>,
+    pub grid: KeyformGrid<AliasForm>,
+    pub blend_shapes: BlendShapes<AliasForm>,
+    pub reference: AliasRef,
+    pub offscreen: bool,
+    pub clip: Vec<MeshIndex>,
+    pub invert_clip: bool,
+    pub color_composition: ColorComposition,
+    pub alpha_composition: AlphaComposition,
 }

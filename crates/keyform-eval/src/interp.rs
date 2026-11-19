@@ -153,6 +153,27 @@ impl Blend for PartForm {
     }
 }
 
+impl Blend for keyform_model::AliasForm {
+    fn zeroed(&self) -> Self {
+        Self::default()
+    }
+    fn add_scaled(&mut self, o: &Self, w: f32) {
+        self.draw_order += w * o.draw_order;
+        self.opacity += w * o.opacity;
+        add_color(&mut self.multiply, &o.multiply, w);
+        add_color(&mut self.screen, &o.screen, w);
+    }
+    fn finish(&mut self) {
+        self.draw_order = truncate_draw_order(self.draw_order);
+    }
+    fn clamp(&mut self) {
+        self.draw_order = self.draw_order.clamp(0.0, 1000.0);
+        self.opacity = self.opacity.clamp(0.0, 1.0);
+        clamp_color(&mut self.multiply);
+        clamp_color(&mut self.screen);
+    }
+}
+
 impl Blend for keyform_model::ArtPathForm {
     fn zeroed(&self) -> Self {
         Self {

@@ -6,49 +6,148 @@ use crate::{MeshState, PartState};
 
 enum Entry {
     Mesh(MeshIndex),
+    ArtPath(usize),
+    Alias(usize),
     Group(PartIndex, Vec<Entry>),
 }
 
-/// Builds the group tree (§1), stable-sorts every group by draw order (§2)
-/// and flattens it (§3). Returns art meshes back to front.
-pub fn render_order(m: &Model, parts: &[PartState], meshes: &[MeshState]) -> Vec<MeshIndex> {
+/// A drawn object in render order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawItem {
+    Mesh(MeshIndex),
+    ArtPath(usize),
+    /// Alias `k` drawing mesh `mi` again.
+    AliasMesh(usize, MeshIndex),
+    /// Alias `k` drawing art path `p` again.
+    AliasArtPath(usize, usize),
+    /// Alias placeholder before expansion (not drawn).
+    Alias(usize),
+}
+
+/// Render order of art meshes and art paths, back to front. Art paths sort
+/// with the objects of their parent part by draw order; on ties they are
+/// drawn on top (TODO(Q-0046)). spec: draw-order.md, art-path.md
+pub fn render_items(
+    m: &Model,
+    parts: &[PartState],
+    meshes: &[MeshState],
+    art_orders: &[f32],
+    alias_orders: &[f32],
+) -> Vec<DrawItem> {
     let Some(root) = m.root_part.filter(|&r| r < m.parts.len()) else {
-        // No part tree: model order.
-        return (0..m.art_meshes.len()).collect();
+        let mut v: Vec<DrawItem> = (0..m.art_meshes.len()).map(DrawItem::Mesh).collect();
+        v.extend((0..m.art_paths.len().min(art_orders.len())).map(DrawItem::ArtPath));
+        v.extend((0..m.aliases.len().min(alias_orders.len())).map(DrawItem::Alias));
+        return v;
+    };
+    let mut paths_of: Vec<Vec<Entry0>> = vec![Vec::new(); m.parts.len()];
+    for (k, a) in m.art_paths.iter().enumerate().take(art_orders.len()) {
+        let p = a
+            .info
+            .parent_part
+            .filter(|&p| p < m.parts.len())
+            .unwrap_or(root);
+        paths_of[p].push(Entry0::ArtPath(k));
+    }
+    for (k, a) in m.aliases.iter().enumerate().take(alias_orders.len()) {
+        let p = a
+            .info
+            .parent_part
+            .filter(|&p| p < m.parts.len())
+            .unwrap_or(root);
+        paths_of[p].push(Entry0::Alias(k));
+    }
+    let cx = Cx {
+        m,
+        paths_of: &paths_of,
     };
     let mut visited = vec![false; m.parts.len()];
     let mut top = Vec::new();
-    fill(m, root, &mut top, &mut visited);
-    sort_group(&mut top, parts, meshes);
+    fill(&cx, root, &mut top, &mut visited);
+    let keys = Keys {
+        parts,
+        meshes,
+        art_orders,
+        alias_orders,
+    };
+    sort_group(&mut top, &keys);
     let mut out = Vec::with_capacity(meshes.len());
     flatten(&top, &mut out);
     out
 }
 
+/// An art path or alias attached to a part.
+#[derive(Clone, Copy)]
+enum Entry0 {
+    ArtPath(usize),
+    Alias(usize),
+}
+
+struct Cx<'a> {
+    m: &'a Model,
+    paths_of: &'a [Vec<Entry0>],
+}
+
+struct Keys<'a> {
+    parts: &'a [PartState],
+    meshes: &'a [MeshState],
+    art_orders: &'a [f32],
+    alias_orders: &'a [f32],
+}
+
+/// Builds the group tree (§1), stable-sorts every group by draw order (§2)
+/// and flattens it (§3). Returns art meshes back to front.
+pub fn render_order(m: &Model, parts: &[PartState], meshes: &[MeshState]) -> Vec<MeshIndex> {
+    meshes_of(&render_items(m, parts, meshes, &[], &[]))
+}
+
+/// The art meshes of a render-item list.
+pub fn meshes_of(items: &[DrawItem]) -> Vec<MeshIndex> {
+    items
+        .iter()
+        .filter_map(|i| match *i {
+            DrawItem::Mesh(mi) => Some(mi),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Appends `part`'s children to `group`, inlining parts without a draw-order
 /// group, then reverses the group's own list (palette top first → bottom first).
-fn fill(m: &Model, part: PartIndex, group: &mut Vec<Entry>, visited: &mut [bool]) {
+fn fill(cx: &Cx, part: PartIndex, group: &mut Vec<Entry>, visited: &mut [bool]) {
     let start = group.len();
-    collect(m, part, group, visited);
+    collect(cx, part, group, visited);
     group[start..].reverse();
 }
 
-fn collect(m: &Model, part: PartIndex, group: &mut Vec<Entry>, visited: &mut [bool]) {
+fn collect(cx: &Cx, part: PartIndex, group: &mut Vec<Entry>, visited: &mut [bool]) {
+    let m = cx.m;
     if visited[part] {
         return;
     }
     visited[part] = true;
+    // Art paths first: the group is reversed, so they win ties.
+    group.extend(
+        cx.paths_of
+            .get(part)
+            .into_iter()
+            .flatten()
+            .map(|&e| match e {
+                Entry0::ArtPath(k) => Entry::ArtPath(k),
+                Entry0::Alias(k) => Entry::Alias(k),
+            }),
+    );
     for &c in &m.parts[part].children {
         match c {
             PartChild::ArtMesh(i) if i < m.art_meshes.len() => group.push(Entry::Mesh(i)),
             PartChild::Part(p) if p < m.parts.len() => {
                 if m.parts[p].draw_order_group {
                     let mut sub = Vec::new();
-                    fill(m, p, &mut sub, visited);
+                    fill(cx, p, &mut sub, visited);
                     group.push(Entry::Group(p, sub));
                 } else {
                     // Inlined in palette order; the enclosing group reverses once.
-                    collect(m, p, group, visited);
+                    collect(cx, p, group, visited);
                 }
             }
             _ => {}
@@ -56,28 +155,32 @@ fn collect(m: &Model, part: PartIndex, group: &mut Vec<Entry>, visited: &mut [bo
     }
 }
 
-fn key(e: &Entry, parts: &[PartState], meshes: &[MeshState]) -> f32 {
+fn key(e: &Entry, k: &Keys) -> f32 {
     match e {
-        Entry::Mesh(i) => meshes.get(*i).map_or(0.0, |s| s.draw_order),
-        Entry::Group(p, _) => parts.get(*p).map_or(0.0, |s| s.form.draw_order),
+        Entry::Mesh(i) => k.meshes.get(*i).map_or(0.0, |s| s.draw_order),
+        Entry::ArtPath(i) => k.art_orders.get(*i).copied().unwrap_or(0.0),
+        Entry::Alias(i) => k.alias_orders.get(*i).copied().unwrap_or(0.0),
+        Entry::Group(p, _) => k.parts.get(*p).map_or(0.0, |s| s.form.draw_order),
     }
 }
 
-fn sort_group(g: &mut [Entry], parts: &[PartState], meshes: &[MeshState]) {
+fn sort_group(g: &mut [Entry], k: &Keys) {
     // Stable ascending sort: ties keep the reversed palette order, so the
     // entry higher in the palette is drawn on top.
-    g.sort_by(|a, b| key(a, parts, meshes).total_cmp(&key(b, parts, meshes)));
+    g.sort_by(|a, b| key(a, k).total_cmp(&key(b, k)));
     for e in g.iter_mut() {
         if let Entry::Group(_, sub) = e {
-            sort_group(sub, parts, meshes);
+            sort_group(sub, k);
         }
     }
 }
 
-fn flatten(g: &[Entry], out: &mut Vec<MeshIndex>) {
+fn flatten(g: &[Entry], out: &mut Vec<DrawItem>) {
     for e in g {
         match e {
-            Entry::Mesh(i) => out.push(*i),
+            Entry::Mesh(i) => out.push(DrawItem::Mesh(*i)),
+            Entry::ArtPath(i) => out.push(DrawItem::ArtPath(*i)),
+            Entry::Alias(i) => out.push(DrawItem::Alias(*i)),
             Entry::Group(_, sub) => flatten(sub, out),
         }
     }

@@ -313,8 +313,11 @@ fn delete_confirmation(
         Some(true) => {
             st.confirm_delete = None;
             if let Err(e) = doc.try_edit("Delete Parameter", |m| {
-                keyform_edit::objects::remove_parameter(m, p);
-                Ok(())
+                if keyform_edit::objects::remove_parameter(m, p) {
+                    Ok(())
+                } else {
+                    Err(crate::i18n::tr(keyform_edit::objects::PARAMETER_USED_BY_STORED).into())
+                }
             }) {
                 log.warn(e);
             }

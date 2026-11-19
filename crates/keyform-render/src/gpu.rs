@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use keyform_eval::draw_order::DrawItem;
 use keyform_eval::Frame;
 use keyform_model::{ColorComposition, MeshIndex, Model};
 use wgpu::util::DeviceExt;
@@ -48,7 +49,12 @@ const SAMPLER_ANISOTROPIC: usize = 2;
 struct Vertex {
     pos: [f32; 2],
     uv: [f32; 2],
+    /// Premultiplied vertex colour (white except art-path strokes).
+    col: [f32; 4],
 }
+
+/// Geometry keys at and above this are art paths (`ART_PATH_KEY + k`).
+const ART_PATH_KEY: usize = usize::MAX / 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Cull {
@@ -76,6 +82,8 @@ pub struct GpuRenderer {
     textures: Vec<Option<GpuTex>>,
     /// 1×1 placeholder bound where a texture slot is unused.
     dummy: GpuTex,
+    /// 1×1 white, sampled by art-path strokes.
+    white: GpuTex,
     pub adapter_info: String,
     pub warnings: Vec<String>,
 }
@@ -242,7 +250,7 @@ impl GpuRenderer {
                         buffers: &[Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<Vertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
                         })],
                     },
                     primitive: wgpu::PrimitiveState {
@@ -339,6 +347,11 @@ impl GpuRenderer {
             uv_scale: [1.0, 1.0],
             sampler: SAMPLER_BILINEAR,
         };
+        let white = GpuTex {
+            view: upload(1, 1, 1, &[255, 255, 255, 255], "white"),
+            uv_scale: [1.0, 1.0],
+            sampler: SAMPLER_BILINEAR,
+        };
         let max_side = device.limits().max_texture_dimension_2d;
         let textures = model
             .texture_sources()
@@ -407,6 +420,7 @@ impl GpuRenderer {
             samplers,
             textures,
             dummy,
+            white,
             adapter_info,
             warnings,
         }
@@ -538,6 +552,50 @@ impl GpuRenderer {
             if geo.contains_key(&mi) {
                 return;
             }
+            if mi >= ART_PATH_KEY {
+                let Some(st) = frame.art_paths.get(mi - ART_PATH_KEY) else {
+                    return;
+                };
+                let s = &st.stroke;
+                let verts: Vec<Vertex> = s
+                    .positions
+                    .chunks_exact(2)
+                    .zip(&s.colors)
+                    .map(|(p, c)| {
+                        let a = c[3].clamp(0.0, 1.0);
+                        Vertex {
+                            pos: ndc(p),
+                            // Texel centre (a corner would blend in the border).
+                            uv: [0.5, 0.5],
+                            col: [
+                                c[0].clamp(0.0, 1.0) * a,
+                                c[1].clamp(0.0, 1.0) * a,
+                                c[2].clamp(0.0, 1.0) * a,
+                                a,
+                            ],
+                        }
+                    })
+                    .collect();
+                if verts.is_empty() || s.indices.is_empty() {
+                    return;
+                }
+                let vb = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("stroke vertices"),
+                        contents: bytemuck::cast_slice(&verts),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
+                let ib = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("stroke indices"),
+                        contents: bytemuck::cast_slice(&s.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
+                geo.insert(mi, (vb, ib, s.indices.len() as u32));
+                return;
+            }
             let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
                 return;
             };
@@ -551,6 +609,7 @@ impl GpuRenderer {
                         am.uvs.get(2 * i).copied().unwrap_or(0.0),
                         am.uvs.get(2 * i + 1).copied().unwrap_or(0.0),
                     ],
+                    col: [1.0; 4],
                 })
                 .collect();
             let nv = verts.len() as u32;
@@ -582,6 +641,9 @@ impl GpuRenderer {
         };
 
         let tex_of = |mi: MeshIndex| -> Option<&GpuTex> {
+            if mi >= ART_PATH_KEY {
+                return Some(&self.white);
+            }
             m.texture_slot(m.art_meshes.get(mi)?)
                 .and_then(|t| self.textures.get(t))
                 .and_then(Option::as_ref)
@@ -679,10 +741,79 @@ impl GpuRenderer {
             });
             ops.push(Op::Pop(items.len() - 1));
         };
-        for &mi in &frame.render_order {
+        for item in &frame.items {
+            let (mi, alias_state) = match *item {
+                DrawItem::Mesh(mi) => (mi, None),
+                DrawItem::AliasMesh(k, mi) => match frame.alias_mesh_state(k, mi) {
+                    Some(st) => (mi, Some((k, st))),
+                    None => continue,
+                },
+                DrawItem::Alias(_) => continue,
+                DrawItem::ArtPath(_) | DrawItem::AliasArtPath(..) => {
+                    let (k, parent, st) = match *item {
+                        DrawItem::ArtPath(k) => {
+                            match (m.art_paths.get(k), frame.art_paths.get(k)) {
+                                (Some(a), Some(st)) => (k, a.info.parent_part, st.clone()),
+                                _ => continue,
+                            }
+                        }
+                        DrawItem::AliasArtPath(j, k) => {
+                            match (m.aliases.get(j), frame.alias_path_state(j, k)) {
+                                (Some(a), Some(st)) => (k, a.info.parent_part, st),
+                                _ => continue,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    let key = ART_PATH_KEY + k;
+                    if !st.is_drawn() {
+                        continue;
+                    }
+                    geometry(&mut geo, key);
+                    if !geo.contains_key(&key) {
+                        continue;
+                    }
+                    let chain = crate::offscreen_chain(m, parent);
+                    while !stack.is_empty()
+                        && !chain.starts_with(&stack.iter().map(|(p, _)| *p).collect::<Vec<_>>())
+                    {
+                        let top = stack.pop().expect("non-empty");
+                        pop(&mut items, &mut ops, &mut mask_keys, &mut geo, top);
+                    }
+                    for &p in &chain[stack.len()..] {
+                        stack.push((p, buffers));
+                        ops.push(Op::Push(buffers));
+                        buffers += 1;
+                    }
+                    let o = st.opacity;
+                    items.push(Item {
+                        mesh: key,
+                        buffer: None,
+                        kind: PipeKind::Normal,
+                        cull: Cull::None,
+                        mask: None,
+                        uniform: DrawUniform {
+                            base: [o, o, o, o],
+                            mul: [st.multiply[0], st.multiply[1], st.multiply[2], 1.0],
+                            scr: [st.screen[0], st.screen[1], st.screen[2], 1.0],
+                            flags: [0.0, 0.0, o, 0.0],
+                            modes: [0, 0, 0, 0],
+                            uvs: [1.0, 1.0, 0.0, 0.0],
+                        },
+                    });
+                    ops.push(Op::Draw(items.len() - 1));
+                    continue;
+                }
+            };
             let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
                 continue;
             };
+            // TODO(Q-0046): alias clip lists, offscreen and compositions.
+            let parent = match &alias_state {
+                Some((k, _)) => m.aliases.get(*k).and_then(|a| a.info.parent_part),
+                None => am.info.parent_part,
+            };
+            let ms = alias_state.as_ref().map_or(ms, |(_, st)| st);
             if !ms.is_drawn() || tex_of(mi).is_none() {
                 continue;
             }
@@ -690,7 +821,7 @@ impl GpuRenderer {
             if !geo.contains_key(&mi) {
                 continue;
             }
-            let chain = crate::offscreen_chain(m, am.info.parent_part);
+            let chain = crate::offscreen_chain(m, parent);
             while !stack.is_empty()
                 && !chain.starts_with(&stack.iter().map(|(p, _)| *p).collect::<Vec<_>>())
             {
@@ -778,18 +909,22 @@ impl GpuRenderer {
                 Vertex {
                     pos: [-1.0, 1.0],
                     uv: [0.0, 0.0],
+                    col: [1.0; 4],
                 },
                 Vertex {
                     pos: [1.0, 1.0],
                     uv: [1.0, 0.0],
+                    col: [1.0; 4],
                 },
                 Vertex {
                     pos: [1.0, -1.0],
                     uv: [1.0, 1.0],
+                    col: [1.0; 4],
                 },
                 Vertex {
                     pos: [-1.0, -1.0],
                     uv: [0.0, 1.0],
+                    col: [1.0; 4],
                 },
             ];
             let vb = self

@@ -23,13 +23,17 @@ struct Draw {
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    // Premultiplied vertex colour (white for art meshes; art-path strokes,
+    // art-path.md §3).
+    @location(1) col: vec4<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
+fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) col: vec4<f32>) -> VsOut {
     var o: VsOut;
     o.pos = vec4<f32>(pos, 0.0, 1.0);
     o.uv = uv;
+    o.col = col;
     return o;
 }
 
@@ -41,8 +45,8 @@ fn sample_tex(uv: vec2<f32>) -> vec4<f32> {
 }
 
 // Premultiplied texel with multiply and screen colour applied (appearance.md §4).
-fn shaded(uv: vec2<f32>) -> vec4<f32> {
-    let c = sample_tex(uv);
+fn shaded(uv: vec2<f32>, col: vec4<f32>) -> vec4<f32> {
+    let c = sample_tex(uv) * col;
     let rgb = c.rgb * d.mul.rgb;
     return vec4<f32>(rgb + d.scr.rgb * c.a - rgb * d.scr.rgb, c.a);
 }
@@ -64,7 +68,7 @@ fn fs_simple(in: VsOut) -> @location(0) vec4<f32> {
     if (d.flags.w != 0.0) {
         return sample_tex(in.uv) * vec4<f32>(1.0, 0.0, 0.0, 0.5);
     }
-    var o = shaded(in.uv) * d.base;
+    var o = shaded(in.uv, in.col) * d.base;
     o = vec4<f32>(min(o.rgb, vec3<f32>(o.a)), o.a);
     return o * mask_factor(in.pos);
 }
@@ -171,7 +175,7 @@ fn blend_fn(mode: u32, cs: vec3<f32>, cd: vec3<f32>) -> vec3<f32> {
 // 8-bit target quantises the result.
 @fragment
 fn fs_advanced(in: VsOut) -> @location(0) vec4<f32> {
-    let src = shaded(in.uv);
+    let src = shaded(in.uv, in.col);
     let dst = textureLoad(dst_copy, vec2<i32>(in.pos.xy), 0);
     var cs = vec3<f32>(0.0);
     if (abs(src.a) >= EPS) { cs = src.rgb / src.a; }

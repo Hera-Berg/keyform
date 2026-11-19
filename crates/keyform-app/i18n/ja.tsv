@@ -221,3 +221,6 @@ Easing	イージング
 Record motion and generate animation data	モーションを記録してアニメーションデータを生成
 No thinning	間引きなし
 Remove redundant keys	冗長なキーを削除
+Kept as stored: shown and saved, not editable in Keyform yet	保存されたまま保持：表示と保存のみ（Keyform ではまだ編集できません）
+The parameter is used by art paths or aliases and cannot be deleted.	このパラメータはアートパスまたはエイリアスで使用されているため削除できません。
+Art paths are placed on this deformer; move them first.	このデフォーマにはアートパスが配置されています。先に移動してください。

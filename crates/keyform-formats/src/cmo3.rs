@@ -45,6 +45,8 @@ pub struct SourceMap {
     pub deformers: Vec<ObjectSource>,
     pub art_meshes: Vec<ObjectSource>,
     pub glues: Vec<ObjectSource>,
+    pub art_paths: Vec<ObjectSource>,
+    pub aliases: Vec<ObjectSource>,
 }
 
 /// A loaded project: archive, lossless document and the typed model.
@@ -488,8 +490,9 @@ impl<'a, 'd> Loader<'a, 'd> {
         m.rotate3d.sort_by(|a, b| a.0.cmp(&b.0));
         for d in &art_path_objs {
             let a = self.load_art_path(d, &m)?;
-            // Art paths are kept as stored (not rewritten): drop the source.
-            let _ = self.take_source(d);
+            // Kept as stored; only the object info is written back.
+            let src = self.take_source(d);
+            self.sources.art_paths.push(src);
             m.art_paths.push(std::sync::Arc::new(a));
         }
         for d in &meshes {
@@ -498,6 +501,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             let src = self.take_source(d);
             self.sources.art_meshes.push(src);
         }
+        self.load_aliases(&root, &art_path_objs, &mut m)?;
         for a in &glues {
             m.glues.push(std::sync::Arc::new(self.load_glue(a, &m)?));
             let src = self.take_source(a);
@@ -797,8 +801,9 @@ impl<'a, 'd> Loader<'a, 'd> {
                 _ => LineAlignment::Center,
             },
             closed: o.bool("isClosed")?.unwrap_or(false),
-            // TODO(Q-0046): art-path clip lists.
-            clip: Vec::new(),
+            // The same `clipGuidList` field as art meshes (ACDrawableSource);
+            // drawing with it is TODO(Q-0046).
+            clip: self.clip_list(o)?.0,
             invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
             brush: o
                 .field("brushGuid")?
@@ -807,6 +812,89 @@ impl<'a, 'd> Loader<'a, 'd> {
                 .to_owned(),
             user_data: o.string("userData")?.unwrap_or_default(),
         })
+    }
+
+    /// Aliases: a `CAliasSourceSet` found by tag under `CModelSource` (its
+    /// field name isn't known, TODO(Q-0046)); `CAliasSource` fields per the
+    /// schema. Kept as stored on save. spec: 70-advanced/alias.md
+    fn load_aliases(
+        &mut self,
+        root: &O<'a, 'd>,
+        art_paths: &[O<'a, 'd>],
+        m: &mut Model,
+    ) -> Result<()> {
+        use keyform_model::{Alias, AliasForm, AliasRef};
+        let mut sets = Vec::new();
+        let mut cur = Some(*root);
+        while let Some(o) = cur {
+            for c in &o.element().children {
+                if c.name == "CAliasSourceSet" {
+                    sets.push(self.g.obj(c)?);
+                }
+            }
+            cur = o.sup()?;
+        }
+        let mut objs = Vec::new();
+        for set in sets {
+            objs.extend(set.list("_sources")?);
+        }
+        if objs.is_empty() {
+            return Ok(());
+        }
+        let mut path_of = HashMap::new();
+        for (k, a) in art_paths.iter().enumerate() {
+            path_of.insert(a.guid("guid")?.unwrap_or_default().to_owned(), k);
+        }
+        let mut alias_of = HashMap::new();
+        for (k, a) in objs.iter().enumerate() {
+            alias_of.insert(a.guid("guid")?.unwrap_or_default().to_owned(), k);
+        }
+        for o in &objs {
+            let info = self.info(o)?;
+            let target = self.target_deformer(o, &info.id)?;
+            let (grid, blend_shapes) = self.keyforms(o, m, |f| {
+                Ok(AliasForm {
+                    draw_order: f.i32("drawOrder")?.unwrap_or(500) as f32,
+                    opacity: f.f32("opacity")?.unwrap_or(1.0),
+                    multiply: color(f.field("multiplyColor")?, WHITE)?,
+                    screen: color(f.field("screenColor")?, SCREEN_DEFAULT)?,
+                })
+            })?;
+            let r = o.guid("referenceObjectGuid")?.unwrap_or_default();
+            let reference = if let Some(&p) = self.idx.parts.get(r) {
+                AliasRef::Part(p)
+            } else if let Some(&i) = self.idx.meshes.get(r) {
+                AliasRef::Mesh(i)
+            } else if let Some(&k) = path_of.get(r) {
+                AliasRef::ArtPath(k)
+            } else if let Some(&k) = alias_of.get(r) {
+                AliasRef::Alias(k)
+            } else {
+                self.warn(format!("{}: The reference object does not exist.", info.id));
+                AliasRef::Missing
+            };
+            let src = self.take_source(o);
+            self.sources.aliases.push(src);
+            m.aliases.push(std::sync::Arc::new(Alias {
+                info,
+                target,
+                grid,
+                blend_shapes,
+                reference,
+                offscreen: o.bool("useOffscreen")?.unwrap_or(false),
+                clip: self.clip_list(o)?.0,
+                invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
+                color_composition: o
+                    .enum_value("colorComposition")?
+                    .and_then(ColorComposition::from_name)
+                    .unwrap_or_default(),
+                alpha_composition: o
+                    .enum_value("alphaComposition")?
+                    .and_then(AlphaComposition::from_name)
+                    .unwrap_or_default(),
+            }));
+        }
+        Ok(())
     }
 
     /// `CRotate3DExtension` of a deformer or art mesh (generators.md §1

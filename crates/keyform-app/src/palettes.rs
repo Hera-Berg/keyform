@@ -166,6 +166,7 @@ pub fn parts_ui(
             let mut reverse_lookup = None;
             let (mut lock_toggled, mut move_here, mut bulk) = (Vec::new(), None, None);
             let mut drop = None;
+            let mut stored_toggled = Vec::new();
             let draw_orders: Vec<f32> = doc
                 .frame
                 .as_ref()
@@ -192,8 +193,37 @@ pub fn parts_ui(
                 dnd: doc.editable() && !*dnd_disabled && doc.palette_from_children,
                 drop: &mut drop,
                 open_settings: &mut open_settings,
+                stored_toggled: &mut stored_toggled,
             };
             part_children(ui, model, root, &mut t, 0);
+            for (kind, k, is_lock) in stored_toggled {
+                doc.edit(
+                    if is_lock {
+                        "Lock/unlock"
+                    } else {
+                        "Change Visibility"
+                    },
+                    |m| {
+                        let info = match kind {
+                            Stored::ArtPath => m
+                                .art_paths
+                                .get_mut(k)
+                                .map(|a| &mut std::sync::Arc::make_mut(a).info),
+                            Stored::Alias => m
+                                .aliases
+                                .get_mut(k)
+                                .map(|a| &mut std::sync::Arc::make_mut(a).info),
+                        };
+                        if let Some(info) = info {
+                            if is_lock {
+                                info.locked = !info.locked;
+                            } else {
+                                info.visible = !info.visible;
+                            }
+                        }
+                    },
+                );
+            }
             if let Some(a) = reverse_lookup {
                 // Select the art meshes that use `a` as a clipping mask.
                 let users = keyform_edit::objects::clip_users(&doc.model, a);
@@ -297,6 +327,8 @@ fn parent_link_tree(m: &Model) -> Model {
         art_meshes: m.art_meshes.clone(),
         deformers: m.deformers.clone(),
         glues: m.glues.clone(),
+        art_paths: m.art_paths.clone(),
+        aliases: m.aliases.clone(),
         ..Model::default()
     };
     for p in &mut t.parts {
@@ -371,6 +403,60 @@ struct TreeCtx<'a> {
     drop: &'a mut Option<(Selection, usize, Option<Selection>)>,
     /// Parts Settings requested (double-click or menu).
     open_settings: &'a mut bool,
+    /// Art paths / aliases whose eye or lock was clicked: (kind, index, lock).
+    stored_toggled: &'a mut Vec<(Stored, usize, bool)>,
+}
+
+/// Objects kept as stored (art-path.md, alias.md): listed in their part,
+/// with eye and lock; they aren't selectable or editable otherwise.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    ArtPath,
+    Alias,
+}
+
+/// The art path / alias rows of `part`.
+fn stored_rows(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx) {
+    let rows = m
+        .art_paths
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.info.parent_part == Some(part))
+        .map(|(k, a)| (Stored::ArtPath, k, &a.info))
+        .chain(
+            m.aliases
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| a.info.parent_part == Some(part))
+                .map(|(k, a)| (Stored::Alias, k, &a.info)),
+        );
+    for (kind, k, info) in rows {
+        if !t.filter.is_empty()
+            && !info.display_name().to_lowercase().contains(t.filter)
+            && !info.id.to_lowercase().contains(t.filter)
+        {
+            continue;
+        }
+        ui.horizontal(|ui| {
+            if eye(ui, info.visible, t.editable) {
+                t.stored_toggled.push((kind, k, false));
+            }
+            if lock(ui, info.locked, t.editable) {
+                t.stored_toggled.push((kind, k, true));
+            }
+            icons::icon(
+                ui,
+                if kind == Stored::ArtPath {
+                    Icon::ArtPath
+                } else {
+                    Icon::Alias
+                },
+            );
+            ui.label(info.display_name()).on_hover_text(crate::i18n::tr(
+                "Kept as stored: shown and saved, not editable in Keyform yet",
+            ));
+        });
+    }
 }
 
 fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
@@ -378,6 +464,7 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
     if depth > 64 {
         return;
     }
+    stored_rows(ui, m, part, t);
     for &c in &m.parts[part].children {
         match c {
             PartChild::Part(p) if p < m.parts.len() => {

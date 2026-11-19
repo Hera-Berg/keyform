@@ -1,11 +1,9 @@
 //! Art paths: centre line and stroke mesh. spec: 70-advanced/art-path.md
 //! §2 (centre line), §3 (SIMPLE stroke)
 
-use std::borrow::Borrow;
+use keyform_model::{ArtPath, ArtPathForm, ArtPathPoint, LineAlgorithm, LineAlignment};
 
-use keyform_model::{ArtPath, ArtPathPoint, LineAlgorithm, LineAlignment, Model, Parameter};
-
-use crate::Frame;
+use crate::deform::DeformerMap;
 
 type V2 = [f32; 2];
 
@@ -224,7 +222,7 @@ pub fn stroke(s: &[Sample], align: LineAlignment, closed: bool) -> Stroke {
         ] {
             out.positions.extend_from_slice(&q);
             let k = s[i].color;
-            out.colors.push([k[0], k[1], k[2], s[i].opacity]);
+            out.colors.push([k[0], k[1], k[2], k[3] * s[i].opacity]);
         }
     }
     let seg = |out: &mut Stroke, i: u32, j: u32| {
@@ -253,25 +251,29 @@ pub fn stroke(s: &[Sample], align: LineAlignment, closed: bool) -> Stroke {
     out
 }
 
-/// An evaluated art path.
+/// An evaluated art path (canvas-space stroke and final appearance).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArtPathState {
     pub stroke: Stroke,
     pub draw_order: f32,
+    /// Final opacity (own × deformer × parts × model).
     pub opacity: f32,
-    pub multiply: [f32; 4],
-    pub screen: [f32; 4],
+    pub multiply: [f32; 3],
+    pub screen: [f32; 3],
+    pub outside: bool,
+    pub hidden: bool,
 }
 
-/// Evaluates art path `a` at `values`: keyform interpolation, control
-/// points to the canvas through the target deformer, centre line, stroke.
-pub fn evaluate(m: &Model, a: &ArtPath, frame: &Frame, values: &[f32]) -> Option<ArtPathState> {
-    let params: &[std::sync::Arc<Parameter>] = &m.parameters;
-    let f = crate::interp::interpolate(params, values, &a.grid, &a.blend_shapes)?.form;
-    let map = a
-        .target
-        .and_then(|t| frame.deformers.get(t))
-        .and_then(|d| d.map.as_ref());
+impl ArtPathState {
+    pub fn is_drawn(&self) -> bool {
+        !self.outside && !self.hidden && self.opacity > 0.0 && !self.stroke.indices.is_empty()
+    }
+}
+
+/// The stroke of evaluated form `f`: control points to the canvas through
+/// `map` (the target deformer), centre line, SIMPLE strip.
+// TODO(Q-0046): unset brush, colour alpha and width units.
+pub fn geometry(a: &ArtPath, f: &ArtPathForm, map: Option<&DeformerMap>) -> Stroke {
     let pts: Vec<ArtPathPoint> = f
         .points
         .iter()
@@ -281,14 +283,7 @@ pub fn evaluate(m: &Model, a: &ArtPath, frame: &Frame, values: &[f32]) -> Option
         })
         .collect();
     let line = centre_line(&pts, a.closed, a.div_num.max(1) as usize, a.algorithm);
-    let _ = params.first().map(Borrow::<Parameter>::borrow);
-    Some(ArtPathState {
-        stroke: stroke(&line, a.alignment, a.closed),
-        draw_order: f.draw_order,
-        opacity: f.opacity,
-        multiply: f.multiply,
-        screen: f.screen,
-    })
+    stroke(&line, a.alignment, a.closed)
 }
 
 #[cfg(test)]

@@ -23,6 +23,10 @@ pub enum Icon {
     /// Closed padlock (locked); open shackle = unlocked.
     Locked,
     Unlocked,
+    /// S-curve with end points (art path).
+    ArtPath,
+    /// Two offset squares (alias).
+    Alias,
 }
 
 pub const ICON_COLOR: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xa8);
@@ -104,6 +108,36 @@ pub fn paint(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             for y in [5.0, 8.0, 11.0] {
                 line(&[(3.0, y), (13.0, y)]);
             }
+        }
+        Icon::ArtPath => {
+            let v: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let t = i as f32 / 12.0;
+                    at(
+                        2.0 + 12.0 * t,
+                        8.0 - 4.5 * (t * std::f32::consts::TAU).sin(),
+                    )
+                })
+                .collect();
+            p.add(egui::Shape::line(v, st));
+            p.circle_filled(at(2.0, 8.0), 1.4 * u, color);
+            p.circle_filled(at(14.0, 8.0), 1.4 * u, color);
+        }
+        Icon::Alias => {
+            line(&[
+                (2.0, 2.0),
+                (10.0, 2.0),
+                (10.0, 10.0),
+                (2.0, 10.0),
+                (2.0, 2.0),
+            ]);
+            line(&[
+                (6.0, 10.0),
+                (6.0, 14.0),
+                (14.0, 14.0),
+                (14.0, 6.0),
+                (10.0, 6.0),
+            ]);
         }
         Icon::BlendShape => {
             line(&[(8.0, 2.0), (14.0, 8.0), (8.0, 14.0), (2.0, 8.0), (8.0, 2.0)]);

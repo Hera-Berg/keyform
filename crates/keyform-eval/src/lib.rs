@@ -67,12 +67,70 @@ pub struct Frame {
     pub meshes: Vec<MeshState>,
     /// Art meshes back to front.
     pub render_order: Vec<MeshIndex>,
+    /// Evaluated art paths (model order).
+    pub art_paths: Vec<artpath::ArtPathState>,
+    /// Evaluated aliases (model order).
+    pub aliases: Vec<AliasState>,
+    /// Art meshes, art paths and alias re-draws back to front.
+    pub items: Vec<draw_order::DrawItem>,
     /// Deformed positions before glue of the meshes glue moved (the glue
     /// weight brushes measure these). spec: glue.md "Weight brushes"
     pub pre_glue: std::collections::HashMap<MeshIndex, Vec<f32>>,
 }
 
+/// An evaluated alias: its own appearance, applied over the referenced
+/// object's. spec: 70-advanced/alias.md
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasState {
+    pub draw_order: f32,
+    pub opacity: f32,
+    pub multiply: [f32; 3],
+    pub screen: [f32; 3],
+    pub hidden: bool,
+}
+
+impl AliasState {
+    fn over(&self, opacity: f32, mul: [f32; 3], scr: [f32; 3]) -> (f32, [f32; 3], [f32; 3]) {
+        (
+            opacity * self.opacity,
+            std::array::from_fn(|k| (mul[k] * self.multiply[k]).clamp(0.0, 1.0)),
+            std::array::from_fn(|k| {
+                (scr[k] + self.screen[k] - scr[k] * self.screen[k]).clamp(0.0, 1.0)
+            }),
+        )
+    }
+}
+
 impl Frame {
+    /// The state alias `k` draws mesh `mi` with (its geometry, the alias's
+    /// appearance on top). `None` when the alias is hidden.
+    pub fn alias_mesh_state(&self, k: usize, mi: MeshIndex) -> Option<MeshState> {
+        let a = self.aliases.get(k).filter(|a| !a.hidden)?;
+        let ms = self.meshes.get(mi)?;
+        let (opacity, multiply, screen) = a.over(ms.opacity, ms.multiply, ms.screen);
+        // The referenced object's own eye doesn't hide the alias.
+        Some(MeshState {
+            opacity,
+            multiply,
+            screen,
+            hidden: false,
+            ..ms.clone()
+        })
+    }
+
+    /// The state alias `k` draws art path `p` with.
+    pub fn alias_path_state(&self, k: usize, p: usize) -> Option<artpath::ArtPathState> {
+        let a = self.aliases.get(k).filter(|a| !a.hidden)?;
+        let st = self.art_paths.get(p)?;
+        let (opacity, multiply, screen) = a.over(st.opacity, st.multiply, st.screen);
+        Some(artpath::ArtPathState {
+            opacity,
+            multiply,
+            screen,
+            hidden: false,
+            ..st.clone()
+        })
+    }
     /// Canvas positions of mesh `i` before glue (its final positions when
     /// glue didn't touch it).
     pub fn positions_before_glue(&self, i: MeshIndex) -> Option<&[f32]> {
@@ -272,6 +330,63 @@ impl<'m> Evaluator<'m> {
             p = self.part_parents[cur];
             Some(cur)
         })
+    }
+
+    /// Replaces alias placeholders with the objects they draw again: a
+    /// mesh, an art path, or a part's drawn objects in their render order;
+    /// alias chains are followed (a loop draws nothing).
+    fn expand_aliases(&self, items: Vec<draw_order::DrawItem>) -> Vec<draw_order::DrawItem> {
+        use draw_order::DrawItem as D;
+        use keyform_model::AliasRef;
+        let m = self.model;
+        if m.aliases.is_empty() {
+            return items;
+        }
+        let resolve = |mut k: usize| -> AliasRef {
+            for _ in 0..=m.aliases.len() {
+                match m.aliases.get(k).map(|a| a.reference) {
+                    Some(AliasRef::Alias(j)) => k = j,
+                    Some(r) => return r,
+                    None => return AliasRef::Missing,
+                }
+            }
+            AliasRef::Missing // "References by aliases are in a loop."
+        };
+        let under = |parent: Option<usize>, p: usize| self.ancestors(parent).any(|q| q == p);
+        let mut out = Vec::with_capacity(items.len());
+        for it in &items {
+            let D::Alias(k) = *it else {
+                out.push(*it);
+                continue;
+            };
+            match resolve(k) {
+                AliasRef::Mesh(mi) => out.push(D::AliasMesh(k, mi)),
+                AliasRef::ArtPath(p) => out.push(D::AliasArtPath(k, p)),
+                AliasRef::Part(p) => {
+                    for x in &items {
+                        match *x {
+                            D::Mesh(mi)
+                                if m.art_meshes
+                                    .get(mi)
+                                    .is_some_and(|a| under(a.info.parent_part, p)) =>
+                            {
+                                out.push(D::AliasMesh(k, mi))
+                            }
+                            D::ArtPath(q)
+                                if m.art_paths
+                                    .get(q)
+                                    .is_some_and(|a| under(a.info.parent_part, p)) =>
+                            {
+                                out.push(D::AliasArtPath(k, q))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                AliasRef::Alias(_) | AliasRef::Missing => {}
+            }
+        }
+        out
     }
 
     pub fn evaluate(&self, values: &[f32]) -> Frame {
@@ -560,12 +675,99 @@ impl<'m> Evaluator<'m> {
             }
         }
 
-        let render_order = draw_order::render_order(m, &parts, &meshes);
+        // Art paths (after glue; their own stage). spec: art-path.md,
+        // evaluation-pipeline.md
+        let art_paths: Vec<artpath::ArtPathState> = m
+            .art_paths
+            .iter()
+            .map(|a| {
+                let (hidden_parent, outside_parent) = part_hidden_or_outside(a.info.parent_part);
+                let target = a.target.and_then(|t| deformers.get(t));
+                let Some(r) = interpolate(params, &values, &a.grid, &a.blend_shapes) else {
+                    return artpath::ArtPathState {
+                        stroke: Default::default(),
+                        draw_order: 500.0,
+                        opacity: 0.0,
+                        multiply: [1.0; 3],
+                        screen: [0.0; 3],
+                        outside: true,
+                        hidden: true,
+                    };
+                };
+                let mut outside = r.outside || outside_parent;
+                let map = match target {
+                    Some(t) => {
+                        outside |= t.outside || t.map.is_none();
+                        t.map.as_ref()
+                    }
+                    None => None,
+                };
+                let (d_op, d_mul, d_scr) = target.map_or((1.0, [1.0; 3], [0.0; 3]), |t| {
+                    (t.total_opacity, t.total_multiply, t.total_screen)
+                });
+                let mut part_op = 1.0;
+                for p in self.ancestors(a.info.parent_part) {
+                    if m.parts[p].offscreen {
+                        break;
+                    }
+                    part_op *= parts[p].form.opacity;
+                }
+                let f = &r.form;
+                let (mo, so) = (f.multiply, f.screen);
+                artpath::ArtPathState {
+                    stroke: artpath::geometry(a, f, map),
+                    draw_order: f.draw_order,
+                    opacity: f.opacity.clamp(0.0, 1.0)
+                        * d_op
+                        * part_op
+                        * ov.model_opacity.clamp(0.0, 1.0),
+                    multiply: std::array::from_fn(|k| (mo[k] * d_mul[k]).clamp(0.0, 1.0)),
+                    screen: std::array::from_fn(|k| {
+                        (so[k] + d_scr[k] - so[k] * d_scr[k]).clamp(0.0, 1.0)
+                    }),
+                    outside,
+                    hidden: !a.info.visible || hidden_parent,
+                }
+            })
+            .collect();
+        // Aliases (after art paths). spec: alias.md
+        let aliases: Vec<AliasState> = m
+            .aliases
+            .iter()
+            .map(|a| {
+                let (hidden_parent, outside_parent) = part_hidden_or_outside(a.info.parent_part);
+                let Some(r) = interpolate(params, &values, &a.grid, &a.blend_shapes) else {
+                    return AliasState {
+                        draw_order: 500.0,
+                        opacity: 0.0,
+                        multiply: [1.0; 3],
+                        screen: [0.0; 3],
+                        hidden: true,
+                    };
+                };
+                let f = &r.form;
+                AliasState {
+                    draw_order: f.draw_order,
+                    opacity: f.opacity.clamp(0.0, 1.0),
+                    multiply: [f.multiply[0], f.multiply[1], f.multiply[2]],
+                    screen: [f.screen[0], f.screen[1], f.screen[2]],
+                    hidden: !a.info.visible || hidden_parent || r.outside || outside_parent,
+                }
+            })
+            .collect();
+        let orders: Vec<f32> = art_paths.iter().map(|a| a.draw_order).collect();
+        let alias_orders: Vec<f32> = aliases.iter().map(|a| a.draw_order).collect();
+        let items = draw_order::render_items(m, &parts, &meshes, &orders, &alias_orders);
+        let items = self.expand_aliases(items);
+        let render_order = draw_order::meshes_of(&items);
         Frame {
             parts,
             deformers,
             meshes,
             render_order,
+            art_paths,
+            aliases,
+            items,
             pre_glue,
         }
     }

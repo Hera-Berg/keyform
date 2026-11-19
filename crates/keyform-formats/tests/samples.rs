@@ -4185,7 +4185,10 @@ fn art_path_loads_and_strokes() {
     assert!(a.target.is_some());
     let values: Vec<f32> = m.parameters.iter().map(|p| p.default).collect();
     let frame = keyform_eval::Evaluator::new(m).evaluate(&values);
-    let st = keyform_eval::artpath::evaluate(m, a, &frame, &values).unwrap();
+    let st = &frame.art_paths[0];
+    assert!(frame
+        .items
+        .contains(&keyform_eval::draw_order::DrawItem::ArtPath(0)));
     assert!(st.stroke.indices.len() > 100);
     // Canvas coordinates (not the warp's 0–1 local space).
     assert!(st.stroke.positions.iter().any(|v| *v > 10.0));
@@ -4195,4 +4198,16 @@ fn art_path_loads_and_strokes() {
     let bytes = doc.save_bytes().unwrap();
     let back = Cmo3Document::read(&bytes).unwrap();
     assert_eq!(back.model.art_paths, doc.model.art_paths);
+    // Name and visibility are written back; other edits are refused.
+    let mut doc = back;
+    {
+        let a = std::sync::Arc::make_mut(&mut doc.model.art_paths[0]);
+        a.info.visible = false;
+        a.info.name = "Path renamed".into();
+    }
+    let back = Cmo3Document::read(&doc.save_bytes().unwrap()).unwrap();
+    assert!(!back.model.art_paths[0].info.visible);
+    assert_eq!(back.model.art_paths[0].info.name, "Path renamed");
+    std::sync::Arc::make_mut(&mut doc.model.art_paths[0]).div_num = 5;
+    assert!(doc.save_bytes().is_err());
 }

@@ -10,9 +10,9 @@ use std::sync::Arc;
 use keyform_eval::deform::inherited_rotation;
 use keyform_eval::{DeformerMap, Evaluator, Frame};
 use keyform_model::{
-    new_guid, Binding, Deformer, DeformerIndex, DeformerKind, Glue, GlueForm, KeyformGrid, Model,
-    ObjectInfo, ParamEntry, ParamIndex, Parameter, Part, PartChild, PartIndex, RotationDeformer,
-    RotationForm, WarpDeformer, WarpForm, DEFAULT_BEZIER_NETS,
+    new_guid, AliasRef, Binding, Deformer, DeformerIndex, DeformerKind, Glue, GlueForm,
+    KeyformGrid, Model, ObjectInfo, ParamEntry, ParamIndex, Parameter, Part, PartChild, PartIndex,
+    RotationDeformer, RotationForm, WarpDeformer, WarpForm, DEFAULT_BEZIER_NETS,
 };
 
 use crate::keys::{delete_all_keys, ObjectRef};
@@ -76,6 +76,14 @@ fn remap_parameters(m: &mut Model, f: &dyn Fn(ParamIndex) -> ParamIndex) {
         let g = Arc::make_mut(g);
         grid!(g.grid, g.blend_shapes);
     }
+    for a in &mut m.art_paths {
+        let a = Arc::make_mut(a);
+        grid!(a.grid, a.blend_shapes);
+    }
+    for a in &mut m.aliases {
+        let a = Arc::make_mut(a);
+        grid!(a.grid, a.blend_shapes);
+    }
     for d in &mut m.deformers {
         match &mut Arc::make_mut(d).kind {
             DeformerKind::Warp(w) => {
@@ -128,6 +136,9 @@ pub fn remove_parameter(m: &mut Model, p: ParamIndex) -> bool {
     let Some(param) = m.parameters.get(p).cloned() else {
         return false;
     };
+    if !stored_users_of_parameter(m, p).is_empty() {
+        return false;
+    }
     for o in all_objects(m) {
         let _ = delete_all_keys(m, o, p, param.default);
     }
@@ -180,6 +191,41 @@ pub fn remove_parameter(m: &mut Model, p: ParamIndex) -> bool {
     }
     remap_parameters(m, &|i| if i > p { i - 1 } else { i });
     true
+}
+
+/// Art paths and aliases (kept as stored, art-path.md / alias.md) whose
+/// keyforms use parameter `p`: the parameter can't be deleted while they do.
+pub fn stored_users_of_parameter(m: &Model, p: ParamIndex) -> Vec<String> {
+    let uses = |b: &[Binding]| b.iter().any(|x| x.parameter == p);
+    m.art_paths
+        .iter()
+        .filter(|a| {
+            uses(&a.grid.bindings) || a.blend_shapes.shapes.iter().any(|x| x.parameter == p)
+        })
+        .map(|a| a.info.id.clone())
+        .chain(
+            m.aliases
+                .iter()
+                .filter(|a| {
+                    uses(&a.grid.bindings) || a.blend_shapes.shapes.iter().any(|x| x.parameter == p)
+                })
+                .map(|a| a.info.id.clone()),
+        )
+        .collect()
+}
+
+/// Refusal of deleting a parameter that stored art paths / aliases use.
+pub const PARAMETER_USED_BY_STORED: &str =
+    "The parameter is used by art paths or aliases and cannot be deleted.";
+
+/// Renumbers alias references with `f` after an object was removed.
+fn remap_alias_refs(m: &mut Model, f: &dyn Fn(AliasRef) -> AliasRef) {
+    for a in &mut m.aliases {
+        let r = f(a.reference);
+        if r != a.reference {
+            Arc::make_mut(a).reference = r;
+        }
+    }
 }
 
 // ---------------------------------------------------------------- parents
@@ -695,6 +741,19 @@ fn remove_deformer_index(m: &mut Model, d: DeformerIndex) {
             a.target = a.target.map(f);
         }
     }
+    for a in &mut m.art_paths {
+        if a.target.is_some_and(|t| t > d) {
+            Arc::make_mut(a).target = a.target.map(f);
+        }
+    }
+    for a in &mut m.aliases {
+        if a.target == Some(d) {
+            Arc::make_mut(a).target = m.deformers[d].target;
+        }
+        if a.target.is_some_and(|t| t > d) {
+            Arc::make_mut(a).target = a.target.map(f);
+        }
+    }
     for p in &mut m.parts {
         if p.children
             .iter()
@@ -715,6 +774,10 @@ fn remove_deformer_index(m: &mut Model, d: DeformerIndex) {
 /// form conversion (change-parent.md "Used by … deformer deletion").
 pub fn delete_deformer(m: &mut Model, d: DeformerIndex, values: &[f32]) -> Result<(), String> {
     let parent = m.deformers.get(d).ok_or("no such deformer")?.target;
+    // Art-path points are in the target's local space and kept as stored.
+    if m.art_paths.iter().any(|a| a.target == Some(d)) {
+        return Err("Art paths are placed on this deformer; move them first.".into());
+    }
     let children: Vec<ObjectRef> = (0..m.deformers.len())
         .filter(|&k| m.deformers[k].target == Some(d))
         .map(ObjectRef::Deformer)
@@ -765,6 +828,13 @@ pub fn delete_part(m: &mut Model, p: PartIndex) -> Result<(), String> {
     reparent!(m.deformers);
     reparent!(m.art_meshes);
     reparent!(m.glues);
+    reparent!(m.art_paths);
+    reparent!(m.aliases);
+    remap_alias_refs(m, &|r| match r {
+        AliasRef::Part(q) if q == p => AliasRef::Missing,
+        AliasRef::Part(q) => AliasRef::Part(f(q)),
+        r => r,
+    });
     m.root_part = m.root_part.map(f);
     m.parts.remove(p);
     Ok(())
@@ -994,6 +1064,25 @@ pub fn delete_art_mesh(m: &mut Model, i: usize) -> Result<Vec<String>, String> {
             g.mesh_b = g.mesh_b.map(f);
         }
     }
+    for a in &mut m.art_paths {
+        if a.clip.iter().any(|&k| k >= i) {
+            let a = Arc::make_mut(a);
+            a.clip.retain(|&k| k != i);
+            a.clip.iter_mut().for_each(|k| *k = f(*k));
+        }
+    }
+    for a in &mut m.aliases {
+        if a.clip.iter().any(|&k| k >= i) {
+            let a = Arc::make_mut(a);
+            a.clip.retain(|&k| k != i);
+            a.clip.iter_mut().for_each(|k| *k = f(*k));
+        }
+    }
+    remap_alias_refs(m, &|r| match r {
+        AliasRef::Mesh(k) if k == i => AliasRef::Missing,
+        AliasRef::Mesh(k) => AliasRef::Mesh(f(k)),
+        r => r,
+    });
     m.art_meshes.remove(i);
     Ok(removed)
 }

@@ -172,6 +172,24 @@ impl Cmo3Document {
                 )?;
             }
         }
+        write_stored_infos(
+            &mut root,
+            &s.art_paths,
+            &old.art_paths,
+            &new.art_paths,
+            |a| &a.info,
+            |a, info| keyform_model::ArtPath { info, ..a.clone() },
+            "CDrawableId",
+        )?;
+        write_stored_infos(
+            &mut root,
+            &s.aliases,
+            &old.aliases,
+            &new.aliases,
+            |a| &a.info,
+            |a, info| keyform_model::Alias { info, ..a.clone() },
+            "CAliasId",
+        )?;
         let old_glues = objects::index_by_guid(&old.glues, |g| &g.info.guid);
         let new_glues = objects::index_by_guid(&new.glues, |g| &g.info.guid);
         for n in &new.glues {
@@ -1390,6 +1408,39 @@ fn write_art_mesh_fields(
             return invalid("art mesh has no element");
         };
         ctx.pending_paths.push((path, n.info.guid.clone()));
+    }
+    Ok(())
+}
+
+/// Art paths and aliases are kept as stored: only their name, visibility
+/// and lock are written; other edits are refused. spec: art-path.md, alias.md
+fn write_stored_infos<T: Clone + PartialEq>(
+    root: &mut Element,
+    srcs: &[ObjectSource],
+    old: &[Arc<T>],
+    new: &[Arc<T>],
+    info: fn(&T) -> &ObjectInfo,
+    with_info: fn(&T, ObjectInfo) -> T,
+    id_tag: &str,
+) -> Result<()> {
+    let old_by = objects::index_by_guid(old, |a| &info(a).guid);
+    if old.len() != new.len() || new.iter().any(|n| !old_by.contains_key(&info(n).guid)) {
+        return unsupported("adding or removing art paths / aliases".to_owned());
+    }
+    for n in new {
+        let i = old_by[&info(n).guid];
+        let o = &old[i];
+        if Arc::ptr_eq(o, n) || **o == **n {
+            continue;
+        }
+        let (oi, ni) = (info(o), info(n));
+        if with_info(n, oi.clone()) != **o || oi.parent_part != ni.parent_part {
+            return unsupported(format!("{}: editing a stored art path / alias", oi.id));
+        }
+        let mut f = Fields {
+            e: element_at(root, source(srcs, i)?.element.as_deref())?,
+        };
+        write_info(&mut f, id_tag, oi, ni)?;
     }
     Ok(())
 }

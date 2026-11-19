@@ -10,6 +10,7 @@ pub mod image;
 
 use std::collections::HashMap;
 
+use keyform_eval::draw_order::DrawItem;
 use keyform_eval::Frame;
 use keyform_model::{AlphaComposition, ColorComposition, MeshIndex, Model};
 
@@ -200,14 +201,36 @@ impl<'m> CpuRenderer<'m> {
         // ancestor, outermost first; `t` is the bottom of the stack.
         let mut stack: Vec<(usize, Target)> = Vec::new();
         let mut base = t;
-        for &mi in &frame.render_order {
-            let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
-                continue;
+        for item in &frame.items {
+            let (parent, drawn) = match *item {
+                DrawItem::Mesh(mi) => match (m.art_meshes.get(mi), frame.meshes.get(mi)) {
+                    (Some(am), Some(ms)) => (am.info.parent_part, ms.is_drawn()),
+                    _ => continue,
+                },
+                DrawItem::ArtPath(k) => match (m.art_paths.get(k), frame.art_paths.get(k)) {
+                    (Some(a), Some(st)) => (a.info.parent_part, st.is_drawn()),
+                    _ => continue,
+                },
+                DrawItem::AliasMesh(k, mi) => {
+                    match (m.aliases.get(k), frame.alias_mesh_state(k, mi)) {
+                        (Some(a), Some(st)) if mi < m.art_meshes.len() => {
+                            (a.info.parent_part, st.is_drawn())
+                        }
+                        _ => continue,
+                    }
+                }
+                DrawItem::AliasArtPath(k, p) => {
+                    match (m.aliases.get(k), frame.alias_path_state(k, p)) {
+                        (Some(a), Some(st)) => (a.info.parent_part, st.is_drawn()),
+                        _ => continue,
+                    }
+                }
+                DrawItem::Alias(_) => continue,
             };
-            if !ms.is_drawn() {
+            if !drawn {
                 continue;
             }
-            let chain = offscreen_chain(m, am.info.parent_part);
+            let chain = offscreen_chain(m, parent);
             while !stack.is_empty()
                 && !chain.starts_with(&stack.iter().map(|(p, _)| *p).collect::<Vec<_>>())
             {
@@ -226,6 +249,24 @@ impl<'m> CpuRenderer<'m> {
                 ));
             }
             let t = stack.last_mut().map_or(&mut base, |(_, b)| b);
+            let (mi, alias_state) = match *item {
+                DrawItem::Mesh(mi) => (mi, None),
+                DrawItem::AliasMesh(k, mi) => (mi, frame.alias_mesh_state(k, mi)),
+                DrawItem::ArtPath(k) => {
+                    draw_stroke(t, &frame.art_paths[k], &to_px);
+                    continue;
+                }
+                DrawItem::AliasArtPath(k, p) => {
+                    if let Some(st) = frame.alias_path_state(k, p) {
+                        draw_stroke(t, &st, &to_px);
+                    }
+                    continue;
+                }
+                DrawItem::Alias(_) => continue,
+            };
+            // TODO(Q-0046): alias clip lists, offscreen and compositions.
+            let am = &m.art_meshes[mi];
+            let ms = alias_state.as_ref().unwrap_or(&frame.meshes[mi]);
             let Some(tex) = m
                 .texture_slot(am)
                 .and_then(|ti| self.textures.get(ti))
@@ -626,6 +667,42 @@ impl Sampler {
             [self.ddx[0] * k, self.ddx[1] * k],
             [self.ddy[0] * k, self.ddy[1] * k],
         )
+    }
+}
+
+/// Draws an art-path stroke: vertex colours (straight RGB, alpha) blended
+/// across each triangle, multiply / screen and opacity applied, normal
+/// source-over. spec: art-path.md §3, appearance.md §4
+pub(crate) fn draw_stroke(
+    t: &mut Target,
+    st: &keyform_eval::artpath::ArtPathState,
+    to_px: &dyn Fn(&[f32]) -> V2,
+) {
+    let s = &st.stroke;
+    let pts: Vec<V2> = s.positions.chunks_exact(2).map(to_px).collect();
+    let bary = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    for tri in s.indices.chunks_exact(3) {
+        let i = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+        let (Some(&p0), Some(&p1), Some(&p2)) = (pts.get(i[0]), pts.get(i[1]), pts.get(i[2]))
+        else {
+            continue;
+        };
+        let c = [s.colors[i[0]], s.colors[i[1]], s.colors[i[2]]];
+        raster_triangle(t, [p0, p1, p2], bary, |x, y, u, v, t| {
+            let w0 = 1.0 - u - v;
+            let k: [f32; 4] = std::array::from_fn(|j| w0 * c[0][j] + u * c[1][j] + v * c[2][j]);
+            let a = (k[3] * st.opacity).clamp(0.0, 1.0);
+            let mut src = [0.0f32; 4];
+            for j in 0..3 {
+                let rgb = k[j].clamp(0.0, 1.0) * st.multiply[j];
+                src[j] = (rgb + st.screen[j] - rgb * st.screen[j]) * a;
+            }
+            src[3] = a;
+            let d = &mut t.px[y * t.w + x];
+            for j in 0..4 {
+                d[j] = src[j] + d[j] * (1.0 - a);
+            }
+        });
     }
 }
 

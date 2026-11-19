@@ -126,3 +126,12 @@ pub struct ArtPathForm {
     pub multiply: Color,
     pub screen: Color,
 }
+
+/// An alias keyform (`CAliasForm`). spec: 70-advanced/alias.md
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AliasForm {
+    pub draw_order: f32,
+    pub opacity: f32,
+    pub multiply: Color,
+    pub screen: Color,
+}
