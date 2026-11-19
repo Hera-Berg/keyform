@@ -30,6 +30,8 @@ const USAGE: &str = "usage:
                                    texture atlas pages (texture-atlas.md); a .png output
                                    writes the last page image
   kf new <out.cmo3> [WxH]          a blank model (File > New > Model; default 1000x2000)
+  kf newanim <model.cmo3> <out.can3>
+                                   a new animation file on the model (one 120-frame scene)
   kf newpsd <file.psd> <out.cmo3|out.png>
                                    a new model from a PSD (psd-import.md §4)
   kf render <model> <out.png> [--size N | --scale S] [--ss N] [--bg] [--gpu] [ID=VALUE ...]
@@ -71,6 +73,7 @@ fn main() -> ExitCode {
             atlas::run(Path::new(input), Path::new(output), rest)
         }
         ["new", out, rest @ ..] => psd::new_blank(Path::new(out), rest),
+        ["newanim", model, out] => new_animation(Path::new(model), Path::new(out)),
         ["newpsd", psd, out, rest @ ..] => psd::new_model(Path::new(psd), Path::new(out), rest),
         ["psd", input, psd, out, rest @ ..] => {
             psd::run(Path::new(input), Path::new(psd), Path::new(out), rest)
@@ -389,5 +392,32 @@ fn export_motions(input: &Path, outdir: &Path) -> Result<(), Box<dyn std::error:
         std::fs::write(&out, keyform_anim::json::to_string(&m.to_json()))?;
         println!("{}", out.display());
     }
+    Ok(())
+}
+
+/// `kf newanim`: a new animation file linked to `model` (File > New >
+/// Animation), one scene of 120 frames at 30 fps.
+fn new_animation(model: &Path, out: &Path) -> R {
+    let doc = keyform_formats::cmo3::Cmo3Document::read(
+        &std::fs::read(model).map_err(|e| format!("{}: {e}", model.display()))?,
+    )
+    .map_err(|e| format!("{}: {e}", model.display()))?;
+    let stem = out
+        .file_stem()
+        .map_or_else(|| "Animation".into(), |s| s.to_string_lossy().into_owned());
+    let abs = std::fs::canonicalize(model).unwrap_or_else(|_| model.to_path_buf());
+    let mut a = keyform_formats::can3::Can3Document::new_animation(
+        &stem,
+        &out.to_string_lossy(),
+        &doc.model,
+        &abs.to_string_lossy(),
+        "Scene1",
+        120,
+        30.0,
+    )
+    .map_err(|e| e.to_string())?;
+    let bytes = a.save_bytes().map_err(|e| e.to_string())?;
+    std::fs::write(out, bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("wrote {}", out.display());
     Ok(())
 }

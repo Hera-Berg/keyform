@@ -49,6 +49,18 @@ jobs:
           curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
           chmod +x appimagetool && sudo mv appimagetool /usr/local/bin/
       - run: packaging/linux/appimage.sh "${{ needs.vendor.outputs.version }}" target/release/keyform dist
+      # Checks of the shipped artifact: every file type opens (hidden
+      # --check-open, no window) and the desktop file / MIME types map the
+      # extensions to Keyform through xdg-mime.
+      - run: sudo apt-get install -y desktop-file-utils shared-mime-info xdg-utils libglib2.0-bin
+      - run: tools/e2e/make_fixtures.sh target/release/kf fixtures
+      - name: AppImage opens each file type
+        env: { APPIMAGE_EXTRACT_AND_RUN: "1" }
+        run: |
+          for f in fixtures/character.cmo3 fixtures/character.can3 fixtures/runtime/character.moc3 fixtures/runtime/character.model3.json test-data/e2e/character.psd; do
+            dist/Keyform-*.AppImage --check-open "$f"
+          done
+      - run: packaging/linux/test-desktop-integration.sh target/release/keyform fixtures/character.cmo3
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/*.AppImage }
 
@@ -69,6 +81,32 @@ jobs:
             "/DVersion=${{ needs.vendor.outputs.version }}" `
             "/DBinary=$PWD\target\release\keyform.exe" `
             "/DOutDir=$PWD\dist" packaging\windows\keyform.iss
+      - shell: bash
+        run: tools/e2e/make_fixtures.sh target/release/kf.exe fixtures
+      # Silent per-user install with the association task, then check the
+      # registry entries and run the installed binary on each file type.
+      - name: Install and check
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\*.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\KeyformInstall"
+          Start-Process -FilePath $setup.FullName -Wait -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER","/TASKS=assoc","/DIR=$dir"
+          $exe = Join-Path $dir "keyform.exe"
+          if (-not (Test-Path $exe)) { throw "not installed: $exe" }
+          foreach ($ext in ".cmo3", ".can3", ".moc3") {
+            $k = Get-ItemProperty -Path "HKCU:\Software\Classes\$ext\OpenWithProgids" -ErrorAction Stop
+            if ($null -eq $k."Keyform.Project") { throw "$ext has no Keyform.Project association" }
+            Write-Host "ok $ext -> Keyform.Project"
+          }
+          $cmd = (Get-ItemProperty -Path "HKCU:\Software\Classes\Keyform.Project\shell\open\command")."(default)"
+          if ($cmd -notlike "*keyform.exe*%1*") { throw "open command: $cmd" }
+          Write-Host "ok open command: $cmd"
+          $files = "fixtures\character.cmo3","fixtures\character.can3","fixtures\runtime\character.moc3","fixtures\runtime\character.model3.json","test-data\e2e\character.psd"
+          foreach ($f in $files) {
+            $p = Start-Process -FilePath $exe -ArgumentList "--check-open",(Resolve-Path $f) -Wait -PassThru -NoNewWindow -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+            Get-Content out.txt, err.txt
+            if ($p.ExitCode -ne 0) { throw "--check-open failed for $f" }
+          }
       - uses: actions/upload-artifact@v4
         with: { name: windows, path: dist/*.exe }
 
@@ -86,7 +124,7 @@ jobs:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
       - run: |
           for t in x86_64-apple-darwin aarch64-apple-darwin; do
-            cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app --target $t
+            cargo build --release --locked --offline --config .cargo/vendor.toml -p keyform-app -p keyform-cli --target $t
           done
       # Optional signing / notarization: set these repository secrets.
       - name: Import signing certificate
@@ -110,6 +148,25 @@ jobs:
           packaging/macos/bundle.sh "${{ needs.vendor.outputs.version }}" \
             target/x86_64-apple-darwin/release/keyform \
             target/aarch64-apple-darwin/release/keyform dist
+      # Checks of the shipped .dmg: document types declared in Info.plist,
+      # universal binary, and the bundled binary opens each file type.
+      - name: Check the bundle
+        run: |
+          tools/e2e/make_fixtures.sh target/aarch64-apple-darwin/release/kf fixtures
+          hdiutil attach dist/Keyform-*.dmg -mountpoint /Volumes/KeyformCheck -nobrowse
+          APP=/Volumes/KeyformCheck/Keyform.app
+          plutil -lint "$APP/Contents/Info.plist"
+          for uti in org.keyform.cmo3 org.keyform.can3 org.keyform.moc3; do
+            plutil -extract CFBundleDocumentTypes xml1 -o - "$APP/Contents/Info.plist" | grep -q "$uti" || { echo "missing document type $uti"; exit 1; }
+            plutil -extract UTImportedTypeDeclarations xml1 -o - "$APP/Contents/Info.plist" | grep -q "$uti" || { echo "missing UTI $uti"; exit 1; }
+            echo "ok $uti"
+          done
+          lipo -archs "$APP/Contents/MacOS/keyform" | grep -q x86_64
+          lipo -archs "$APP/Contents/MacOS/keyform" | grep -q arm64
+          for f in fixtures/character.cmo3 fixtures/character.can3 fixtures/runtime/character.moc3 fixtures/runtime/character.model3.json test-data/e2e/character.psd; do
+            "$APP/Contents/MacOS/keyform" --check-open "$f"
+          done
+          hdiutil detach /Volumes/KeyformCheck
       - uses: actions/upload-artifact@v4
         with: { name: macos, path: dist/*.dmg }
 
@@ -121,8 +178,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { path: out, merge-multiple: true }
       - run: (cd out && sha256sum * > SHA256SUMS)
+      - name: Release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Downloads
+
+          - **Windows**: `Keyform-*-setup.exe` (per-user or all users; optional `.cmo3` / `.can3` / `.moc3` association)
+          - **macOS**: `Keyform-*-universal.dmg` (Intel and Apple silicon)
+          - **Linux**: `Keyform-*-x86_64.AppImage`
+          - `keyform-*-vendored-src.tar.xz`: sources with every dependency, for offline builds; `SHA256SUMS`
+
+          ## Platform status
+
+          - Opening a file by double-click on **Windows** and **macOS** is
+            verified in CI (installer registry entries / Info.plist document
+            types, and the installed binary opening each file type), but **not
+            yet tested by a person**. Linux desktop integration (xdg-mime) is
+            tested in CI and by hand.
+          - macOS builds are unsigned unless signing secrets are configured:
+            right-click ▸ Open on first launch.
+          NOTES
+          sed -i 's/^          //' notes.md
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" \
-            --title "Keyform ${{ needs.vendor.outputs.version }}" --generate-notes
+            --title "Keyform ${{ needs.vendor.outputs.version }}" --notes-file notes.md --generate-notes

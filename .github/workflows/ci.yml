@@ -38,3 +38,18 @@ jobs:
       # Sample-model tests pass vacuously without KEYFORM_SAMPLES (licensed
       # data is never in the repository); GPU tests skip without an adapter.
       - run: cargo test --workspace --locked
+      # Every file type opens with the hidden --check-open (no window), on
+      # each platform, from files made from the committed original PSD.
+      - run: cargo build --locked -p keyform-app -p keyform-cli
+      - name: Open each file type
+        shell: bash
+        run: |
+          tools/e2e/make_fixtures.sh target/debug/kf fixtures
+          for f in fixtures/character.cmo3 fixtures/character.can3 fixtures/runtime/character.moc3 fixtures/runtime/character.model3.json test-data/e2e/character.psd; do
+            target/debug/keyform --check-open "$f"
+          done
+      - name: Linux desktop integration (xdg-mime)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y desktop-file-utils shared-mime-info xdg-utils libglib2.0-bin
+          packaging/linux/test-desktop-integration.sh target/debug/keyform fixtures/character.cmo3

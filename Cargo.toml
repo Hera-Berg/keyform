@@ -11,6 +11,7 @@ members = [
     "crates/keyform-render",
     "crates/keyform-cli",
     "crates/keyform-app",
+    "crates/keyform-macos-open",
     
     
 ]
@@ -23,6 +24,7 @@ rust-version = "1.80"
 
 [workspace.dependencies]
 keyform-model = { path = "crates/keyform-model" }
+keyform-macos-open = { path = "crates/keyform-macos-open" }
 keyform-eval = { path = "crates/keyform-eval" }
 keyform-formats = { path = "crates/keyform-formats" }
 keyform-render = { path = "crates/keyform-render" }

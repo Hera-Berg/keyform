@@ -1,0 +1,12 @@
+[package]
+name = "keyform-macos-open"
+description = "macOS open-document Apple Events (Finder double-click) for the Keyform app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The only crate allowed to use `unsafe` (Objective-C message sends), so it
+# does not take the workspace lints. Empty on other platforms.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject", "NSString", "NSURL", "NSAppleEventDescriptor", "NSAppleEventManager"] }

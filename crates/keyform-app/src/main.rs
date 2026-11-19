@@ -30,6 +30,7 @@ mod log;
 mod mesh_edit;
 mod motion_sync_dialog;
 mod new_model_dialog;
+mod open_check;
 mod palettes;
 mod param_ctrl_ui;
 mod param_dialog;
@@ -49,6 +50,22 @@ mod viewer_settings;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
+    // Hidden: `--check-open FILE` loads the file and exits (no window).
+    {
+        let a: Vec<String> = std::env::args().collect();
+        if let Some(i) = a.iter().position(|x| x == "--check-open") {
+            let code = match a.get(i + 1) {
+                Some(f) => open_check::run(std::path::Path::new(f)),
+                None => {
+                    eprintln!("usage: keyform --check-open FILE");
+                    2
+                }
+            };
+            std::process::exit(code);
+        }
+    }
+    // Finder / Dock opens arrive as Apple Events on macOS (no-op elsewhere).
+    keyform_macos_open::install();
     let mut files = Vec::new();
     let mut screenshot = None;
     let mut frames = 10;

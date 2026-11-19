@@ -164,6 +164,8 @@ pub struct KeyformApp {
     forms: crate::form_dialogs::FormDialogs,
     /// A PSD waiting for the import dialogs.
     pending_psd: Option<crate::psd_dialog::PendingPsd>,
+    /// The macOS open-document handler was re-registered after launch.
+    open_events_ready: bool,
     param_dialog: crate::param_dialog::ParamDialog,
 }
 
@@ -317,6 +319,7 @@ impl KeyformApp {
             blend_limits: Default::default(),
             forms: Default::default(),
             pending_psd: None,
+            open_events_ready: false,
             param_dialog: Default::default(),
             export_image: cc
                 .storage
@@ -2621,6 +2624,15 @@ impl TabViewer for Viewer<'_> {
 impl eframe::App for KeyformApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // macOS open-document events: re-register once launched (AppKit may
+        // have replaced the handler), then open what arrived.
+        if !self.open_events_ready {
+            self.open_events_ready = true;
+            keyform_macos_open::install();
+        }
+        for p in keyform_macos_open::take() {
+            self.open(&p);
+        }
         self.shortcuts(&ctx);
         self.external_api(&ctx);
         if !self.initial_values.is_empty() {

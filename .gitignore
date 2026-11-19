@@ -4,7 +4,9 @@
 /*.can3
 /*.moc3
 /*.psd
-/test-data/
+/test-data/*
+!/test-data/e2e/
+/test-data/e2e/local/
 /out/
 /vendor/
 /.cargo/vendor.toml
