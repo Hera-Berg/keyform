@@ -247,18 +247,7 @@ pub fn parts_ui(
                 doc.select(sel);
             }
             // After the plain click above: Ctrl / Shift toggles.
-            if !toggle.is_empty() {
-                let mut set = doc.selection.clone();
-                for o in toggle {
-                    if let Some(i) = set.objects.iter().position(|x| *x == o) {
-                        set.objects.remove(i);
-                        set.retain_points(|p| p.0 != o);
-                    } else {
-                        set.objects.push(o);
-                    }
-                }
-                doc.set_selection(set);
-            }
+            doc.toggle_objects(&toggle);
             for s in toggled {
                 doc.edit("Change Visibility", |m| {
                     if let Some(info) = info_mut(m, s) {

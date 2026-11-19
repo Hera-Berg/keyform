@@ -93,8 +93,13 @@ fn scripted() -> Option<Option<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    /// Scripted answers are a test hook: off unless KEYFORM_FILE_DIALOG is
+    /// set (one test, so the variable isn't raced by a parallel test).
     #[test]
     fn answers_are_consumed_in_order() {
+        if std::env::var_os("KEYFORM_FILE_DIALOG").is_none() {
+            assert_eq!(super::scripted(), None, "off by default");
+        }
         let f = std::env::temp_dir().join(format!("kf-dialog-{}.txt", std::process::id()));
         std::fs::write(&f, "/a/one.psd\n\n/b/two.cmo3\n").unwrap();
         std::env::set_var("KEYFORM_FILE_DIALOG", &f);

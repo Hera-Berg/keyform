@@ -18,9 +18,15 @@ from Xlib.ext import xtest
 
 class Harness:
     def __init__(self, workdir, keyform, env_display, size=(1600, 1000), lang=None, extra_args=()):
-        # Synthetic input must never reach the user's desktop session.
-        if env_display == os.environ.get("DISPLAY") and not os.environ.get("KEYFORM_E2E_DISPLAY"):
-            raise RuntimeError(f"refusing to drive the session display {env_display}; use tools/e2e/display.sh")
+        # Synthetic input must only reach the private test display: :7
+        # (tools/e2e/display.sh) or the one named by KEYFORM_E2E_DISPLAY.
+        allowed = os.environ.get("KEYFORM_E2E_DISPLAY", ":7")
+        if env_display != allowed:
+            raise RuntimeError(
+                f"refusing to drive display {env_display}: only the private test display {allowed} "
+                "(start tools/e2e/display.sh, or set KEYFORM_E2E_DISPLAY)"
+            )
+        print(f"[harness] driving private test display {env_display}", flush=True)
         self.workdir = workdir
         os.makedirs(workdir, exist_ok=True)
         self.map_path = os.path.join(workdir, "uimap.json")

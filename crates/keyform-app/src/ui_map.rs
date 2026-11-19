@@ -123,3 +123,17 @@ impl egui::Plugin for UiMap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The UI map is a test hook: off unless KEYFORM_UI_MAP is set.
+    #[test]
+    fn off_by_default() {
+        if std::env::var_os("KEYFORM_UI_MAP").is_some() {
+            return;
+        }
+        let ctx = eframe::egui::Context::default();
+        super::install(&ctx);
+        assert!(!super::enabled());
+    }
+}

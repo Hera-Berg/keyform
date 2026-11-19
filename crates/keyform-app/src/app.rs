@@ -1917,6 +1917,39 @@ impl KeyformApp {
         if !s.doc.editable() {
             return;
         }
+        // An animation document saves its .can3 under the new name (the model
+        // is saved from the Modeling workspace).
+        if s.doc.anim.is_some() {
+            let st = s.doc.anim.as_ref().expect("anim");
+            let mut dialog = crate::file_dialog::FileDialog::new()
+                .add_filter("Animation (*.can3)", &["can3"])
+                .set_file_name(st.path.file_name().map_or_else(
+                    || "animation.can3".into(),
+                    |n| n.to_string_lossy().into_owned(),
+                ));
+            if let Some(dir) = st.path.parent() {
+                dialog = dialog.set_directory(dir);
+            }
+            let Some(mut path) = dialog.save_file() else {
+                return;
+            };
+            if path.extension().is_none() {
+                path.set_extension("can3");
+            }
+            match s.doc.save_animation_to(Some(&path)) {
+                Ok(p) => {
+                    s.doc.title = p
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    self.log.info(format!("saved {}", p.display()));
+                    self.recent.retain(|r| r != &p);
+                    self.recent.insert(0, p);
+                    self.recent.truncate(10);
+                }
+                Err(e) => self.log.error(format!("save failed: {e}")),
+            }
+            return;
+        }
         let Some(i) = self.active else { return };
         if !self.unused_source_images(i) {
             return;

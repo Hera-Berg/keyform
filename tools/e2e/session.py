@@ -40,8 +40,9 @@ def main():
     ap.add_argument("--until", type=int, default=999)
     ap.add_argument("--lang")
     a = ap.parse_args()
-    if a.display in (":0", ":1", os.environ.get("DISPLAY")) and not os.environ.get("KEYFORM_E2E_DISPLAY"):
-        sys.exit(f"refusing to drive display {a.display}: start tools/e2e/display.sh and pass --display")
+    allowed = os.environ.get("KEYFORM_E2E_DISPLAY", ":7")
+    if a.display != allowed:
+        sys.exit(f"refusing to drive display {a.display}: only the private test display {allowed}")
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     psd = os.path.abspath(a.psd)

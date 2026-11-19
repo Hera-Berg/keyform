@@ -1005,11 +1005,15 @@ impl Document {
                         Some(keyform_model::DeformerKind::Rotation(_))
                     );
                     if rotation {
-                        if pts.first().is_some_and(|p| (p[0] - q[0]).hypot(p[1] - q[1]) <= radius * 3.0) {
+                        if pts
+                            .first()
+                            .is_some_and(|p| (p[0] - q[0]).hypot(p[1] - q[1]) <= radius * 3.0)
+                        {
                             return Some(o);
                         }
                     } else if pts.len() >= 2 {
-                        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                        let (mut x0, mut y0, mut x1, mut y1) =
+                            (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
                         for p in &pts {
                             x0 = x0.min(p[0]);
                             y0 = y0.min(p[1]);
@@ -1035,10 +1039,15 @@ impl Document {
         let (Some(st), Some(mesh)) = (frame.meshes.get(mi), self.model.art_meshes.get(mi)) else {
             return false;
         };
-        let side = |a: [f32; 2], b: [f32; 2]| (q[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (q[1] - b[1]);
+        let side = |a: [f32; 2], b: [f32; 2]| {
+            (q[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (q[1] - b[1])
+        };
         let pt = |i: u32| {
             let i = i as usize;
-            [st.positions.get(2 * i).copied().unwrap_or(0.0), st.positions.get(2 * i + 1).copied().unwrap_or(0.0)]
+            [
+                st.positions.get(2 * i).copied().unwrap_or(0.0),
+                st.positions.get(2 * i + 1).copied().unwrap_or(0.0),
+            ]
         };
         mesh.indices.chunks_exact(3).any(|t| {
             let (a, b, c) = (pt(t[0]), pt(t[1]), pt(t[2]));
@@ -1757,6 +1766,25 @@ impl Document {
     /// (undo.md §3).
     pub fn select(&mut self, sel: Option<Selection>) {
         self.set_selection(SelectionSet::of(sel));
+    }
+
+    /// Ctrl / Shift + click on palette rows: each object is added to or
+    /// removed from the selection (with its points). Applied after a plain
+    /// click's selection, so the toggles aren't overwritten.
+    pub fn toggle_objects(&mut self, toggles: &[Selection]) {
+        if toggles.is_empty() {
+            return;
+        }
+        let mut set = self.selection.clone();
+        for &o in toggles {
+            if let Some(i) = set.objects.iter().position(|x| *x == o) {
+                set.objects.remove(i);
+                set.retain_points(|p| p.0 != o);
+            } else {
+                set.objects.push(o);
+            }
+        }
+        self.set_selection(set);
     }
 
     /// Edit ▸ Select All: every point of the selected objects (vertices,
@@ -3222,5 +3250,166 @@ mod remap_tests {
         let r = remap_selection(&a, &b, &sel);
         assert_eq!(r.objects, vec![Selection::Part(1)]);
         assert_eq!(remap_selection(&a, &a, &sel), sel);
+    }
+}
+
+/// Regression tests for workflow bugs found by the end-to-end session
+/// (tools/e2e/session.py), on a document made from the committed original
+/// test PSD.
+#[cfg(test)]
+mod e2e_regressions {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::path::Path;
+
+    fn character(scratch_name: &str) -> (Document, std::path::PathBuf) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let data = std::fs::read(root.join("test-data/e2e/character.psd")).unwrap();
+        let psd = keyform_formats::psd::Psd::parse(&data).unwrap();
+        let (cmo3, _) = keyform_formats::psd_import::new_model_from_psd(
+            "character.psd",
+            &psd,
+            &Default::default(),
+        )
+        .unwrap();
+        let scratch = root.join("target/test-scratch").join(scratch_name);
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let path = scratch.join("character.cmo3");
+        let mut log = Log::default();
+        let mut d = Document::new_project(&path, cmo3, &mut log).unwrap();
+        d.save_project(Some(&path)).unwrap();
+        d.tick(0.0, &PlaybackOptions::default(), &mut log);
+        (d, path)
+    }
+
+    fn mesh(d: &Document, id: &str) -> Selection {
+        Selection::ArtMesh(
+            d.model
+                .art_meshes
+                .iter()
+                .position(|a| a.info.id == id)
+                .unwrap(),
+        )
+    }
+
+    /// Ctrl/Shift+click toggles rows into the selection after a plain click.
+    #[test]
+    fn palette_toggles_add_to_selection() {
+        let (mut d, _) = character("e2e-toggle");
+        let (face, mouth, iris) = (mesh(&d, "Face"), mesh(&d, "Mouth"), mesh(&d, "IrisL"));
+        d.select(Some(face));
+        d.toggle_objects(&[mouth, iris]);
+        assert_eq!(d.selection.objects, vec![face, mouth, iris]);
+        d.toggle_objects(&[mouth]);
+        assert_eq!(d.selection.objects, vec![face, iris]);
+    }
+
+    /// Edit ▸ Select All: points of the selected object; all meshes when
+    /// nothing is selected. (Escape = Deselect is `select(None)`.)
+    #[test]
+    fn select_all_and_deselect() {
+        let (mut d, _) = character("e2e-select-all");
+        d.select_all();
+        assert_eq!(d.selection.objects.len(), d.model.art_meshes.len());
+        let lid = mesh(&d, "EyelidL");
+        d.select(Some(lid));
+        d.select_all();
+        assert_eq!(d.selection.points.len(), d.object_points(lid).len());
+        assert!(!d.selection.points.is_empty());
+        d.select(None);
+        assert!(d.selection.objects.is_empty() && d.selection.points.is_empty());
+    }
+
+    /// An Inspector edit (a keyform change through try_edit) keeps the
+    /// selection; a structural edit keeps it by GUID.
+    #[test]
+    fn edits_keep_the_selection() {
+        let (mut d, _) = character("e2e-keep-selection");
+        let mouth = mesh(&d, "Mouth");
+        d.select(Some(mouth));
+        let Selection::ArtMesh(mi) = mouth else {
+            unreachable!()
+        };
+        d.try_edit("Change Keyform", |m| {
+            std::sync::Arc::make_mut(&mut m.art_meshes[mi])
+                .grid
+                .keyforms[0]
+                .opacity = 0.5;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(d.selection.objects, vec![mouth]);
+        // Deleting an earlier mesh renumbers it; it stays selected.
+        let first = d
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| a.info.id != "Mouth")
+            .unwrap();
+        let guid = d.model.art_meshes[mi].info.guid.clone();
+        d.try_edit("Delete", |m| {
+            keyform_edit::objects::delete_art_mesh(m, first).map(|_| ())
+        })
+        .unwrap();
+        let now = d
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| a.info.guid == guid)
+            .unwrap();
+        assert_eq!(d.selection.objects, vec![Selection::ArtMesh(now)]);
+    }
+
+    /// A drag that starts inside a selected warp deformer keeps the warp
+    /// (selected objects take priority over the mesh on top).
+    #[test]
+    fn selected_deformer_wins_under_the_pointer() {
+        let (mut d, _) = character("e2e-drag-priority");
+        let face = mesh(&d, "Face");
+        let values = d.values.clone();
+        let w = d
+            .try_edit("Create Warp Deformer", |m| {
+                let nd = keyform_edit::objects::NewDeformer {
+                    name: "FaceWarp".into(),
+                    part: None,
+                    parent: None,
+                    children: &[face],
+                    values: &values,
+                };
+                keyform_edit::objects::create_warp_deformer(m, &nd, 5, 5, (2, 2))
+            })
+            .unwrap();
+        d.tick(0.0, &PlaybackOptions::default(), &mut Log::default());
+        let warp = Selection::Deformer(w);
+        d.select(Some(warp));
+        let pts = d.object_points(face);
+        let c = [
+            pts.iter().map(|p| p[0]).sum::<f32>() / pts.len() as f32,
+            pts.iter().map(|p| p[1]).sum::<f32>() / pts.len() as f32,
+        ];
+        assert!(d.hit_test(c).is_some(), "a mesh is under the point");
+        assert_eq!(d.selected_hit(c, 5.0), Some(warp));
+        d.select(None);
+        assert_eq!(d.selected_hit(c, 5.0), None);
+    }
+
+    /// "Add key at playhead" selects the new key.
+    #[test]
+    fn add_key_selects_the_new_key() {
+        let (_, path) = character("e2e-add-key");
+        let mut log = Log::default();
+        let mut a = Document::new_animation(&path, &mut log).unwrap();
+        let st = a.anim.as_mut().unwrap();
+        let p = st.model_track().map(|(_, m)| m.params.len()).unwrap();
+        assert!(p > 0);
+        st.selected = Some((
+            st.model_track().unwrap().0,
+            crate::animation::AttrRef::Param(0),
+        ));
+        st.frame = 30.0;
+        let k = st.add_key_at_playhead(Default::default()).unwrap();
+        assert_eq!(st.key, Some(k));
+        assert_eq!(st.attr().unwrap().curve.keys[k].frame, 30);
     }
 }

@@ -345,6 +345,26 @@ impl AnimState {
     }
 
     /// Undo (`redo` = false) or redo; returns the step's name.
+    /// "Add key at playhead" on the selected attribute: a key with the
+    /// curve's current value; the new key becomes the selected key, so its
+    /// value can be typed at once. Returns its index.
+    pub fn add_key_at_playhead(
+        &mut self,
+        default_type: keyform_model::animation::CurveType,
+    ) -> Option<usize> {
+        use keyform_anim::scene::{eval_curve, set_key};
+        let a = self.attr()?;
+        let v = eval_curve(&a.curve, self.frame);
+        let f0 = self.frame.round() as i32;
+        self.edit("Add key", |c, f| {
+            set_key(c, f as i32, v, default_type);
+        });
+        self.key = self
+            .attr()
+            .and_then(|attr| attr.curve.keys.iter().position(|k| k.frame == f0));
+        self.key
+    }
+
     pub fn step(&mut self, redo: bool) -> Option<String> {
         let (name, step) = if redo {
             self.redo.pop()?
@@ -1922,17 +1942,18 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             let ruler = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), ROW_H));
             p.rect_filled(ruler, 0.0, tokens.list_background);
             // The ruler as an accessible slider: frame 0 … duration.
-            ui.ctx().accesskit_node_builder(ui.id().with("timeline-ruler"), |b| {
-                b.set_role(egui::accesskit::Role::Slider);
-                b.set_label("Frame".to_owned());
-                b.set_value(format!("{:.0}/{}", st.frame, scene.duration));
-                b.set_bounds(egui::accesskit::Rect {
-                    x0: x_of(0.0).into(),
-                    y0: ruler.min.y.into(),
-                    x1: x_of(f64::from(scene.duration)).into(),
-                    y1: ruler.max.y.into(),
+            ui.ctx()
+                .accesskit_node_builder(ui.id().with("timeline-ruler"), |b| {
+                    b.set_role(egui::accesskit::Role::Slider);
+                    b.set_label("Frame".to_owned());
+                    b.set_value(format!("{:.0}/{}", st.frame, scene.duration));
+                    b.set_bounds(egui::accesskit::Rect {
+                        x0: x_of(0.0).into(),
+                        y0: ruler.min.y.into(),
+                        x1: x_of(f64::from(scene.duration)).into(),
+                        y1: ruler.max.y.into(),
+                    });
                 });
-            });
             p.rect_filled(
                 egui::Rect::from_x_y_ranges(
                     x_of(f64::from(scene.work_start))..=x_of(f64::from(scene.work_end)),
@@ -1977,19 +1998,24 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                 let selected = st.selected == Some((ti, *which));
                 // Painted rows get an accessible node each (name, bounds,
                 // selected): screen readers and scripted tests find them.
-                ui.ctx().accesskit_node_builder(ui.id().with(("timeline-row", r)), |b| {
-                    b.set_role(egui::accesskit::Role::Row);
-                    b.set_label(if a.name.is_empty() { a.id.clone() } else { a.name.clone() });
-                    b.set_bounds(egui::accesskit::Rect {
-                        x0: row.min.x.into(),
-                        y0: row.min.y.into(),
-                        x1: (row.min.x + LABEL_W).into(),
-                        y1: row.max.y.into(),
+                ui.ctx()
+                    .accesskit_node_builder(ui.id().with(("timeline-row", r)), |b| {
+                        b.set_role(egui::accesskit::Role::Row);
+                        b.set_label(if a.name.is_empty() {
+                            a.id.clone()
+                        } else {
+                            a.name.clone()
+                        });
+                        b.set_bounds(egui::accesskit::Rect {
+                            x0: row.min.x.into(),
+                            y0: row.min.y.into(),
+                            x1: (row.min.x + LABEL_W).into(),
+                            y1: row.max.y.into(),
+                        });
+                        if selected {
+                            b.set_selected(true);
+                        }
                     });
-                    if selected {
-                        b.set_selected(true);
-                    }
-                });
                 if selected {
                     p.rect_filled(row, 0.0, tokens.accent.gamma_multiply(0.15));
                 } else if r % 2 == 1 {
@@ -2096,10 +2122,7 @@ pub fn curve_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme::To
         ui.strong(if a.name.is_empty() { &a.id } else { &a.name });
         ui.weak(format!("range {} … {}", a.range.0, a.range.1));
         if ui.button(crate::i18n::tr("Add key at playhead")).clicked() {
-            let v = eval_curve(&a.curve, st.frame);
-            st.edit("Add key", |c, f| {
-                set_key(c, f as i32, v, default_type);
-            });
+            st.add_key_at_playhead(default_type);
         }
         if let Some(k) = st.key.filter(|&k| k < a.curve.keys.len()) {
             let mut v = a.curve.keys[k].value;
