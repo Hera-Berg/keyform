@@ -503,6 +503,12 @@ fn arrow_tool(
                 set.set_points(vec![pt]);
             }
             drag_points = true;
+        } else if !shift
+            && response.drag_started_by(primary)
+            && doc.selected_hit(q, radius).is_some()
+        {
+            // A drag inside a selected object moves it (a plain click still
+            // picks the mesh under the pointer).
         } else if let Some(hit) = doc.hit_test(q) {
             if shift {
                 if let Some(i) = set.objects.iter().position(|o| *o == hit) {

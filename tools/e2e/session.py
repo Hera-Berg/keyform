@@ -186,20 +186,21 @@ def hair_warp(h, psd, out):
 
 
 def param_label(h, name):
-    """The Parameter palette label of a parameter, scrolled into view."""
-    for _ in range(40):
-        ls = [n for n in h.nodes(name, role="Label")]
-        c = h.canvas() or {}
-        pal = [n for n in h.nodes("Parameter", role="Button")] + [n for n in h.nodes("Parameter", role="Label")]
-        vis = [n for n in ls if 0 < n["rect"][1] < 990]
+    """The Parameter palette label of a parameter, scrolled into view
+    (wheel up or down over the palette, toward the label)."""
+    reset = h.find("Reset", role="Button")
+    top, bottom = reset["rect"][3] + 8, 975
+    over = (reset["rect"][0] - 200, reset["rect"][3] + 150)
+    for _ in range(60):
+        ls = [n for n in h.nodes(name, role="Label") if abs(n["rect"][0] - (reset["rect"][0] - 347)) < 60 or n["rect"][0] > 440]
+        vis = [n for n in ls if top < n["rect"][1] and n["rect"][3] < bottom]
         if vis:
             return vis[0]
-        # Scroll the Parameter palette down (mouse wheel over it).
-        anchor = h.find("Reset", role="Button")
-        p = (anchor["rect"][0] - 200, anchor["rect"][3] + 200)
-        h.move(p)
-        h.button(5, True)
-        h.button(5, False)
+        up = bool(ls) and ls[0]["rect"][1] <= top
+        h.move(over)
+        b = 4 if up or not ls and _ % 20 >= 10 else 5
+        h.button(b, True)
+        h.button(b, False)
         h.settle(2)
     raise RuntimeError(f"parameter {name!r} not visible")
 
@@ -394,6 +395,207 @@ def keys_mouth(h, psd, out):
     reset_params(h)
 
 
+def hair_sway_param(h, psd, out):
+    lab = param_label(h, "Angle X")
+    h.click(h.center(lab), button=3)
+    h.click_label("Create Parameter", role="Button")
+    t = "Create Parameter"
+    fields = h.in_window(t, role="TextInput")
+    h.set_field(fields[0], "Hair Sway")
+    fields = h.in_window(t, role="TextInput")
+    h.set_field(fields[1], "ParamHairSway")
+    spins = h.in_window(t, role="SpinButton")
+    for f, v in zip(spins[:3], ("-1", "0", "1")):
+        h.set_field(f, v)
+        spins = h.in_window(t, role="SpinButton")
+    h.click(h.center(h.in_window(t, label="OK")[0]))
+    param_label(h, "Hair Sway")
+
+
+def keys_hair_sway(h, psd, out):
+    select_deformer(h, "HairWarp")
+    key_op(h, "Hair Sway", "Add 3 keys")
+    for where, d in (("min", (-16, 0)), ("max", (16, 0))):
+        set_param(h, "Hair Sway", where, -1.0, 1.0)
+        canvas_drag_object(h, "BackHair", *d)
+    reset_params(h)
+
+
+def save_cmo3(h, psd, out):
+    path = os.path.join(out, "model.cmo3")
+    if os.path.exists(path):
+        os.remove(path)
+    h.answer_dialog(path)
+    h.menu("File", "Save as…")
+    for _ in range(50):
+        if os.path.exists(path):
+            break
+        time.sleep(0.2)
+    if not os.path.exists(path):
+        raise RuntimeError("model.cmo3 was not written")
+
+
+def keys_body(h, psd, out):
+    select_mesh(h, "Body")
+    key_op(h, "Body X", "Add 3 keys")
+    for where, d in (("min", (-12, 0)), ("max", (12, 0))):
+        set_param(h, "Body X", where, -10.0, 10.0)
+        canvas_drag_object(h, "Body", *d)
+    reset_params(h)
+
+
+def physics_open(h, psd, out):
+    h.menu("Modeling", "Physics Settings…")
+    h.find("Physics Settings", role="Window")
+    h.click(h.center(h.in_window("Physics Settings", label="Add…")[0]))
+    name = h.in_window("Add Physics Group", role="TextInput")[0]
+    h.click(h.center(name))
+    h.type("Hair")
+    h.click(h.center(h.in_window("Add Physics Group", label="OK")[0]))
+    time.sleep(0.5)
+
+
+def popup_pick(h, label, anchor, visible=330):
+    """Clicks item `label` of a popup list opened at `anchor` (a menu or a
+    combo list). Items below the popup's visible band (about `visible` px
+    from its first item; clipped items still appear in the map) are first
+    wheeled into view."""
+    for _ in range(40):
+        items = [n for n in h.nodes(role="Button") if n["rect"][1] > anchor[1] + 4 and abs(n["rect"][0] - anchor[0]) < 160]
+        target = [n for n in items if n["label"] == label]
+        if not target:
+            raise RuntimeError(f"popup item {label!r} not found")
+        t = min(target, key=lambda n: abs(n["rect"][0] - anchor[0]))
+        col = [n for n in items if abs(n["rect"][0] - t["rect"][0]) < 2]
+        first = min(n["rect"][1] for n in col)
+        top = anchor[1] + 6
+        if t["rect"][1] >= top and t["rect"][3] <= top + visible:
+            h.click(h.center(t))
+            return
+        h.move((t["rect"][0] + 30, top + 60))
+        h.button(5 if t["rect"][1] > top else 4, True)
+        h.button(5 if t["rect"][1] > top else 4, False)
+        h.settle(2)
+        _ = first
+    raise RuntimeError(f"popup item {label!r} not reachable")
+
+
+def physics_inputs_outputs(h, psd, out):
+    w = "Physics Settings"
+    for param in ("Angle X", "Body X"):
+        add = [n for n in h.in_window(w, label="Add…") if "Input parameter" not in n["label"]]
+        # The inputs' Add… sits left of the hint text.
+        hint = h.find("Input parameter can be added by right clicking on menu.")
+        btn = min(add, key=lambda n: abs(n["rect"][1] - hint["rect"][1]) + abs(n["rect"][0] - 23))
+        h.click(h.center(btn))
+        popup_pick(h, param, h.center(btn))
+    h.click(h.center(h.in_window(w, label="Output Settings")[0]))
+    h.click(h.center(h.in_window(w, label="Add", role="Button")[0]))
+    combo = [n for n in h.in_window(w, role="ComboBox") if n["value"] == "Angle X"]
+    if not combo:
+        raise RuntimeError("no output parameter combo")
+    h.click(h.center(combo[-1]))
+    popup_pick(h, "Hair Sway", h.center(combo[-1]))
+    h.click(h.center(h.in_window(w, label="Close window")[0]))
+
+
+def texture_atlas(h, psd, out):
+    h.menu("Modeling", "Texture Atlas", "Edit Texture Atlas…")
+    h.click(h.center(h.in_window("Create texture atlas", label="OK")[0]))
+    # The initial grid packs image rectangles; meshes that overhang their
+    # images (auto-mesh margins) need Auto Layout, which packs mesh bounds.
+    h.click(h.center(h.in_window("Texture Atlas", label="Auto Layout…")[0]))
+    h.click(h.center(h.in_window("Texture Atlas", label="Run Auto Layout")[0]))
+    time.sleep(1)
+    h.click(h.center(h.in_window("Texture Atlas", label="Close window")[0]))
+
+
+def export_runtime(h, psd, out):
+    rt = os.path.join(out, "runtime")
+    os.makedirs(rt, exist_ok=True)
+    for f in os.listdir(rt):
+        p = os.path.join(rt, f)
+        if os.path.isfile(p):
+            os.remove(p)
+    h.answer_dialog(rt)
+    h.menu("File", "Export For Runtime", "Export as moc3 file…")
+    for _ in range(50):
+        if any(f.endswith(".moc3") for f in os.listdir(rt)):
+            break
+        time.sleep(0.2)
+    names = sorted(os.listdir(rt))
+    if not any(f.endswith(".moc3") for f in names) or not any(f.endswith(".physics3.json") for f in names):
+        raise RuntimeError(f"runtime export incomplete: {names}")
+
+
+def new_animation(h, psd, out):
+    h.answer_dialog(os.path.join(out, "model.cmo3"))
+    h.menu("File", "New", "Animation…")
+    time.sleep(2)
+
+
+def timeline_row(h, name):
+    rows = [n for n in h.nodes(name, role="Row")]
+    if not rows:
+        raise RuntimeError(f"no timeline row {name!r}")
+    return rows[0]
+
+
+def set_frame(h, frame):
+    ruler = h.find("Frame", role="Slider")
+    total = float(ruler["value"].split("/")[1])
+    r = ruler["rect"]
+    x = r[0] + (r[2] - r[0]) * frame / total
+    h.click((x, (r[1] + r[3]) / 2))
+
+
+def key_at(h, attr, frame, value):
+    """Selects the attribute row, puts the playhead on `frame`, adds a key
+    there (curve editor) and types its value."""
+    h.click(h.center(timeline_row(h, attr)))
+    set_frame(h, frame)
+    h.click_label("Add key at playhead", role="Button")
+    lab = h.find("key @", contains=True)
+    field = [n for n in h.nodes(role="SpinButton") if abs(n["rect"][1] - lab["rect"][1]) < 6 and n["rect"][0] > lab["rect"][0]]
+    if not field:
+        raise RuntimeError("no key value field")
+    h.set_field(field[0], value)
+
+
+def anim_keys(h, psd, out):
+    for f, v in ((0, "0"), (30, "30"), (60, "-30"), (90, "0")):
+        key_at(h, "Angle X", f, v)
+    for f, v in ((40, "1"), (45, "0"), (50, "1")):
+        key_at(h, "EyeL Open", f, v)
+        key_at(h, "EyeR Open", f, v)
+    for f, v in ((10, "0"), (20, "1"), (30, "0")):
+        key_at(h, "Mouth Open", f, v)
+
+
+def save_can3(h, psd, out):
+    path = os.path.join(out, "model.can3")
+    if os.path.exists(path):
+        os.remove(path)
+    h.answer_dialog(path)
+    h.menu("File", "Save as…")
+    for _ in range(50):
+        if os.path.exists(path):
+            break
+        time.sleep(0.2)
+    if not os.path.exists(path):
+        raise RuntimeError("model.can3 was not written")
+
+
+def export_motions(h, psd, out):
+    rt = os.path.join(out, "runtime")
+    h.answer_dialog(rt)
+    h.menu("File", "Export For Runtime", "Export motion files (motion3.json)…")
+    for _ in range(50):
+        if any(f.endswith(".motion3.json") for f in os.listdir(rt)) or os.path.isdir(os.path.join(rt, "motions")):
+            break
+        time.sleep(0.2)
+
+
 def auto_mesh(h, psd, out):
     select_all_meshes(h)
     h.menu("Modeling", "ArtMesh", "Automatic Mesh generator…")
@@ -403,6 +605,7 @@ def auto_mesh(h, psd, out):
     tri = sum(len(m["points"]) for m in h.canvas()["meshes"])
     if tri <= 4 * 14:
         raise RuntimeError(f"auto mesh made no new vertices ({tri})")
+
 
 
 STEPS = [
@@ -416,6 +619,18 @@ STEPS = [
     ("Face and hair keys on Angle X / Y", keys_face_angles),
     ("Eyelid keys on EyeL / EyeR Open", keys_eyes),
     ("Mouth Open keys (points dragged)", keys_mouth),
+    ("Create the HairSway parameter", hair_sway_param),
+    ("Hair keys on Hair Sway", keys_hair_sway),
+    ("Body keys on Body Angle X", keys_body),
+    ("Modeling ▸ Physics Settings: add a Hair group", physics_open),
+    ("Physics inputs Angle X / Body X, output Hair Sway", physics_inputs_outputs),
+    ("Texture atlas (create, Auto Layout)", texture_atlas),
+    ("File ▸ Save as model.cmo3", save_cmo3),
+    ("File ▸ Export For Runtime (moc3, model3, physics3)", export_runtime),
+    ("File ▸ New ▸ Animation", new_animation),
+    ("Scene keys: head turn, blink, mouth", anim_keys),
+    ("File ▸ Save as model.can3", save_can3),
+    ("Export motion files (motion3.json)", export_motions),
 ]
 
 if __name__ == "__main__":

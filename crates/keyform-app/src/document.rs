@@ -985,6 +985,68 @@ impl Document {
 
     /// The top-most visible, unlocked art mesh under canvas point `q`
     /// (canvas-and-tools.md §3).
+    /// The selected object under canvas point `q`, if any: selected objects
+    /// take priority over unselected ones on top, so a drag inside a
+    /// selected deformer moves it rather than grabbing a mesh above it.
+    /// Meshes by their triangles, warp deformers by their grid's bounds,
+    /// rotation deformers near their origin (`radius`).
+    pub fn selected_hit(&self, q: [f32; 2], radius: f32) -> Option<Selection> {
+        for &o in self.selection.objects.iter().rev() {
+            match o {
+                Selection::ArtMesh(_) => {
+                    if self.hit_test_mesh(o, q) {
+                        return Some(o);
+                    }
+                }
+                Selection::Deformer(d) => {
+                    let pts = self.object_points(o);
+                    let rotation = matches!(
+                        self.model.deformers.get(d).map(|x| &x.kind),
+                        Some(keyform_model::DeformerKind::Rotation(_))
+                    );
+                    if rotation {
+                        if pts.first().is_some_and(|p| (p[0] - q[0]).hypot(p[1] - q[1]) <= radius * 3.0) {
+                            return Some(o);
+                        }
+                    } else if pts.len() >= 2 {
+                        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                        for p in &pts {
+                            x0 = x0.min(p[0]);
+                            y0 = y0.min(p[1]);
+                            x1 = x1.max(p[0]);
+                            y1 = y1.max(p[1]);
+                        }
+                        if (x0..=x1).contains(&q[0]) && (y0..=y1).contains(&q[1]) {
+                            return Some(o);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Whether `q` is inside art mesh `o`'s triangles.
+    fn hit_test_mesh(&self, o: Selection, q: [f32; 2]) -> bool {
+        let (Selection::ArtMesh(mi), Some(frame)) = (o, self.frame.as_ref()) else {
+            return false;
+        };
+        let (Some(st), Some(mesh)) = (frame.meshes.get(mi), self.model.art_meshes.get(mi)) else {
+            return false;
+        };
+        let side = |a: [f32; 2], b: [f32; 2]| (q[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (q[1] - b[1]);
+        let pt = |i: u32| {
+            let i = i as usize;
+            [st.positions.get(2 * i).copied().unwrap_or(0.0), st.positions.get(2 * i + 1).copied().unwrap_or(0.0)]
+        };
+        mesh.indices.chunks_exact(3).any(|t| {
+            let (a, b, c) = (pt(t[0]), pt(t[1]), pt(t[2]));
+            let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+            !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+        })
+    }
+
     pub fn hit_test(&self, q: [f32; 2]) -> Option<Selection> {
         let frame = self.frame.as_ref()?;
         // Which side of edge b→a the point q is on.

@@ -45,6 +45,8 @@ class Harness:
         if lang:
             args += ["--lang", lang]
         self.proc = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT)
+        import atexit
+        atexit.register(self.close)
         self.d = display.Display(env_display)
         self.root = self.d.screen().root
         self.win = None
@@ -58,11 +60,16 @@ class Harness:
     def find_window(self, timeout=20):
         end = time.time() + timeout
         while time.time() < end:
+            pid_atom = self.d.intern_atom("_NET_WM_PID")
             for w in self._windows(self.root):
                 try:
                     name = w.get_wm_name() or ""
+                    prop = w.get_full_property(pid_atom, X.AnyPropertyType)
+                    pid = prop.value[0] if prop else None
                 except Exception:
-                    name = ""
+                    name, pid = "", None
+                if pid != self.proc.pid:
+                    continue
                 if name.startswith("Keyform") or "keyform" in name.lower():
                     g = w.get_geometry()
                     if g.width > 300:
@@ -355,6 +362,8 @@ class Harness:
         imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=900, loop=0)
 
     def close(self):
+        if self.proc.poll() is not None:
+            return
         try:
             self.proc.terminate()
             self.proc.wait(10)

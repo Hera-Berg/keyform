@@ -1921,6 +1921,18 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
             // Ruler with the work area.
             let ruler = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), ROW_H));
             p.rect_filled(ruler, 0.0, tokens.list_background);
+            // The ruler as an accessible slider: frame 0 … duration.
+            ui.ctx().accesskit_node_builder(ui.id().with("timeline-ruler"), |b| {
+                b.set_role(egui::accesskit::Role::Slider);
+                b.set_label("Frame".to_owned());
+                b.set_value(format!("{:.0}/{}", st.frame, scene.duration));
+                b.set_bounds(egui::accesskit::Rect {
+                    x0: x_of(0.0).into(),
+                    y0: ruler.min.y.into(),
+                    x1: x_of(f64::from(scene.duration)).into(),
+                    y1: ruler.max.y.into(),
+                });
+            });
             p.rect_filled(
                 egui::Rect::from_x_y_ranges(
                     x_of(f64::from(scene.work_start))..=x_of(f64::from(scene.work_end)),
@@ -1963,6 +1975,21 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
                     egui::vec2(rect.width(), ROW_H),
                 );
                 let selected = st.selected == Some((ti, *which));
+                // Painted rows get an accessible node each (name, bounds,
+                // selected): screen readers and scripted tests find them.
+                ui.ctx().accesskit_node_builder(ui.id().with(("timeline-row", r)), |b| {
+                    b.set_role(egui::accesskit::Role::Row);
+                    b.set_label(if a.name.is_empty() { a.id.clone() } else { a.name.clone() });
+                    b.set_bounds(egui::accesskit::Rect {
+                        x0: row.min.x.into(),
+                        y0: row.min.y.into(),
+                        x1: (row.min.x + LABEL_W).into(),
+                        y1: row.max.y.into(),
+                    });
+                    if selected {
+                        b.set_selected(true);
+                    }
+                });
                 if selected {
                     p.rect_filled(row, 0.0, tokens.accent.gamma_multiply(0.15));
                 } else if r % 2 == 1 {
