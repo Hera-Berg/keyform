@@ -750,16 +750,21 @@ impl GpuRenderer {
                 },
                 DrawItem::Alias(_) => continue,
                 DrawItem::ArtPath(_) | DrawItem::AliasArtPath(..) => {
-                    let (k, parent, st) = match *item {
+                    let (k, parent, st, clip) = match *item {
                         DrawItem::ArtPath(k) => {
                             match (m.art_paths.get(k), frame.art_paths.get(k)) {
-                                (Some(a), Some(st)) => (k, a.info.parent_part, st.clone()),
+                                (Some(a), Some(st)) => (
+                                    k,
+                                    a.info.parent_part,
+                                    st.clone(),
+                                    Some((&a.clip, a.invert_clip)),
+                                ),
                                 _ => continue,
                             }
                         }
                         DrawItem::AliasArtPath(j, k) => {
                             match (m.aliases.get(j), frame.alias_path_state(j, k)) {
-                                (Some(a), Some(st)) => (k, a.info.parent_part, st),
+                                (Some(a), Some(st)) => (k, a.info.parent_part, st, None),
                                 _ => continue,
                             }
                         }
@@ -786,17 +791,39 @@ impl GpuRenderer {
                         buffers += 1;
                     }
                     let o = st.opacity;
+                    // Clip list read like an art mesh's (art-path.md §1).
+                    let (mask, invert) = match clip {
+                        Some((c, inv)) if !c.is_empty() => {
+                            for &x in c {
+                                geometry(&mut geo, x);
+                            }
+                            let i = match mask_keys.iter().position(|k| k == c) {
+                                Some(i) => i,
+                                None => {
+                                    mask_keys.push(c.clone());
+                                    mask_keys.len() - 1
+                                }
+                            };
+                            (Some(i), inv)
+                        }
+                        _ => (None, false),
+                    };
                     items.push(Item {
                         mesh: key,
                         buffer: None,
                         kind: PipeKind::Normal,
                         cull: Cull::None,
-                        mask: None,
+                        mask,
                         uniform: DrawUniform {
                             base: [o, o, o, o],
                             mul: [st.multiply[0], st.multiply[1], st.multiply[2], 1.0],
                             scr: [st.screen[0], st.screen[1], st.screen[2], 1.0],
-                            flags: [0.0, 0.0, o, 0.0],
+                            flags: [
+                                f32::from(u8::from(mask.is_some())),
+                                f32::from(u8::from(invert)),
+                                o,
+                                0.0,
+                            ],
                             modes: [0, 0, 0, 0],
                             uvs: [1.0, 1.0, 0.0, 0.0],
                         },
@@ -808,7 +835,8 @@ impl GpuRenderer {
             let (Some(am), Some(ms)) = (m.art_meshes.get(mi), frame.meshes.get(mi)) else {
                 continue;
             };
-            // TODO(Q-0046): alias clip lists, offscreen and compositions.
+            // Aliases aren't persisted in 5.3.04 (alias.md): their own clip
+            // lists, offscreen flag and compositions aren't drawn.
             let parent = match &alias_state {
                 Some((k, _)) => m.aliases.get(*k).and_then(|a| a.info.parent_part),
                 None => am.info.parent_part,

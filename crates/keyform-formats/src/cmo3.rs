@@ -802,7 +802,7 @@ impl<'a, 'd> Loader<'a, 'd> {
             },
             closed: o.bool("isClosed")?.unwrap_or(false),
             // The same `clipGuidList` field as art meshes (ACDrawableSource);
-            // drawing with it is TODO(Q-0046).
+            // drawn with a mask like an art mesh (Q-0046).
             clip: self.clip_list(o)?.0,
             invert_clip: o.bool("invertClippingMask")?.unwrap_or(false),
             brush: o
@@ -815,7 +815,7 @@ impl<'a, 'd> Loader<'a, 'd> {
     }
 
     /// Aliases: a `CAliasSourceSet` found by tag under `CModelSource` (its
-    /// field name isn't known, TODO(Q-0046)); `CAliasSource` fields per the
+    /// 5.3.04 never writes it, Q-0046: kept tolerant); `CAliasSource` fields per the
     /// schema. Kept as stored on save. spec: 70-advanced/alias.md
     fn load_aliases(
         &mut self,

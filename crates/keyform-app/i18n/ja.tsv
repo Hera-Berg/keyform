@@ -637,3 +637,9 @@ Temp path	一時パス
 event text	イベントのテキスト
 Group (e.g. Idle)	グループ（例：Idle）
 Form Edit	フォーム編集
+Selected only	選択項目のみ
+Play All	すべて再生
+Shuffle	シャッフル
+Linked animation file	リンクしたアニメーションファイル
+Link animation file…	アニメーションファイルをリンク…
+Unlink	リンク解除

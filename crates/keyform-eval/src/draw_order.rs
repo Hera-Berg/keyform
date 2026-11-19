@@ -26,7 +26,7 @@ pub enum DrawItem {
 
 /// Render order of art meshes and art paths, back to front. Art paths sort
 /// with the objects of their parent part by draw order; on ties they are
-/// drawn on top (TODO(Q-0046)). spec: draw-order.md, art-path.md
+/// drawn on top (Q-0046). spec: draw-order.md, art-path.md
 pub fn render_items(
     m: &Model,
     parts: &[PartState],

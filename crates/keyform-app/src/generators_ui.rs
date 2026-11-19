@@ -546,7 +546,7 @@ pub fn face_dialog(ctx: &egui::Context, st: &mut FaceDialog, doc: Option<&mut Do
         }
         // Adjust Face Motion (§3.3): movement scales translation,
         // deformation the shape change. Ranges are Keyform's (0–200 %).
-        // TODO(Q-0045): the reference's ranges and layout.
+        // Q-0045: 0–200 % is final (100 % = as generated).
         if !st.snapshots.is_empty() {
             ui.separator();
             ui.label(egui::RichText::new(crate::i18n::tr("Adjust Face Motion")).strong());

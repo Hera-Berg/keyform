@@ -2834,6 +2834,9 @@ impl eframe::App for KeyformApp {
             .and_then(|i| self.slots.get_mut(i))
             .map(|s| &mut s.doc);
         crate::physics_editor::window(&ctx, &mut self.physics_editor, doc, &mut self.log);
+        if let Some(d) = self.physics_editor.new_doc.take() {
+            self.add_slot(d);
+        }
         let doc = self
             .active
             .and_then(|i| self.slots.get_mut(i))

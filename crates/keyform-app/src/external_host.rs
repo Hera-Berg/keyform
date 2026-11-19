@@ -281,7 +281,7 @@ pub fn settings_window(
                 None => ui.weak(crate::i18n::tr("Not running")),
             };
             ui.separator();
-            // TODO(Q-0045): the reference's thinning types.
+            // Thinning: "No thinning" / "Remove redundant keys" (Q-0045).
             ui.horizontal(|ui| {
                 ui.checkbox(
                     &mut rec.on,

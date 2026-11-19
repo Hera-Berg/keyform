@@ -144,3 +144,62 @@ fn alias_redraws_with_own_appearance() {
     let g = gpu.render(&m, &f, &opts()).unwrap();
     assert_eq!(px(&g, 12, 32), [0, 0, 0, 255]);
 }
+
+/// The clip list masks the stroke like an art mesh's (Q-0046).
+#[test]
+fn clip_list_masks_the_stroke() {
+    let mut m = model();
+    let mut img = RgbaImage::new(4, 4);
+    img.data.fill(255);
+    m.textures.push(std::sync::Arc::new(Texture {
+        sampling: Default::default(),
+        guid: String::new(),
+        name: "t".into(),
+        width: 4,
+        height: 4,
+        png: Some(img.encode_png().unwrap()),
+        locked: true,
+        entries: Vec::new(),
+    }));
+    // Mask: the left half of the canvas.
+    let positions = vec![0.0, 0.0, 32.0, 0.0, 32.0, 64.0, 0.0, 64.0];
+    m.art_meshes.push(std::sync::Arc::new(ArtMesh {
+        clip_missing: false,
+        info: ObjectInfo::new("Mask"),
+        target: None,
+        positions: positions.clone(),
+        uvs: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        texture: Some(0),
+        clip: vec![],
+        invert_clip: false,
+        culling: false,
+        color_composition: ColorComposition::Normal,
+        alpha_composition: AlphaComposition::Over,
+        user_data: String::new(),
+        point_uids: vec![],
+        mesh: EditableMesh::default(),
+        model_image: None,
+        generator: Default::default(),
+        grid: KeyformGrid::single(ArtMeshForm {
+            positions,
+            draw_order: 100.0,
+            opacity: 0.0,
+            multiply: [1.0; 4],
+            screen: [0.0, 0.0, 0.0, 1.0],
+        }),
+        blend_shapes: BlendShapes::default(),
+        paths: Vec::new(),
+    }));
+    std::sync::Arc::make_mut(&mut m.art_paths[0]).clip = vec![0];
+    let f = Evaluator::new(&m).evaluate(&[]);
+    let c = CpuRenderer::new(&m).render(&f, &opts()).unwrap();
+    assert_eq!(px(&c, 12, 32)[3], 255, "inside the mask");
+    assert_eq!(px(&c, 50, 32)[3], 0, "outside the mask");
+    let Ok(gpu) = keyform_render::gpu::GpuRenderer::new(&m) else {
+        return;
+    };
+    let g = gpu.render(&m, &f, &opts()).unwrap();
+    assert!(px(&g, 12, 32)[3] > 250);
+    assert_eq!(px(&g, 50, 32)[3], 0);
+}

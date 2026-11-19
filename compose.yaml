@@ -11,6 +11,8 @@ services:
       - .:/src
       - cargo-registry:/usr/local/cargo/registry
       - cargo-target:/target
+      # Tests write scratch files under target/: keep them off the host tree.
+      - cargo-scratch:/src/target
       - ${KEYFORM_SAMPLES_DIR:-./tests}:/samples:ro
     environment:
       KEYFORM_SAMPLES: /samples
@@ -22,3 +24,4 @@ services:
 volumes:
   cargo-registry:
   cargo-target:
+  cargo-scratch:

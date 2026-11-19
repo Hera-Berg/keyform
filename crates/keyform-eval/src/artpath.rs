@@ -272,7 +272,8 @@ impl ArtPathState {
 
 /// The stroke of evaluated form `f`: control points to the canvas through
 /// `map` (the target deformer), centre line, SIMPLE strip.
-// TODO(Q-0046): unset brush, colour alpha and width units.
+// Null / unmatched brush = SIMPLE without texture; colour alpha used;
+// width in canvas px after mapping (Q-0046, art-path.md).
 pub fn geometry(a: &ArtPath, f: &ArtPathForm, map: Option<&DeformerMap>) -> Stroke {
     let pts: Vec<ArtPathPoint> = f
         .points

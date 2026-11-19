@@ -253,18 +253,40 @@ impl<'m> CpuRenderer<'m> {
                 DrawItem::Mesh(mi) => (mi, None),
                 DrawItem::AliasMesh(k, mi) => (mi, frame.alias_mesh_state(k, mi)),
                 DrawItem::ArtPath(k) => {
-                    draw_stroke(t, &frame.art_paths[k], &to_px);
+                    // Clip list read like an art mesh's (art-path.md §1).
+                    let a = &m.art_paths[k];
+                    let mask = if a.clip.is_empty() {
+                        None
+                    } else {
+                        let key = (a.clip.clone(), a.invert_clip);
+                        if !mask_cache.contains_key(&key) {
+                            let mk = self.build_mask(
+                                frame,
+                                &a.clip,
+                                a.invert_clip,
+                                w,
+                                h,
+                                &to_px,
+                                ss,
+                                opts.msaa,
+                            );
+                            mask_cache.insert(key.clone(), mk);
+                        }
+                        mask_cache.get(&key)
+                    };
+                    draw_stroke(t, &frame.art_paths[k], &to_px, mask.map(Vec::as_slice));
                     continue;
                 }
                 DrawItem::AliasArtPath(k, p) => {
                     if let Some(st) = frame.alias_path_state(k, p) {
-                        draw_stroke(t, &st, &to_px);
+                        draw_stroke(t, &st, &to_px, None);
                     }
                     continue;
                 }
                 DrawItem::Alias(_) => continue,
             };
-            // TODO(Q-0046): alias clip lists, offscreen and compositions.
+            // Aliases aren't persisted in 5.3.04 (alias.md): their own clip
+            // lists, offscreen flag and compositions aren't drawn.
             let am = &m.art_meshes[mi];
             let ms = alias_state.as_ref().unwrap_or(&frame.meshes[mi]);
             let Some(tex) = m
@@ -677,6 +699,7 @@ pub(crate) fn draw_stroke(
     t: &mut Target,
     st: &keyform_eval::artpath::ArtPathState,
     to_px: &dyn Fn(&[f32]) -> V2,
+    mask: Option<&[f32]>,
 ) {
     let s = &st.stroke;
     let pts: Vec<V2> = s.positions.chunks_exact(2).map(to_px).collect();
@@ -691,7 +714,7 @@ pub(crate) fn draw_stroke(
         raster_triangle(t, [p0, p1, p2], bary, |x, y, u, v, t| {
             let w0 = 1.0 - u - v;
             let k: [f32; 4] = std::array::from_fn(|j| w0 * c[0][j] + u * c[1][j] + v * c[2][j]);
-            let a = (k[3] * st.opacity).clamp(0.0, 1.0);
+            let a = (k[3] * st.opacity * mask.map_or(1.0, |m| m[y * t.w + x])).clamp(0.0, 1.0);
             let mut src = [0.0f32; 4];
             for j in 0..3 {
                 let rgb = k[j].clamp(0.0, 1.0) * st.multiply[j];

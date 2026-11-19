@@ -53,6 +53,16 @@ pub struct PhysicsEditor {
     /// Recording Settings: true = create a new animation file, false =
     /// add to the current animation file (observed default).
     record_new_file: bool,
+    /// Recording thinning: "Remove redundant keys" (else none).
+    thin_redundant: bool,
+    /// Playlist mode: 0 selected item, 1 Play All, 2 Shuffle.
+    play_mode: u8,
+    /// The animation file linked to the open model, and the model it was
+    /// looked up for.
+    linked: Option<Linked>,
+    link_checked: Option<std::path::PathBuf>,
+    /// A new animation document made from a recording, for the app to open.
+    pub new_doc: Option<Document>,
     /// User presets (`physics_preset40.xml`), loaded on first use.
     user_presets: Option<Vec<keyform_physics::presets::Preset>>,
     /// Selected preset per kind (input, model) by name.
@@ -413,29 +423,189 @@ fn header(ui: &mut egui::Ui, st: &mut PhysicsEditor, rig: &mut PhysicsRig) {
 }
 
 /// §5.1 Input settings.
-/// A playing test motion.
+/// One playlist entry: a built-in test motion or a scene of the linked
+/// animation file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayItem {
+    Test(keyform_anim::recorder::TestMotion),
+    Scene(usize),
+}
+
+/// The animation file linked to a model for the playlist (Keyform's
+/// design, Q-0045: one `.can3` per model, remembered).
+pub struct Linked {
+    model: std::path::PathBuf,
+    can3: std::path::PathBuf,
+    doc: Box<Document>,
+}
+
+impl Linked {
+    fn scenes(&self) -> Vec<String> {
+        self.doc
+            .anim
+            .as_ref()
+            .map(|a| {
+                a.doc
+                    .animation
+                    .scenes
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// (first frame, last frame, fps) of scene `si`'s work area.
+    fn span(&self, si: usize) -> Option<(f64, f64, f64)> {
+        let s = self.doc.anim.as_ref()?.doc.animation.scenes.get(si)?;
+        let fps = if s.fps > 0.0 { s.fps } else { 30.0 };
+        let (a, b) = if s.work_end > s.work_start {
+            (s.work_start, s.work_end)
+        } else {
+            (0, s.duration.max(1))
+        };
+        Some((f64::from(a), f64::from(b), fps))
+    }
+}
+
+/// The playing queue.
 struct Playback {
-    motion: keyform_anim::recorder::TestMotion,
+    queue: Vec<PlayItem>,
+    pos: usize,
     t: f32,
     /// Slider values before playback (restored on stop; fade origin).
     start: Vec<f32>,
     recorder: Option<keyform_anim::recorder::Recorder>,
 }
 
-/// §2 playback bar: playlist (Keyform's test motions), Play / Stop,
-/// Repeat, fading, Record and Recording Settings. Physics runs on the
-/// driven values; outputs show on the sliders.
-// TODO(Q-0045): scenes of a linked .can3 in the playlist; Play All /
-// Shuffle; the reference's fade curves.
+/// Length of a test motion loop (s).
+const TEST_DURATION: f32 = 12.0;
+
+/// Remembered links: `physics_links.json` next to the user presets.
+fn links_path() -> std::path::PathBuf {
+    presets_path().with_file_name("physics_links.json")
+}
+
+fn load_links() -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(links_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_link(model: &std::path::Path, can3: Option<&std::path::Path>) {
+    let mut m = load_links();
+    let key = model.to_string_lossy().into_owned();
+    match can3 {
+        Some(c) => {
+            m.insert(key, c.to_string_lossy().into_owned());
+        }
+        None => {
+            m.remove(&key);
+        }
+    }
+    if let Ok(t) = serde_json::to_string_pretty(&m) {
+        let _ = std::fs::write(links_path(), t);
+    }
+}
+
+/// Keeps `st.linked` in step with the document's remembered link.
+fn sync_link(st: &mut PhysicsEditor, doc: &Document, log: &mut Log) {
+    if st.linked.as_ref().is_some_and(|l| l.model == doc.path)
+        || st.link_checked == Some(doc.path.clone())
+    {
+        return;
+    }
+    st.link_checked = Some(doc.path.clone());
+    st.linked = None;
+    if let Some(c) = load_links().get(&*doc.path.to_string_lossy()) {
+        link(st, doc, std::path::Path::new(c), log);
+    }
+}
+
+fn link(st: &mut PhysicsEditor, doc: &Document, can3: &std::path::Path, log: &mut Log) {
+    match Document::open_animation(can3, log) {
+        Ok(d) => {
+            st.linked = Some(Linked {
+                model: doc.path.clone(),
+                can3: can3.to_path_buf(),
+                doc: Box::new(d),
+            });
+            save_link(&doc.path, Some(can3));
+        }
+        Err(e) => log.warn(e),
+    }
+}
+
+/// The playlist in order: test motions, then the linked file's scenes.
+fn playlist(st: &PhysicsEditor) -> Vec<(PlayItem, String)> {
+    use keyform_anim::recorder::TestMotion;
+    let mut v: Vec<(PlayItem, String)> = TestMotion::ALL
+        .iter()
+        .map(|m| (PlayItem::Test(*m), m.name().to_owned()))
+        .collect();
+    if let Some(l) = &st.linked {
+        v.extend(
+            l.scenes()
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| (PlayItem::Scene(i), n)),
+        );
+    }
+    v
+}
+
+/// A pseudo-random permutation of `0..n` (Shuffle; no RNG crate needed).
+pub fn shuffled(n: usize, mut seed: u64) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        v.swap(i, (seed % (i as u64 + 1)) as usize);
+    }
+    v
+}
+
+/// The fade weight at `t` seconds: None = 1, Linear = linear ramp,
+/// Easing = smoothstep (Q-0045).
+pub fn fade_weight(kind: u8, t_ms: f32, fade_ms: f32) -> f32 {
+    if kind == 0 || fade_ms <= 0.0 {
+        return 1.0;
+    }
+    let u = (t_ms / fade_ms).clamp(0.0, 1.0);
+    if kind == 2 {
+        u * u * (3.0 - 2.0 * u)
+    } else {
+        u
+    }
+}
+
+/// §2 playback bar: playlist (test motions and the linked animation
+/// file's scenes), Play / Stop, single / Play All / Shuffle, Repeat,
+/// fading, Record and Recording Settings. Physics runs on the driven
+/// values; outputs show on the sliders.
 fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, log: &mut Log) {
-    use keyform_anim::recorder::{Recorder, TestMotion};
+    use keyform_anim::recorder::Recorder;
+    sync_link(st, doc, log);
+    let list = playlist(st);
+    st.playlist_item = st.playlist_item.min(list.len().saturating_sub(1));
     ui.horizontal(|ui| {
         ui.label(crate::i18n::tr("Playlist:"));
         egui::ComboBox::from_id_salt("phys-playlist")
-            .selected_text(TestMotion::ALL[st.playlist_item.min(2)].name())
+            .selected_text(list.get(st.playlist_item).map_or("", |x| x.1.as_str()))
             .show_ui(ui, |ui| {
-                for (i, m) in TestMotion::ALL.iter().enumerate() {
-                    ui.selectable_value(&mut st.playlist_item, i, m.name());
+                for (i, (_, n)) in list.iter().enumerate() {
+                    ui.selectable_value(&mut st.playlist_item, i, n);
+                }
+            });
+        egui::ComboBox::from_id_salt("phys-play-mode")
+            .selected_text(crate::i18n::tr(
+                ["Selected only", "Play All", "Shuffle"][usize::from(st.play_mode.min(2))],
+            ))
+            .show_ui(ui, |ui| {
+                for (i, n) in ["Selected only", "Play All", "Shuffle"].iter().enumerate() {
+                    ui.selectable_value(&mut st.play_mode, i as u8, crate::i18n::tr(n));
                 }
             });
         let playing = st.play.is_some();
@@ -447,8 +617,23 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
             if playing {
                 stop_playback(st, doc, log);
             } else {
+                let items: Vec<PlayItem> = list.iter().map(|x| x.0).collect();
+                let queue = match st.play_mode {
+                    1 => items,
+                    2 => {
+                        let seed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(1, |d| d.as_nanos() as u64 | 1);
+                        shuffled(items.len(), seed)
+                            .into_iter()
+                            .map(|i| items[i])
+                            .collect()
+                    }
+                    _ => items.get(st.playlist_item).copied().into_iter().collect(),
+                };
                 st.play = Some(Playback {
-                    motion: TestMotion::ALL[st.playlist_item.min(2)],
+                    queue,
+                    pos: 0,
                     t: 0.0,
                     start: doc.values.clone(),
                     recorder: st.record.then(|| {
@@ -467,14 +652,49 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
             ui.label(crate::i18n::tr("Recording Settings"));
             ui.radio_value(
                 &mut st.record_new_file,
-                true,
-                crate::i18n::tr("Create a new animation file"),
-            );
-            ui.radio_value(
-                &mut st.record_new_file,
                 false,
                 crate::i18n::tr("Add to the current animation file"),
             );
+            ui.radio_value(
+                &mut st.record_new_file,
+                true,
+                crate::i18n::tr("Create a new animation file"),
+            );
+            ui.separator();
+            ui.radio_value(
+                &mut st.thin_redundant,
+                false,
+                crate::i18n::tr("No thinning"),
+            );
+            ui.radio_value(
+                &mut st.thin_redundant,
+                true,
+                crate::i18n::tr("Remove redundant keys"),
+            );
+            ui.separator();
+            ui.label(crate::i18n::tr("Linked animation file"));
+            match &st.linked {
+                Some(l) => {
+                    ui.weak(l.can3.display().to_string());
+                }
+                None => {
+                    ui.weak(crate::i18n::tr("(none)"));
+                }
+            }
+            if ui.button(crate::i18n::tr("Link animation file…")).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("can3", &["can3"])
+                    .pick_file()
+                {
+                    link(st, doc, &p, log);
+                }
+                ui.close();
+            }
+            if st.linked.is_some() && ui.button(crate::i18n::tr("Unlink")).clicked() {
+                st.linked = None;
+                save_link(&doc.path, None);
+                ui.close();
+            }
         });
         ui.label(crate::i18n::tr("Fading:"));
         egui::ComboBox::from_id_salt("phys-fading")
@@ -494,38 +714,74 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
     });
     // Drive the parameters and step the simulation.
     let dt = ui.ctx().input(|i| i.stable_dt).min(0.1);
-    let duration = 12.0;
     let mut finished = false;
     if let Some(p) = &mut st.play {
+        let Some(&item) = p.queue.get(p.pos) else {
+            st.play = None;
+            return;
+        };
+        let duration = match item {
+            PlayItem::Test(_) => TEST_DURATION,
+            PlayItem::Scene(si) => st
+                .linked
+                .as_ref()
+                .and_then(|l| l.span(si))
+                .map_or(0.0, |(a, b, fps)| ((b - a) / fps) as f32),
+        };
         p.t += dt;
         if p.t > duration {
-            if st.repeat {
-                p.t -= duration;
-            } else {
-                finished = true;
-            }
-        }
-        let fade = match st.fading.0 {
-            0 => 1.0,
-            k => {
-                let u = (p.t * 1000.0 / st.fading.1.max(1.0)).clamp(0.0, 1.0);
-                if k == 2 {
-                    u * u * (3.0 - 2.0 * u)
+            p.t -= duration;
+            p.pos += 1;
+            if p.pos >= p.queue.len() {
+                if st.repeat {
+                    p.pos = 0;
                 } else {
-                    u
+                    finished = true;
                 }
             }
+        }
+        let fade = fade_weight(st.fading.0, p.t * 1000.0, st.fading.1);
+        let targets: Vec<(usize, f32)> = match p.queue.get(p.pos).copied().unwrap_or(item) {
+            PlayItem::Test(m) => m
+                .sample(p.t)
+                .into_iter()
+                .filter_map(|(id, frac)| {
+                    let i = doc.model.parameters.iter().position(|q| q.id == id)?;
+                    let q = &doc.model.parameters[i];
+                    Some((
+                        i,
+                        if frac >= 0.0 {
+                            q.default + frac * (q.max - q.default)
+                        } else {
+                            q.default + frac * (q.default - q.min)
+                        },
+                    ))
+                })
+                .collect(),
+            PlayItem::Scene(si) => match &st.linked {
+                Some(l) => {
+                    let (a, _, fps) = l.span(si).unwrap_or((0.0, 1.0, 30.0));
+                    let frame = a + f64::from(p.t) * fps;
+                    let lv = l
+                        .doc
+                        .anim_values_in(si, frame)
+                        .map(|x| x.0)
+                        .unwrap_or_default();
+                    l.doc
+                        .model
+                        .parameters
+                        .iter()
+                        .zip(lv)
+                        .filter_map(|(lp, v)| doc.param_index.get(&lp.id).map(|&i| (i, v)))
+                        .collect()
+                }
+                None => Vec::new(),
+            },
         };
-        for (id, frac) in p.motion.sample(p.t) {
-            if let Some(i) = doc.model.parameters.iter().position(|q| q.id == id) {
-                let q = &doc.model.parameters[i];
-                let target = if frac >= 0.0 {
-                    q.default + frac * (q.max - q.default)
-                } else {
-                    q.default + frac * (q.default - q.min)
-                };
-                let from = p.start.get(i).copied().unwrap_or(q.default);
-                doc.values[i] = from + (target - from) * fade;
+        for (i, target) in targets {
+            let from = p.start.get(i).copied().unwrap_or(target);
+            if let Some(v) = doc.values.get_mut(i) {
+                *v = from + (target - from) * fade;
             }
         }
         if !doc.model.physics.settings.is_empty() {
@@ -544,7 +800,9 @@ fn playback_bar(ui: &mut egui::Ui, st: &mut PhysicsEditor, doc: &mut Document, l
     }
 }
 
-/// Stops playback: restores the sliders and writes the recording.
+/// Stops playback: restores the sliders and writes the recording — added
+/// to the current animation file as a new scene (default), or as the scene
+/// of a new unsaved animation file (Q-0045).
 fn stop_playback(st: &mut PhysicsEditor, doc: &mut Document, log: &mut Log) {
     use keyform_anim::recorder::Thinning;
     let Some(p) = st.play.take() else { return };
@@ -555,32 +813,52 @@ fn stop_playback(st: &mut PhysicsEditor, doc: &mut Document, log: &mut Log) {
     if r.frames.len() < 2 {
         return;
     }
-    let text = r.to_motion3(Thinning::None, false);
-    if !st.record_new_file && doc.anim.is_some() {
-        // Add to the current animation file: imported as a new scene.
-        let tmp = std::env::temp_dir().join(format!(
-            "keyform-recording-{}.motion3.json",
-            std::process::id()
-        ));
-        if std::fs::write(&tmp, &text).is_ok() {
-            match doc.import_motion(&tmp) {
-                Ok(_) => log.info("Recording added to the animation as a new scene."),
-                Err(e) => log.warn(e),
-            }
-            let _ = std::fs::remove_file(&tmp);
-        }
+    let thinning = if st.thin_redundant {
+        Thinning::Linear
+    } else {
+        Thinning::None
+    };
+    let text = r.to_motion3(thinning, false);
+    let tmp = std::env::temp_dir().join(format!(
+        "keyform-recording-{}.motion3.json",
+        std::process::id()
+    ));
+    if std::fs::write(&tmp, &text).is_err() {
+        log.warn("could not write the recording");
         return;
     }
-    if let Some(path) = rfd::FileDialog::new()
-        .add_filter("motion3.json", &["json"])
-        .set_file_name("recording.motion3.json")
-        .save_file()
-    {
-        match std::fs::write(&path, text) {
-            Ok(()) => log.info(format!("recording saved to {}", path.display())),
-            Err(e) => log.warn(e.to_string()),
+    if !st.record_new_file && doc.anim.is_some() {
+        match doc.import_motion(&tmp) {
+            Ok(_) => log.info("Recording added to the animation as a new scene."),
+            Err(e) => log.warn(e),
         }
+    } else if doc
+        .path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cmo3"))
+    {
+        match Document::new_animation(&doc.path, log) {
+            Ok(mut d) => {
+                if let Err(e) = d.import_motion(&tmp) {
+                    log.warn(e);
+                } else {
+                    // The recording replaces the empty default scene.
+                    if let Some(a) = d.anim.as_mut() {
+                        if a.doc.animation.scenes.len() > 1 {
+                            a.doc.animation.scenes.remove(0);
+                        }
+                        a.scene = 0;
+                    }
+                    log.info("Recording opened as a new animation file (unsaved).");
+                    st.new_doc = Some(d);
+                }
+            }
+            Err(e) => log.warn(e),
+        }
+    } else {
+        log.warn("Save the model as a .cmo3 first: the new animation file links to it.");
     }
+    let _ = std::fs::remove_file(&tmp);
 }
 
 fn presets_path() -> std::path::PathBuf {
@@ -1423,5 +1701,26 @@ mod tests {
         assert!(doc.is_modified());
         doc.undo();
         assert_eq!(doc.model.physics.settings.len(), n);
+    }
+}
+
+#[cfg(test)]
+mod playlist_tests {
+    use super::*;
+
+    /// Q-0045: Shuffle plays every item once; Linear ramps, Easing is
+    /// smoothstep.
+    #[test]
+    fn shuffle_and_fades() {
+        for seed in [1u64, 7, 12345, u64::MAX] {
+            let mut v = shuffled(7, seed);
+            v.sort_unstable();
+            assert_eq!(v, (0..7).collect::<Vec<_>>());
+        }
+        assert_ne!(shuffled(10, 99), (0..10).collect::<Vec<_>>());
+        assert_eq!(fade_weight(0, 10.0, 100.0), 1.0);
+        assert!((fade_weight(1, 25.0, 100.0) - 0.25).abs() < 1e-6);
+        assert!((fade_weight(2, 25.0, 100.0) - 0.15625).abs() < 1e-6);
+        assert_eq!(fade_weight(2, 200.0, 100.0), 1.0);
     }
 }
