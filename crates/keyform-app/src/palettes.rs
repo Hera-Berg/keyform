@@ -506,6 +506,30 @@ fn stored_rows(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx) {
     }
 }
 
+/// Whether part `p` or a part inside it holds an object whose name or ID
+/// contains `filter` (lowercase).
+pub fn part_matches(m: &Model, p: usize, filter: &str) -> bool {
+    fn hit(info: &ObjectInfo, f: &str) -> bool {
+        info.display_name().to_lowercase().contains(f) || info.id.to_lowercase().contains(f)
+    }
+    fn walk(m: &Model, p: usize, f: &str, depth: usize) -> bool {
+        if depth > 64 || p >= m.parts.len() {
+            return false;
+        }
+        if hit(&m.parts[p].info, f) {
+            return true;
+        }
+        m.parts[p].children.iter().any(|c| match *c {
+            PartChild::Part(q) => walk(m, q, f, depth + 1),
+            PartChild::ArtMesh(a) => m.art_meshes.get(a).is_some_and(|x| hit(&x.info, f)),
+            PartChild::Deformer(d) => m.deformers.get(d).is_some_and(|x| hit(&x.info, f)),
+            PartChild::ArtPath(k) => m.art_paths.get(k).is_some_and(|x| hit(&x.info, f)),
+            _ => false,
+        })
+    }
+    walk(m, p, filter, 0)
+}
+
 fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, depth: usize) {
     let (deformers, filter, dos) = (t.deformers, t.filter, t.draw_orders);
     if depth > 64 {
@@ -515,66 +539,76 @@ fn part_children(ui: &mut egui::Ui, m: &Model, part: usize, t: &mut TreeCtx, dep
     for &c in &m.parts[part].children {
         match c {
             PartChild::Part(p) if p < m.parts.len() => {
+                // While filtering, folders without a match are hidden and
+                // folders with one open, so matches inside collapsed
+                // folders show (found by the e2e session).
+                if !filter.is_empty() && !part_matches(m, p, filter) {
+                    continue;
+                }
                 let info = &m.parts[p].info;
                 let id = ui.make_persistent_id(("part", p));
-                egui::collapsing_header::CollapsingState::load_with_default_open(
+                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(),
                     id,
                     depth < 1,
-                )
-                .show_header(ui, |ui| {
-                    if eye(ui, info.visible, t.editable) {
-                        t.toggled.push(Selection::Part(p));
-                    }
-                    if lock(ui, info.locked, t.editable) {
-                        t.lock_toggled.push(Selection::Part(p));
-                    }
-                    icons::icon(ui, Icon::Part);
-                    let me = Selection::Part(p);
-                    let (r, dropped) = row_label(
-                        ui,
-                        t.selected.contains(&me),
-                        info.display_name(),
-                        me,
-                        t.dnd,
-                        true,
-                    );
-                    if r.clicked() {
-                        pick(ui, t, me);
-                    }
-                    if r.double_clicked() {
-                        *t.open_settings = true;
-                    }
-                    if let Some((o, before)) = dropped {
-                        *t.drop = Some(if before {
-                            (o, part, Some(me))
-                        } else {
-                            (o, p, None)
-                        });
-                    }
-                    r.context_menu(|ui| {
-                        if ui
-                            .add_enabled(
-                                t.editable,
-                                egui::Button::new(crate::i18n::tr("Move Here")),
-                            )
-                            .on_hover_text(crate::i18n::tr(
-                                "Move the selected objects into this part",
-                            ))
-                            .clicked()
-                        {
-                            *t.move_here = Some(p);
-                            ui.close();
+                );
+                if !filter.is_empty() {
+                    state.set_open(true);
+                }
+                state
+                    .show_header(ui, |ui| {
+                        if eye(ui, info.visible, t.editable) {
+                            t.toggled.push(Selection::Part(p));
                         }
-                        if ui.button(crate::i18n::tr("Part Settings…")).clicked() {
+                        if lock(ui, info.locked, t.editable) {
+                            t.lock_toggled.push(Selection::Part(p));
+                        }
+                        icons::icon(ui, Icon::Part);
+                        let me = Selection::Part(p);
+                        let (r, dropped) = row_label(
+                            ui,
+                            t.selected.contains(&me),
+                            info.display_name(),
+                            me,
+                            t.dnd,
+                            true,
+                        );
+                        if r.clicked() {
+                            pick(ui, t, me);
+                        }
+                        if r.double_clicked() {
                             *t.open_settings = true;
-                            ui.close();
                         }
-                        ui.separator();
-                        parts_menu(ui, t.bulk);
-                    });
-                })
-                .body(|ui| part_children(ui, m, p, t, depth + 1));
+                        if let Some((o, before)) = dropped {
+                            *t.drop = Some(if before {
+                                (o, part, Some(me))
+                            } else {
+                                (o, p, None)
+                            });
+                        }
+                        r.context_menu(|ui| {
+                            if ui
+                                .add_enabled(
+                                    t.editable,
+                                    egui::Button::new(crate::i18n::tr("Move Here")),
+                                )
+                                .on_hover_text(crate::i18n::tr(
+                                    "Move the selected objects into this part",
+                                ))
+                                .clicked()
+                            {
+                                *t.move_here = Some(p);
+                                ui.close();
+                            }
+                            if ui.button(crate::i18n::tr("Part Settings…")).clicked() {
+                                *t.open_settings = true;
+                                ui.close();
+                            }
+                            ui.separator();
+                            parts_menu(ui, t.bulk);
+                        });
+                    })
+                    .body(|ui| part_children(ui, m, p, t, depth + 1));
             }
             PartChild::ArtMesh(a) if a < m.art_meshes.len() => {
                 let info = &m.art_meshes[a].info;

@@ -57,7 +57,9 @@ pub fn set_canvas(
                     x1 = x1.max(p.x);
                     y1 = y1.max(p.y);
                 }
-                json!({ "id": id, "bbox": [x0, y0, x1, y1], "points": s.iter().map(|p| pt(*p)).collect::<Vec<_>>() })
+                // "ID\u{1f}name" carries the display name too.
+                let (id, name) = id.split_once('\u{1f}').map_or((id.clone(), None), |(a, b)| (a.to_owned(), Some(b.to_owned())));
+                json!({ "id": id, "name": name.unwrap_or_else(|| id.clone()), "bbox": [x0, y0, x1, y1], "points": s.iter().map(|p| pt(*p)).collect::<Vec<_>>() })
             })
             .collect()
     };

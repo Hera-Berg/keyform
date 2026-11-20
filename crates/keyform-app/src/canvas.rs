@@ -178,7 +178,7 @@ pub fn canvas_ui(
                 .filter(|(_, s)| s.is_drawn())
                 .map(|(a, s)| {
                     (
-                        a.info.id.clone(),
+                        format!("{}\u{1f}{}", a.info.id, a.info.display_name()),
                         s.positions.chunks_exact(2).map(|c| [c[0], c[1]]).collect(),
                     )
                 })

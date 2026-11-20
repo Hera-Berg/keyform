@@ -3454,6 +3454,36 @@ mod e2e_regressions {
         assert!(crate::palettes::open_deformers(&d.model, None).is_empty());
     }
 
+    /// Filtering the Parts palette finds meshes inside collapsed folders:
+    /// a folder matches when something inside it (at any depth) does.
+    #[test]
+    fn parts_filter_reaches_nested_folders() {
+        let (mut d, _) = character("e2e-parts-filter");
+        let Selection::ArtMesh(face) = mesh(&d, "Face") else {
+            unreachable!()
+        };
+        let (outer, inner) = d
+            .try_edit("folders", |m| {
+                let outer = keyform_edit::objects::create_part(m, "Head folder", None);
+                let inner = keyform_edit::objects::create_part(m, "Left Eye", Some(outer));
+                keyform_edit::objects::move_to_part(
+                    m,
+                    &[keyform_edit::keys::ObjectRef::ArtMesh(face)],
+                    inner,
+                )?;
+                Ok((outer, inner))
+            })
+            .unwrap();
+        let m = &d.model;
+        assert!(crate::palettes::part_matches(m, outer, "face"));
+        assert!(crate::palettes::part_matches(m, inner, "face"));
+        assert!(
+            crate::palettes::part_matches(m, outer, "left eye"),
+            "folder names match too"
+        );
+        assert!(!crate::palettes::part_matches(m, inner, "mouth"));
+    }
+
     /// File ▸ Save as… in an animation saves the .can3 under the new name
     /// (it saved the model). The menu routing is covered by the e2e
     /// session's "Save as model.can3" step.

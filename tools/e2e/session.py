@@ -113,10 +113,26 @@ def checkpoint(h, out, i):
 
 # ---- steps ----------------------------------------------------------------
 
+def accept_resolution(h):
+    """Large PSDs ask for the model image's display resolution: keep the
+    recommended one (OK)."""
+    if any(h.reachable(n) for n in h.nodes("Please select the resolution for displaying the model image")):
+        h.note("large PSD: accepted the recommended display resolution")
+        h.click(h.center(h.in_window("Confirm", label="OK")[0]))
+        return True
+    return False
+
+
 def open_psd(h, psd, out):
     h.answer_dialog(psd)
     h.click_label("Open…")
-    h.find("< Create new model from PSD file >", timeout=20)
+    target = "< Create new model from PSD file >"
+    for _ in range(240):
+        if any(h.reachable(n) for n in h.nodes(target)):
+            return
+        accept_resolution(h)
+        time.sleep(0.5)
+    raise RuntimeError(f"widget not found: {target!r}")
 
 
 def new_model_from_psd(h, psd, out):
@@ -127,7 +143,7 @@ def new_model_from_psd(h, psd, out):
             c = h.canvas()
             if c and c.get("meshes"):
                 return
-            if not h.exists(label):
+            if accept_resolution(h) or not h.exists(label):
                 break
             time.sleep(0.25)
         else:
@@ -137,6 +153,7 @@ def new_model_from_psd(h, psd, out):
             c = h.canvas()
             if c and c.get("meshes"):
                 return
+            accept_resolution(h)
             time.sleep(0.25)
     raise RuntimeError("no model was created from the PSD")
 
@@ -160,8 +177,7 @@ def exposed_point(h, mesh_id, avoid_vertices=0):
     """A point of the mesh that no mesh drawn above it covers (canvas list
     order is top first), so a click there hits this mesh."""
     meshes = h.canvas()["meshes"]
-    ids = [m["id"] for m in meshes]
-    k = ids.index(mesh_id)
+    k = next(i for i, m in enumerate(meshes) if mesh_id in (m["id"], m.get("name")))
     target = meshes[k]
     above = [m["bbox"] for m in meshes[:k]]
     pts = target["points"]
@@ -216,16 +232,44 @@ def palette_row(h, label):
     return scrolled_row(h, label, "parts")
 
 
+def parts_filter(h, text):
+    """Types into the Parts palette's Filter by Text box ("" clears it)."""
+    boxes = [n for n in h.nodes("Filter by Text", role="TextInput") if h.reachable(n) and n["rect"][0] < 450]
+    if not boxes:
+        raise RuntimeError("no Parts palette filter box")
+    box = min(boxes, key=lambda n: n["rect"][1])
+    h.click(h.center(box))
+    h.key("ctrl+a")
+    if text:
+        h.type(text)
+    else:
+        h.key("BackSpace")
+    h.key("Return")
+    h.settle(2)
+
+
+def click_parts_row(h, label, ctrl=False):
+    """Clicks (or Ctrl+clicks) an object's Parts palette row. Rows inside
+    collapsed folders aren't drawn: then filter the palette by the name,
+    as a person would, click, and clear the filter."""
+    try:
+        row, filtered = palette_row(h, label), False
+    except RuntimeError:
+        parts_filter(h, label)
+        row, filtered = palette_row(h, label), True
+    if ctrl:
+        h.key_down("Control_L")
+    h.click(h.center(row))
+    if ctrl:
+        h.key_up("Control_L")
+    if filtered:
+        parts_filter(h, "")
+
+
 def select_rows(h, ids):
     """Click the first row, Ctrl+click the others (Parts palette)."""
     for k, i in enumerate(ids):
-        row = palette_row(h, i)
-        if k == 0:
-            h.click(h.center(row))
-        else:
-            h.key_down("Control_L")
-            h.click(h.center(row))
-            h.key_up("Control_L")
+        click_parts_row(h, i, ctrl=k > 0)
 
 
 # The rig profile: which layers play which role. The default is the
@@ -429,7 +473,10 @@ def selected_name(h):
 
 def _select(h, row_fn, name):
     for attempt in range(3):
-        h.click(h.center(row_fn(h, name)))
+        if row_fn is palette_row:
+            click_parts_row(h, name)
+        else:
+            h.click(h.center(row_fn(h, name)))
         if selected_name(h) == name:
             return
         if attempt == 0:
@@ -562,7 +609,7 @@ def select_points(h, mesh_id, pred):
     pt = lambda k: tuple(m["points"][k])
 
     def selected():
-        return {i for mid, i in (h.canvas() or {}).get("selected_points", []) if mid == mesh_id}
+        return {i for mid, i in (h.canvas() or {}).get("selected_points", []) if mid == m["id"]}
 
     h.click(h.canvas_point(pt(want[0])))
     for _ in range(3):
@@ -819,7 +866,8 @@ def export_runtime(h, psd, out):
             break
         time.sleep(0.2)
     names = sorted(os.listdir(rt))
-    if not any(f.endswith(".moc3") for f in names) or not any(f.endswith(".physics3.json") for f in names):
+    want_physics = R.get("expect_physics", True)
+    if not any(f.endswith(".moc3") for f in names) or (want_physics and not any(f.endswith(".physics3.json") for f in names)):
         raise RuntimeError(f"runtime export incomplete: {names}")
 
 

@@ -224,7 +224,7 @@ class Harness:
     def mesh(self, mesh_id):
         c = self.canvas() or {}
         for mm in c.get("meshes", []):
-            if mm["id"] == mesh_id:
+            if mesh_id in (mm["id"], mm.get("name")):
                 return mm
         raise RuntimeError(f"mesh not on canvas: {mesh_id}")
 
@@ -339,7 +339,14 @@ class Harness:
     def menu(self, *path):
         """Opens a menu path: menu bar item, submenus, then the item."""
         for i, label in enumerate(path):
-            if 0 < i < len(path) - 1:
+            if i == 0:
+                # The menu bar title: exact (prefix matching would take
+                # "Edit Level:" for "Edit").
+                bar = [x for x in self.nodes(label, role="Button") if x["rect"][1] < 6 and self.reachable(x)]
+                if not bar:
+                    raise RuntimeError(f"menu bar item not found: {label!r}")
+                n = bar[0]
+            elif 0 < i < len(path) - 1:
                 # Submenu buttons carry an arrow.
                 try:
                     n = self.find(label + " ⏵", timeout=2)

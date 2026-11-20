@@ -44,6 +44,7 @@ def main():
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     psd = os.path.abspath(a.psd)
+    S.R["expect_physics"] = False  # no physics in the stress pass
     steps = [
         ("open PSD", S.open_psd),
         ("new model from PSD", S.new_model_from_psd),
