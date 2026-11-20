@@ -776,7 +776,7 @@ fn deformer_children(
                     state.set_open(true);
                     ui.data_mut(|x| x.insert_temp(opened_for, prev));
                 }
-                state
+                let (_, header, _) = state
                     .show_header(ui, |ui| {
                         icons::icon(ui, deformer_icon(m, d));
                         if selectable(ui, *sel == Some(c), m.deformers[d].info.display_name()) {
@@ -784,17 +784,40 @@ fn deformer_children(
                         }
                     })
                     .body(|ui| deformer_children(ui, m, ch, d, sel, depth + 1, open, prev));
+                scroll_to_selected(ui, prev, c, header.response.rect);
             }
             Selection::ArtMesh(a) => {
-                ui.horizontal(|ui| {
+                let row = ui.horizontal(|ui| {
                     icons::icon(ui, Icon::ArtMesh);
                     if selectable(ui, *sel == Some(c), m.art_meshes[a].info.display_name()) {
                         *sel = Some(c);
                     }
                 });
+                scroll_to_selected(ui, prev, c, row.response.rect);
             }
             _ => {}
         }
+    }
+}
+
+/// Scrolls the Deformer palette to the selected row once per selection
+/// change (only as far as needed, so a visible row doesn't jump; found by
+/// the e2e session: after creating deformers the palette showed the end
+/// of the tree and the selection needed scrolling back to).
+fn scroll_to_selected(
+    ui: &mut egui::Ui,
+    prev: Option<Selection>,
+    row: Selection,
+    rect: egui::Rect,
+) {
+    if prev != Some(row) {
+        return;
+    }
+    let key = egui::Id::new("deformer-palette-scrolled-for");
+    let last: Option<Option<Selection>> = ui.data(|x| x.get_temp(key));
+    if last != Some(prev) {
+        ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+        ui.data_mut(|x| x.insert_temp(key, prev));
     }
 }
 

@@ -3484,6 +3484,46 @@ mod e2e_regressions {
         assert!(!crate::palettes::part_matches(m, inner, "mouth"));
     }
 
+    /// Selecting an object whose Deformer palette row is scrolled out of
+    /// view scrolls the palette to it.
+    #[test]
+    fn deformer_palette_scrolls_to_the_selection() {
+        let (mut d, _) = character("e2e-deformer-scroll");
+        let last = d.model.art_meshes.len() - 1;
+        let name = d.model.art_meshes[last].info.display_name().to_owned();
+        let ctx = eframe::egui::Context::default();
+        ctx.enable_accesskit();
+        let screen =
+            eframe::egui::Rect::from_min_size(Default::default(), eframe::egui::vec2(300.0, 200.0));
+        let mut row_y = Vec::new();
+        for frame in 0..5 {
+            if frame == 1 {
+                d.select(Some(Selection::ArtMesh(last)));
+            }
+            let input = eframe::egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::palettes::deformer_ui(ui, &mut d));
+            out.textures_delta.clear();
+            let update = out.platform_output.accesskit_update.expect("accesskit");
+            let y = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label().is_some_and(|l| l == name))
+                .and_then(|(_, n)| n.bounds())
+                .map(|b| b.y0);
+            row_y.push(y);
+        }
+        let first = row_y[0].expect("row present");
+        assert!(first > 200.0, "the last row starts out of view (y {first})");
+        let end = row_y[4].expect("row present");
+        assert!(
+            (0.0..190.0).contains(&end),
+            "scrolled into view (y {end}, frames {row_y:?})"
+        );
+    }
+
     /// File ▸ Save as… in an animation saves the .can3 under the new name
     /// (it saved the model). The menu routing is covered by the e2e
     /// session's "Save as model.can3" step.
