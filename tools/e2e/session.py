@@ -291,6 +291,7 @@ R = {
     "hair_back": ["BackHair"],
     "body_group": ["Body", "Neck", "ArmL", "ArmR"],
     "body": "Body",
+    "breath_group": ["Body"],            # inside BodyWarp: Body Z and Breath
     "arms": ["ArmL", "ArmR"],
     "delete": [],                        # layers to delete after the import
 }
@@ -350,6 +351,12 @@ def body_deformers(h, psd, out):
     h.menu("Modeling", "Deformer", "Create Warp Deformer…")
     name_and_create(h, "Create Warp Deformer", "BodyWarp")
     deformer_row(h, "BodyWarp")
+    # Body Z and Breath on a second warp inside, so no object carries more
+    # than two parameters (the reference's FREE limit; PRO allows three).
+    select_rows(h, R["breath_group"])
+    h.menu("Modeling", "Deformer", "Create Warp Deformer…")
+    name_and_create(h, "Create Warp Deformer", "BreathWarp")
+    deformer_row(h, "BreathWarp")
     for arm, name in zip(R["arms"], ("ArmLRot", "ArmRRot")):
         select_rows(h, [arm])
         h.menu("Modeling", "Deformer", "Create rotation deformer…")
@@ -829,18 +836,18 @@ def save_cmo3(h, psd, out):
 
 def keys_body(h, psd, out):
     fit_view(h)
-    select_deformer(h, "BodyWarp")
-    for param, lo, hi, dmin, dmax in (("Body X", -10.0, 10.0, (-12, 0), (12, 0)),
-                                      ("Body Y", -10.0, 10.0, (0, 8), (0, -8)),
-                                      ("Body Z", -10.0, 10.0, (-9, 3), (9, 3))):
-        key_op(h, param, "Add 3 keys")
-        for where, d in (("min", dmin), ("max", dmax)):
-            set_param(h, param, where, lo, hi)
-            canvas_drag_object(h, R["body"], *d)
-        reset_params(h)
+    for warp, mesh, params in (("BodyWarp", R["body"], (("Body X", (-12, 0), (12, 0)), ("Body Y", (0, 9), (0, -9)))),
+                               ("BreathWarp", R["breath_group"][0], (("Body Z", (-9, 3), (9, 3)),))):
+        select_deformer(h, warp)
+        for param, dmin, dmax in params:
+            key_op(h, param, "Add 3 keys")
+            for where, d in (("min", dmin), ("max", dmax)):
+                set_param(h, param, where, -10.0, 10.0)
+                canvas_drag_object(h, mesh, *d)
+            reset_params(h)
     key_op(h, "Breath", "Add 2 keys")
     set_param(h, "Breath", "max", 0.0, 1.0)
-    canvas_drag_object(h, R["body"], 0, -9)
+    canvas_drag_object(h, R["breath_group"][0], 0, -9)
     reset_params(h)
 
 
@@ -853,7 +860,15 @@ def physics_open(h, psd, out):
 
 
 def physics_add_group(h, name):
-    h.click(h.center(h.in_window("Physics Settings", label="Add…")[0]))
+    for attempt in range(2):
+        h.click(h.center(h.in_window("Physics Settings", label="Add…")[0]))
+        try:
+            h.find("Add Physics Group", role="Window", timeout=4)
+            break
+        except RuntimeError:
+            if attempt:
+                raise
+            h.note("Physics Settings ▸ Add… needed a second click (the first opened nothing)")
     field = h.in_window("Add Physics Group", role="TextInput")[0]
     h.set_field(field, name)
     if h.exists("Add Physics Group", role="Window"):
@@ -1095,7 +1110,7 @@ STEPS = [
     ("Rotation deformer for the head", head_rotation),
     ("Warp deformer for the face", face_warp),
     ("Warp deformers for front, side and back hair", make_hair_warps),
-    ("Body warp and arm rotation deformers", body_deformers),
+    ("Body and breath warps, arm rotation deformers", body_deformers),
     ("Head rotation keys on Angle Z", keys_head_angle_z),
     ("Face and hair keys on Angle X / Y", keys_face_angles),
     ("Eyelid keys on EyeL / EyeR Open", keys_eyes),
