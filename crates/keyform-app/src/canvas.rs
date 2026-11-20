@@ -202,7 +202,13 @@ pub fn canvas_ui(
                     _ => None,
                 })
                 .collect();
-            crate::ui_map::set_canvas(rect, &to_screen, meshes, paths, selected);
+            let triangles = doc
+                .model
+                .art_meshes
+                .iter()
+                .map(|a| (a.info.id.clone(), a.indices.clone()))
+                .collect();
+            crate::ui_map::set_canvas(rect, &to_screen, meshes, paths, selected, triangles);
         }
     }
     let painter = ui.painter_at(rect);

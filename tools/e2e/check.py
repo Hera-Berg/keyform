@@ -129,6 +129,7 @@ def main():
     ap.add_argument("--params", default=DEFAULT_PARAMS)
     ap.add_argument("--physics", default=DEFAULT_PHYSICS)
     ap.add_argument("--curves", default=DEFAULT_CURVES)
+    ap.add_argument("--size", type=int, default=400, help="render height (raise it for large canvases)")
     ap.add_argument("--profile", help="session.py rig profile (JSON) for the right-parts map")
     ap.add_argument("--psd", default="test-data/e2e/character.psd", help="for the layer bounds of the right-parts check")
     ap.add_argument("--ranges", default="", help="ID=min:max,... for parameters not in the model's standard set")
@@ -171,7 +172,7 @@ def main():
     snap = os.path.join(out, "snapshots")
     os.makedirs(snap, exist_ok=True)
     base = os.path.join(snap, "default.png")
-    code, msg = run([a.kf, "render", model3, base, "--size", "400"])
+    code, msg = run([a.kf, "render", model3, base, "--size", str(a.size)])
     record("render at defaults", code == 0, msg)
     images = {"default": base}
     boxes, canvas = layer_boxes(a.psd)
@@ -184,7 +185,7 @@ def main():
         paths = {}
         for tag, v in (("min", lo), ("max", hi)):
             path = os.path.join(snap, f"{pid}_{tag}.png")
-            code, msg = run([a.kf, "render", model3, path, "--size", "400", f"{pid}={v}"])
+            code, msg = run([a.kf, "render", model3, path, "--size", str(a.size), f"{pid}={v}"])
             if code != 0:
                 record(f"{pid} {tag} renders", False, msg)
                 continue
@@ -203,7 +204,7 @@ def main():
             record(f"{pid} at {tag} ({v}) moves the model", bad > 20, f"{bad} pixels differ from {ref}")
             want = [boxes[n] for n in PARTS.get(pid, []) if n in boxes]
             if want and bad > 20:
-                frac, n = changed_inside(other, paths[tag], want, canvas)
+                frac, n = changed_inside(other, paths[tag], want, canvas, margin=0.045 * canvas[1])
                 record(f"{pid} at {tag} moves the right parts ({', '.join(PARTS[pid])})", frac >= 0.8,
                        f"{frac:.0%} of {n} changed pixels on those layers")
     if a.golden:

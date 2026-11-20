@@ -492,26 +492,57 @@ def select_mesh(h, name):
     _select(h, palette_row, name)
 
 
-def canvas_drag_object(h, mesh_id, dx, dy):
+def on_mesh(m, p):
+    """Whether screen point p lies inside one of mesh m's triangles."""
+    pts, tri = m["points"], m.get("triangles") or []
+    def side(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    for i in range(0, len(tri) - 2, 3):
+        try:
+            a, b, c = pts[tri[i]], pts[tri[i + 1]], pts[tri[i + 2]]
+        except IndexError:
+            continue
+        d1, d2, d3 = side(a, b, p), side(b, c, p), side(c, a, p)
+        if not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0)):
+            return True
+    return not tri  # no triangles known: don't filter
+
+
+def canvas_drag_object(h, mesh_id, dx, dy, inside=False):
+    """inside=True when the drag is on the selected mesh itself (not on a
+    deformer around it): the press must land on the mesh, not just in its
+    bounding box, or it would pick the mesh on top."""
     """Drags the selected object on the canvas from an exposed point of one
     of its meshes (moves it in the current keyform)."""
     # Away from vertices: a press on a vertex of a selected object picks
     # the vertex instead of moving the object.
     try:
         p = exposed_point(h, mesh_id, avoid_vertices=12)
+        if inside and not on_mesh(h.mesh(mesh_id), p):
+            raise RuntimeError("exposed point not on the mesh")
     except RuntimeError:
         # Covered by other meshes' bounds (e.g. irises under the eyelids):
         # a drag on a selected object takes priority, so a person drags it
         # where they see it, inside it and away from its vertices.
         m = h.mesh(mesh_id)
         pts, b = m["points"], m["bbox"]
-        grid = [(b[0] + (b[2] - b[0]) * fx / 8, b[1] + (b[3] - b[1]) * fy / 8) for fx in range(2, 7) for fy in range(2, 7)]
+        gap = lambda c: min((c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 for q in pts) ** 0.5
         cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        grid = [(b[0] + (b[2] - b[0]) * fx / 8, b[1] + (b[3] - b[1]) * fy / 8) for fx in range(2, 7) for fy in range(2, 7)]
         grid.sort(key=lambda c: (c[0] - cx) ** 2 + (c[1] - cy) ** 2)
-        far = [c for c in grid if all((c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 >= 144 for q in pts)]
-        if not far:
-            raise RuntimeError(f"no point of {mesh_id} away from its vertices")
-        p = far[0]
+        m_now = h.mesh(mesh_id)
+        far = [c for c in grid if gap(c) >= 12 and (not inside or on_mesh(m_now, c))]
+        if far:
+            p = far[0]  # nearest the centre, well clear of the vertices
+        else:
+            # Thin or dense meshes: the point of the middle farthest from
+            # every vertex, outside the vertex pick radius (6 px).
+            fine = [(b[0] + (b[2] - b[0]) * fx / 24, b[1] + (b[3] - b[1]) * fy / 24) for fx in range(2, 23) for fy in range(2, 23)]
+            if inside:
+                fine = [c for c in fine if on_mesh(m_now, c)] or fine
+            p = max(fine, key=gap)
+            if gap(p) < 8:
+                raise RuntimeError(f"no point of {mesh_id} away from its vertices (best {gap(p):.1f} px)")
     p = h.canvas_point(p)
     h.drag(p, (p[0] + dx, p[1] + dy), steps=15)
 
@@ -537,6 +568,36 @@ def drag_selected_points(h, mesh_id, region, dx, dy):
         raise RuntimeError(f"no points of {mesh_id} in {region}")
     p = h.canvas_point(tuple(pts[0]))
     h.drag(p, (p[0] + dx, p[1] + dy), steps=15)
+
+
+def face_view(h, min_px=250):
+    """Zooms the canvas in at the face (wheel at the cursor) when it is too
+    small on screen for work on eyes, brows and mouth, as a person would.
+    Models whose face is already large enough are left as they are."""
+    zoomed = False
+    for _ in range(40):
+        b = h.mesh(R["face"])["bbox"]
+        if b[3] - b[1] >= min_px:
+            break
+        c = h.canvas()["rect"]
+        p = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+        p = (min(max(p[0], c[0] + 20), c[2] - 20), min(max(p[1], c[1] + 20), c[3] - 20))
+        h.move(h.canvas_point(p))
+        h.button(4, True)
+        h.button(4, False)
+        h.settle(3)
+        zoomed = True
+    if zoomed:
+        R["_zoomed"] = True
+        h.note("zoomed in on the face for the face steps (the model is small on screen)")
+
+
+def fit_view(h):
+    """Show ▸ Fit to View, when the view was zoomed in."""
+    if R.get("_zoomed"):
+        h.menu("Show", "Fit to View")
+        h.settle(3)
+        R["_zoomed"] = False
 
 
 def keys_head_angle_z(h, psd, out):
@@ -566,6 +627,7 @@ def keys_face_angles(h, psd, out):
 
 
 def keys_eyes(h, psd, out):
+    face_view(h)
     for mesh, param in zip(R["eyelids"], ("EyeL Open", "EyeR Open")):
         select_mesh(h, mesh)
         key_op(h, param, "Add 2 keys")
@@ -578,6 +640,7 @@ def keys_eyes(h, psd, out):
 
 
 def keys_mouth(h, psd, out):
+    face_view(h)
     select_mesh(h, R["mouth"])
     key_op(h, "Mouth Open", "Add 2 keys")
     set_param(h, "Mouth Open", "max", 0.0, 1.0)
@@ -625,6 +688,7 @@ def select_points(h, mesh_id, pred):
 
 
 def keys_eye_smile(h, psd, out):
+    face_view(h)
     for mesh, param in zip(R["eyelids"], ("EyeL Smile", "EyeR Smile")):
         select_mesh(h, mesh)
         key_op(h, param, "Add 2 keys")
@@ -635,22 +699,24 @@ def keys_eye_smile(h, psd, out):
 
 
 def keys_eyeballs(h, psd, out):
+    face_view(h)
     select_rows(h, R["irises"])
     for param, dmin, dmax in (("Eyeball X", (-9, 0), (9, 0)), ("Eyeball Y", (0, 9), (0, -9))):
         key_op(h, param, "Add 3 keys")
         for where, d in (("min", dmin), ("max", dmax)):
             set_param(h, param, where, -1.0, 1.0)
-            canvas_drag_object(h, R["irises"][0], *d)
+            canvas_drag_object(h, R["irises"][0], *d, inside=True)
         reset_params(h)
 
 
 def keys_brows(h, psd, out):
+    face_view(h)
     for mesh, py, pa, outer in ((R["brows"][0], "BrowL Y", "BrowL Angle", 0), (R["brows"][1], "BrowR Y", "BrowR Angle", 1)):
         select_mesh(h, mesh)
         key_op(h, py, "Add 3 keys")
         for where, d in (("min", (0, 9)), ("max", (0, -9))):
             set_param(h, py, where, -1.0, 1.0)
-            canvas_drag_object(h, mesh, *d)
+            canvas_drag_object(h, mesh, *d, inside=True)
         reset_params(h)
         key_op(h, pa, "Add 3 keys")
         # Drags beyond egui's click tolerance (6 px) so they register.
@@ -664,6 +730,7 @@ def keys_brows(h, psd, out):
 
 
 def keys_mouth_form(h, psd, out):
+    face_view(h)
     select_mesh(h, R["mouth"])
     key_op(h, "Mouth Form", "Add 3 keys")
     for where, dy in (("min", 10), ("max", -10)):
@@ -677,13 +744,24 @@ def clipping_masks(h, psd, out):
     """Irises clipped by the eye whites, the inner mouth by the mouth
     (Inspector ▸ Add mask…)."""
     pairs = list(zip(R["irises"], R["whites"])) + [(m, R["mouth_mask"]) for m in R["mouth_inner"]]
+    import re
+    ids_of = lambda v: set(re.split(r"[,\s]+", v or ""))
     for mesh, mask in pairs:
         select_mesh(h, mesh)
+        # The Clipping field lists mask IDs; hidden masks aren't on the
+        # canvas, so the ID comes from the picker's "name  (ID)" label.
+        try:
+            mask_id = h.mesh(mask)["id"]
+        except RuntimeError:
+            mask_id = None
         btn = inspector_field(h, lambda n: n["role"] == "Button" and n["label"] == "Add mask…")
+        if mask_id and any(n["role"] == "TextInput" and mask_id in ids_of(n["value"]) and abs(n["rect"][1] - btn["rect"][1]) < 40 for n in h.nodes()):
+            continue  # already set
         h.click(h.center(btn))
-        popup_pick(h, f"{mask}  (", h.center(btn), prefix=True)
+        picked = popup_pick(h, f"{mask}  (", h.center(btn), prefix=True)
+        mask_id = picked.rsplit("(", 1)[1].rstrip(")")
         h.settle(2)
-        clip = inspector_field(h, lambda n: n["role"] == "TextInput" and mask in (n["value"] or ""))
+        clip = inspector_field(h, lambda n: n["role"] == "TextInput" and mask_id in ids_of(n["value"]))
         if not clip:
             raise RuntimeError(f"{mesh} shows no mask {mask}")
 
@@ -711,6 +789,7 @@ def arm_params(h, psd, out):
 
 
 def keys_hair(h, psd, out):
+    fit_view(h)
     for warp, param, mesh in (("FrontHairWarp", "Hair Move Front", R["hair_front"][0]),
                               ("SideHairWarp", "Hair Move Side", R["hair_side"][0]),
                               ("BackHairWarp", "Hair Move Back", R["hair_back"][0])):
@@ -723,6 +802,7 @@ def keys_hair(h, psd, out):
 
 
 def keys_arms(h, psd, out):
+    fit_view(h)
     for rot, param, sign in (("ArmLRot", "Arm L A", 1), ("ArmRRot", "Arm R A", -1)):
         select_deformer(h, rot)
         key_op(h, param, "Add 3 keys")
@@ -748,6 +828,7 @@ def save_cmo3(h, psd, out):
 
 
 def keys_body(h, psd, out):
+    fit_view(h)
     select_deformer(h, "BodyWarp")
     for param, lo, hi, dmin, dmax in (("Body X", -10.0, 10.0, (-12, 0), (12, 0)),
                                       ("Body Y", -10.0, 10.0, (0, 8), (0, -8)),
@@ -793,7 +874,7 @@ def popup_pick(h, label, anchor, visible=330, prefix=False):
         t = min(items, key=lambda n: abs(n["rect"][0] - anchor[0]) + 0.01 * abs(n["rect"][1] - anchor[1]))
         if h.reachable(t):
             h.click(h.center(t))
-            return
+            return t["label"]
         # Wheel over the popup's visible items, toward the target.
         col = [n for n in h.nodes(role="Button") if abs(n["rect"][0] - t["rect"][0]) < 2 and h.reachable(n)]
         if not col:
@@ -842,6 +923,7 @@ def physics_inputs_outputs(h, output):
 
 
 def texture_atlas(h, psd, out):
+    fit_view(h)
     h.menu("Modeling", "Texture Atlas", "Edit Texture Atlas…")
     h.click(h.center(h.in_window("Create texture atlas", label="OK")[0]))
     # The initial grid packs image rectangles; meshes that overhang their

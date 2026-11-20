@@ -44,6 +44,7 @@ pub fn set_canvas(
     meshes: Vec<(String, Vec<[f32; 2]>)>,
     art_paths: Vec<(String, Vec<[f32; 2]>)>,
     selected_points: Vec<(String, usize)>,
+    triangles: std::collections::HashMap<String, Vec<u32>>,
 ) {
     let pt = |p: egui::Pos2| json!([p.x, p.y]);
     let list = |v: Vec<(String, Vec<[f32; 2]>)>| -> Vec<Value> {
@@ -68,7 +69,15 @@ pub fn set_canvas(
         "origin": pt(to_screen([0.0, 0.0])),
         "x_axis": pt(to_screen([1000.0, 0.0])),
         "y_axis": pt(to_screen([0.0, 1000.0])),
-        "meshes": list(meshes),
+        "meshes": list(meshes)
+            .into_iter()
+            .map(|mut v| {
+                if let Some(t) = v.get("id").and_then(Value::as_str).and_then(|id| triangles.get(id)) {
+                    v["triangles"] = json!(t);
+                }
+                v
+            })
+            .collect::<Vec<_>>(),
         "art_paths": list(art_paths),
         "selected_points": selected_points.into_iter().map(|(id, i)| json!([id, i])).collect::<Vec<_>>(),
     });
