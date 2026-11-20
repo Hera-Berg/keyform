@@ -48,6 +48,11 @@ jobs:
           for f in fixtures/character.cmo3 fixtures/character.can3 fixtures/runtime/character.moc3 fixtures/runtime/character.model3.json test-data/e2e/character.psd; do
             target/debug/keyform --check-open "$f"
           done
+      # The UI map and scripted file dialogs are test hooks: release builds
+      # must ignore their environment variables.
+      - name: Release builds ignore the test hooks
+        if: runner.os == 'Linux'
+        run: cargo test --release --locked -p keyform-app --bin keyform ignored_in_release
       - name: Linux desktop integration (xdg-mime)
         if: runner.os == 'Linux'
         run: |

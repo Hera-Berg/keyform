@@ -73,8 +73,12 @@ impl FileDialog {
     }
 }
 
-/// `Some(answer)` when dialogs are scripted (`None` inside = Cancel).
+/// `Some(answer)` when dialogs are scripted (`None` inside = Cancel). A
+/// test hook: never in release builds.
 fn scripted() -> Option<Option<PathBuf>> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
     let file = std::env::var_os("KEYFORM_FILE_DIALOG")?;
     let text = std::fs::read_to_string(&file).unwrap_or_default();
     let mut lines = text.lines();
@@ -95,6 +99,7 @@ fn scripted() -> Option<Option<PathBuf>> {
 mod tests {
     /// Scripted answers are a test hook: off unless KEYFORM_FILE_DIALOG is
     /// set (one test, so the variable isn't raced by a parallel test).
+    #[cfg(debug_assertions)]
     #[test]
     fn answers_are_consumed_in_order() {
         if std::env::var_os("KEYFORM_FILE_DIALOG").is_none() {
@@ -109,5 +114,18 @@ mod tests {
         assert_eq!(super::scripted(), Some(None));
         std::env::remove_var("KEYFORM_FILE_DIALOG");
         let _ = std::fs::remove_file(&f);
+    }
+
+    /// Release builds never script dialogs (run with `cargo test --release`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn ignored_in_release_builds() {
+        let f = std::env::temp_dir().join(format!("kf-dialog-rel-{}.txt", std::process::id()));
+        std::fs::write(&f, "/a/one.psd\n").unwrap();
+        std::env::set_var("KEYFORM_FILE_DIALOG", &f);
+        let got = super::scripted();
+        std::env::remove_var("KEYFORM_FILE_DIALOG");
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(got, None);
     }
 }

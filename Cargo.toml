@@ -53,5 +53,12 @@ chunks_exact_to_as_chunks = "allow"
 [profile.dev.package."*"]
 opt-level = 2
 
+# Optimised build that keeps the debug-assertion-only test hooks (UI map,
+# scripted file dialogs) for end-to-end runs on large PSDs.
+[profile.e2e]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
 [profile.test]
 opt-level = 1

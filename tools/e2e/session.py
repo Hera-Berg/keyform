@@ -120,8 +120,25 @@ def open_psd(h, psd, out):
 
 
 def new_model_from_psd(h, psd, out):
-    h.click_label("< Create new model from PSD file >")
-    time.sleep(2)
+    label = "< Create new model from PSD file >"
+    for attempt in range(3):
+        h.click_label(label)
+        for _ in range(240):  # large PSDs take a while
+            c = h.canvas()
+            if c and c.get("meshes"):
+                return
+            if not h.exists(label):
+                break
+            time.sleep(0.25)
+        else:
+            h.note(f"'{label}' needed another click (the UI was slow to respond: frame {(h.settle(1) or {}).get('frame')})")
+            continue
+        for _ in range(600):
+            c = h.canvas()
+            if c and c.get("meshes"):
+                return
+            time.sleep(0.25)
+    raise RuntimeError("no model was created from the PSD")
 
 
 def select_all_meshes(h):

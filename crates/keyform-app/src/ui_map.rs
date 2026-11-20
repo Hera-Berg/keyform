@@ -3,7 +3,9 @@
 //! value, state and bounds of each widget) plus where the canvas shows each
 //! art mesh and its vertices. A test harness reads it to find where to
 //! click, then drives the app with real mouse and keyboard input on the
-//! display. Off unless the variable is set.
+//! display. Off unless the variable is set, and always off in release
+//! builds (it exists in builds with debug assertions: dev, test and the
+//! `e2e` profile).
 
 use std::sync::Mutex;
 
@@ -19,6 +21,9 @@ pub fn enabled() -> bool {
 
 /// Installs the dump plugin when `KEYFORM_UI_MAP` is set.
 pub fn install(ctx: &egui::Context) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     let Some(path) = std::env::var_os("KEYFORM_UI_MAP") else {
         return;
     };
@@ -176,6 +181,20 @@ mod tests {
         }
         let ctx = eframe::egui::Context::default();
         super::install(&ctx);
+        assert!(!super::enabled());
+    }
+
+    /// Release builds ignore the variable (run with `cargo test --release`).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn ignored_in_release_builds() {
+        std::env::set_var(
+            "KEYFORM_UI_MAP",
+            std::env::temp_dir().join("kf-uimap-release.json"),
+        );
+        let ctx = eframe::egui::Context::default();
+        super::install(&ctx);
+        std::env::remove_var("KEYFORM_UI_MAP");
         assert!(!super::enabled());
     }
 }

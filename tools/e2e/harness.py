@@ -253,8 +253,10 @@ class Harness:
             self.button(button, True)
             # Hold for a frame: widgets that act while pressed (sliders)
             # need to see the button down.
+            # (at most 0.5 s: egui drops a press held longer than 0.8 s as
+            # a click, and slow frames on big models would exceed that).
             if not double:
-                self.settle(1, timeout=2)
+                self.settle(1, timeout=0.5)
             self.button(button, False)
         self.settle(2)
 
