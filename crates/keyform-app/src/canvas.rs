@@ -21,6 +21,9 @@ pub struct ViewGpu {
     rect: Option<(Pos2, bool)>,
     /// The lasso path of that drag (screen points), in Lasso mode.
     lasso: Vec<Pos2>,
+    /// Canvas drags start on the first pixel of movement (not after egui's
+    /// click tolerance), so vertices and objects can be nudged by 1 px.
+    pub drag: CanvasDrag,
     /// The texture page shown in mesh edit mode (texture index).
     mesh_texture: Option<(usize, egui::TextureHandle)>,
     /// The texture images the renderer was built with (data address and
@@ -445,6 +448,60 @@ fn paint_image_layer(
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// Drag state of the canvas: egui starts a drag only after the pointer
+/// moves past its click tolerance (6 px); on the canvas a press on a
+/// vertex, handle or object starts it on the first pixel instead. Buttons
+/// and lists elsewhere keep egui's default.
+#[derive(Default)]
+pub struct CanvasDrag {
+    live: bool,
+    moved: bool,
+}
+
+/// One frame of canvas pointer input.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct DragPhase {
+    /// The drag began this frame (the pointer moved ≥ 1 px since the press).
+    pub started: bool,
+    /// A drag is in progress (button still down).
+    pub dragging: bool,
+    /// A click: released without moving (a tiny drag is not also a click).
+    pub clicked: bool,
+}
+
+impl CanvasDrag {
+    pub fn phase(&mut self, ui: &egui::Ui, response: &egui::Response) -> DragPhase {
+        let primary = egui::PointerButton::Primary;
+        let (down, origin, pos) = ui.input(|i| {
+            (
+                i.pointer.button_down(primary),
+                i.pointer.press_origin(),
+                i.pointer.latest_pos(),
+            )
+        });
+        let mut ph = DragPhase::default();
+        if down && response.is_pointer_button_down_on() {
+            if !self.live {
+                if let (Some(o), Some(p)) = (origin, pos) {
+                    if (p - o).length() >= 1.0 {
+                        self.live = true;
+                        self.moved = true;
+                        ph.started = true;
+                    }
+                }
+            }
+            ph.dragging = self.live;
+        } else {
+            ph.clicked = response.clicked_by(primary) && !self.moved;
+            self.live = false;
+            if !down {
+                self.moved = false;
+            }
+        }
+        ph
+    }
+}
+
 /// Where the current press began; on the frame a click is released (egui
 /// clears the press origin in that frame) where the click happened. Plain
 /// clicks on the canvas used to be ignored because of that (found by the
@@ -491,9 +548,9 @@ fn arrow_tool(
     let view = view_of(doc, rect, ppp);
     let lasso = doc.lasso;
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
-    let primary = egui::PointerButton::Primary;
+    let ph = gpu.drag.phase(ui, response);
     let press = press_pos(ui);
-    if response.drag_started_by(primary) || response.clicked_by(primary) {
+    if ph.started || ph.clicked {
         let Some(press) = press else { return };
         let q = to_canvas(press);
         let radius = POINT_PICK / doc.view.zoom.max(1e-6);
@@ -504,7 +561,7 @@ fn arrow_tool(
         let widget = doc
             .primary()
             .and_then(|o| Some((o, doc.rotation_widget(o)?)));
-        if let (Some((o, (centre, tip, r))), true) = (widget, response.drag_started_by(primary)) {
+        if let (Some((o, (centre, tip, r))), true) = (widget, ph.started) {
             let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
             let handle = if dist(q, tip) <= radius {
                 Some(crate::document::Handle::Rotate)
@@ -532,10 +589,7 @@ fn arrow_tool(
                 set.set_points(vec![pt]);
             }
             drag_points = true;
-        } else if !shift
-            && response.drag_started_by(primary)
-            && doc.selected_hit(q, radius).is_some()
-        {
+        } else if !shift && ph.started && doc.selected_hit(q, radius).is_some() {
             // A drag inside a selected object moves it (a plain click still
             // picks the mesh under the pointer).
         } else if let Some(hit) = doc.hit_test(q) {
@@ -549,14 +603,14 @@ fn arrow_tool(
             } else if !set.objects.contains(&hit) {
                 set = SelectionSet::of(Some(hit));
             }
-        } else if response.drag_started_by(primary) {
+        } else if ph.started {
             gpu.rect = Some((press, !set.objects.is_empty()));
             gpu.lasso = vec![press];
         } else if !shift {
             set = SelectionSet::default();
         }
         doc.set_selection(set);
-        if response.drag_started_by(primary) && gpu.rect.is_none() && !shift {
+        if ph.started && gpu.rect.is_none() && !shift {
             let points = drag_points && !doc.selection.points.is_empty();
             if points || !doc.selection.objects.is_empty() {
                 if let Err(e) = doc.drag_begin(points) {
@@ -567,7 +621,7 @@ fn arrow_tool(
     }
     if let Some((start, points)) = gpu.rect {
         track_lasso(ui, lasso, gpu);
-        if !response.dragged_by(primary) {
+        if !ph.dragging {
             gpu.rect = None;
             if let Some(end) = ui.input(|i| i.pointer.interact_pos()) {
                 let quad = selection_polygon(lasso, gpu, start, end, &to_canvas);
@@ -601,7 +655,7 @@ fn arrow_tool(
         return;
     }
     if doc.is_dragging() {
-        if response.dragged_by(primary) {
+        if ph.dragging {
             if let (Some(a), Some(b)) = (press, ui.input(|i| i.pointer.interact_pos())) {
                 let (ca, cb) = (to_canvas(a), to_canvas(b));
                 doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]], shift);
@@ -646,13 +700,13 @@ fn mesh_tool(
     let flip = doc.view.mirror;
     let lasso = doc.lasso;
     let zoom = doc.view.zoom;
+    let ph = gpu.drag.phase(ui, response);
     let Some(s) = doc.mesh_edit.as_mut() else {
         return;
     };
-    let primary = egui::PointerButton::Primary;
     let press = press_pos(ui);
     let pointer = ui.input(|i| i.pointer.interact_pos());
-    let started = response.drag_started_by(primary) || response.clicked_by(primary);
+    let started = ph.started || ph.clicked;
     match s.tool {
         MeshTool::Select => {
             if started {
@@ -676,7 +730,7 @@ fn mesh_tool(
                             p.set_selected(Vec::new());
                         }
                     }
-                    if response.drag_started_by(primary) && !shift {
+                    if ph.started && !shift {
                         s.drag_begin(tolerance);
                     }
                 } else if let Some(k) = s.partner.as_ref().and_then(|p| p.point_at(q, radius)) {
@@ -697,7 +751,7 @@ fn mesh_tool(
                     if !shift {
                         s.set_selected(Vec::new());
                     }
-                } else if response.drag_started_by(primary) {
+                } else if ph.started {
                     gpu.rect = Some((press, true));
                     gpu.lasso = vec![press];
                 } else if !shift {
@@ -709,7 +763,7 @@ fn mesh_tool(
             }
             if let Some((start, _)) = gpu.rect {
                 track_lasso(ui, lasso, gpu);
-                if !response.dragged_by(primary) {
+                if !ph.dragging {
                     gpu.rect = None;
                     if let Some(end) = pointer {
                         let quad = selection_polygon(lasso, gpu, start, end, &to_canvas);
@@ -753,7 +807,7 @@ fn mesh_tool(
                         s.add_point(q, radius);
                     }
                 }
-                if response.drag_started_by(primary) {
+                if ph.started {
                     s.drag_begin(tolerance);
                 }
             }
@@ -768,14 +822,14 @@ fn mesh_tool(
             ) {
                 return;
             }
-            if response.drag_started_by(primary) {
+            if ph.started {
                 if let Some(press) = press {
                     s.brush_begin(to_canvas(press), tolerance, flip);
                 }
             }
         }
         MeshTool::Erase => {
-            if response.dragged_by(primary) || response.clicked_by(primary) {
+            if ph.dragging || ph.clicked {
                 if let Some(p) = pointer {
                     s.erase(to_canvas(p), radius, alt);
                 }
@@ -784,7 +838,7 @@ fn mesh_tool(
         }
     }
     if s.is_dragging() {
-        if response.dragged_by(primary) {
+        if ph.dragging {
             if let (Some(a), Some(b)) = (press, pointer) {
                 let (ca, cb) = (to_canvas(a), to_canvas(b));
                 s.drag_update([cb[0] - ca[0], cb[1] - ca[1]]);
@@ -1278,5 +1332,86 @@ mod tests {
         let (frame, pos) = seen.expect("the click was reported");
         assert_eq!(frame, 1, "on the release frame");
         assert_eq!(pos, Some(at));
+    }
+
+    /// A vertex can be nudged by 2 px: canvas drags start on the first
+    /// pixel of movement (egui alone waits for 6 px and took a short drag
+    /// for a click, so small nudges did nothing).
+    #[test]
+    fn a_vertex_moves_two_pixels() {
+        use crate::document::{Document, PlaybackOptions, Selection, SelectionSet};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let data = std::fs::read(root.join("test-data/e2e/character.psd")).unwrap();
+        let psd = keyform_formats::psd::Psd::parse(&data).unwrap();
+        let (cmo3, _) = keyform_formats::psd_import::new_model_from_psd(
+            "character.psd",
+            &psd,
+            &Default::default(),
+        )
+        .unwrap();
+        let scratch = root.join("target/test-scratch/nudge");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        let mut log = crate::log::Log::default();
+        let mut doc = Document::new_project(&scratch.join("c.cmo3"), cmo3, &mut log).unwrap();
+        doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        let face = doc
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| a.info.id == "Face")
+            .unwrap();
+        let o = Selection::ArtMesh(face);
+        doc.set_selection(SelectionSet {
+            objects: vec![o],
+            points: vec![(o, 0)],
+            point_weights: Vec::new(),
+        });
+        let before = doc.object_points(o)[0];
+
+        let ctx = egui::Context::default();
+        let mut gpu = super::ViewGpu::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 900.0));
+        let px = |doc: &Document| {
+            let q = super::view_of(doc, screen, 1.0).to_px(doc.object_points(o)[0]);
+            egui::pos2(q[0], q[1])
+        };
+        super::fit(&mut doc, screen);
+        let at = px(&doc);
+        let to = at + egui::vec2(0.0, 2.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let frames = [
+            vec![egui::Event::PointerMoved(at)],
+            vec![button(at, true)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![button(to, false)],
+            vec![],
+        ];
+        for events in frames {
+            let input = egui::RawInput {
+                events,
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let rect = ui.max_rect();
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                super::arrow_tool(ui, &response, &mut doc, &mut gpu, rect, 1.0);
+            });
+            out.textures_delta.clear();
+            doc.tick(0.0, &PlaybackOptions::default(), &mut log);
+        }
+        let after = doc.object_points(o)[0];
+        let zoom = doc.view.zoom.max(1e-6);
+        let moved = ((after[0] - before[0]).powi(2) + (after[1] - before[1]).powi(2)).sqrt() * zoom;
+        assert!(
+            (moved - 2.0).abs() < 0.6,
+            "vertex moved {moved} px on screen, expected 2"
+        );
     }
 }
