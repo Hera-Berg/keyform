@@ -349,475 +349,533 @@ notes (a state the audit doesn't set up); **GAP** = no entry point yet.
 | Modeling ▸ Edit Form ▸ Blend Form… | Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C), like Paste Form | by hand | |
 | Modeling ▸ Edit Form ▸ Paste Form | Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C) with a mesh or deformer selected | by hand | |
 
-## Spec menu items not in Keyform's menus
+## Spec menu coverage
 
-From `keyform-spec/50-ui/menus.md`; unimplemented or named differently.
+Every spec menu item (`keyform-spec/50-ui/menus.md`) that isn't in Keyform's menus at its
+spec place, sorted by `tools/e2e/menu_coverage.py` (label matching against what the
+audit saw and the app's strings, then hand review in
+`tools/e2e/menu-coverage-overrides.tsv`).
 
-### In another place in Keyform
+| Class | Meaning | Count |
+|---|---|---|
+| a | excluded by policy | 7 |
+| p | in a Keyform menu under another name or place (rename / move only) | 29 |
+| b | present elsewhere — needs its menu entry | 35 |
+| b? | probably present elsewhere (fuzzy match, to review) | 0 |
+| c | missing feature | 230 |
+| k+ | keyboard-only command, present | 55 |
+| k- | keyboard-only command, missing | 107 |
 
-- File ▸ External Application Integration Settings → Show ▸ External Application Integration Settings…
-- Show ▸ Texture Atlas → Modeling ▸ Texture Atlas
-- Modeling ▸ Parameter ▸ Auto Generation of Face Motion → Modeling ▸ Auto Generation of Face Motion…
-- Modeling ▸ Parameter ▸ Auto Generation of Sway Motion → Modeling ▸ Auto Generation of Sway Motion…
-- Modeling ▸ Parameter ▸ Apply 3D Rotation Expression → Modeling ▸ Apply 3D Rotation Expression…
-- Modeling ▸ Parameter ▸ Motion-sync Settings → Modeling ▸ Motion-sync Settings…
-- Form Animation ▸ Deformer → Modeling ▸ Deformer
-- Window ▸ Workspace ▸ Reset Current Layout → Window ▸ Reset Current Layout
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Zoom out → Show ▸ Zoom Out
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Zoom in → Show ▸ Zoom In
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Set Random Pose → Modeling ▸ Set Random Pose
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details → Window ▸ Tool Details
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Edit Glue ▸ Weight brush A:B → Modeling ▸ Glue ▸ Weight brush A:B
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Edit Glue ▸ Weight brush A → Modeling ▸ Glue ▸ Weight brush A
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Edit Glue ▸ Weight brush B → Modeling ▸ Glue ▸ Weight brush B
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Edit Glue ▸ Re-merge Glue Vertices Tool → Modeling ▸ Glue ▸ Re-merge Glue Vertices Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Brush Tool ▸ Deform brushes → Mesh Edit ▸ Subtools ▸ Deform brushes
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ New Part → Modeling ▸ Part ▸ New Part
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Flip → Modeling ▸ Edit Form ▸ Flip…
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Add 2 keys → context menu of a Parameter row ▸ Add 2 keys
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Add 3 keys → context menu of a Parameter row ▸ Add 3 keys
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Delete all keys → context menu of a Parameter row ▸ Delete all keys
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Edit Parameter → context menu of a Parameter row ▸ Edit Parameter
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Create Parameter → context menu of a Parameter row ▸ Create Parameter
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Delete → Edit ▸ Delete
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Save → File ▸ Save
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Save ▸ Save → File ▸ Save
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Save ▸ Save → File ▸ Save
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Save ▸ Save → File ▸ Save
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Save ▸ Save → File ▸ Save
-- Mesh Edit mode ▸ Finish Mesh editing → Mesh Edit ▸ Finish Mesh editing
-- Mesh Edit mode ▸ Automatically Generate Meshes(Mesh Editing Mode) → Mesh Edit ▸ Automatically Generate Meshes(Mesh Editing Mode)
-- Mesh Edit mode ▸ Reset Mesh → Mesh Edit ▸ Reset Mesh
-- Mesh Edit mode ▸ Merge Vertices → Mesh Edit ▸ Merge Vertices
-- Mesh Edit mode ▸ Subtools → Mesh Edit ▸ Subtools
-- Mesh Edit mode ▸ Subtools ▸ Select Arrow → Mesh Edit ▸ Subtools ▸ Select Arrow
-- Mesh Edit mode ▸ Subtools ▸ Deform brushes → Mesh Edit ▸ Subtools ▸ Deform brushes
-- Mesh Edit mode ▸ Subtools ▸ Add Point Tool → Mesh Edit ▸ Subtools ▸ Add Point Tool
-- Mesh Edit mode ▸ Subtools ▸ Delete Vertex → Mesh Edit ▸ Delete Vertex
-- Mesh Edit mode ▸ Subtools ▸ Eraser → Mesh Edit ▸ Subtools ▸ Eraser
+### File
 
-### Not in Keyform's menus
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Open Recent File [Ctrl+Shift+O] | c |  |
+| Export Image/Video ▸ GIF Animation | p | File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity) |
+| Export Image/Video ▸ Still Image [Ctrl+I] | p | File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity) |
+| Export Image/Video ▸ PSD images(beta) [Ctrl+P] | c |  |
+| Export Image/Video ▸ Video [Ctrl+Shift+M] | p | File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity) |
+| Export For Runtime ▸ Export Physics settings | b | Physics Settings window (Modeling ▸ Physics Settings…): export from its menu |
+| Export For Runtime ▸ Export motion file [Ctrl+Alt+Shift+S] | p | File ▸ Export For Runtime ▸ Export motion files (motion3.json)… (rename) |
+| Environment Settings | c |  |
+| Keyboard Shortcuts [Ctrl+Alt+Shift+K] | c |  |
+| External Application Integration Settings | p | Show ▸ External Application Integration Settings… (move to File) |
+| Model Statistics | c |  |
+| Canvas Settings | c |  |
+| Resize Model | c |  |
 
-- File ▸ Open Recent File [Ctrl+Shift+O]
-- File ▸ Export Image/Video ▸ GIF Animation
-- File ▸ Export Image/Video ▸ Still Image [Ctrl+I]
-- File ▸ Export Image/Video ▸ PSD images(beta) [Ctrl+P]
-- File ▸ Export Image/Video ▸ Video [Ctrl+Shift+M]
-- File ▸ Export For Runtime ▸ Export Physics settings
-- File ▸ Export For Runtime ▸ Export motion file [Ctrl+Alt+Shift+S]
-- File ▸ Environment Settings
-- File ▸ Keyboard Shortcuts [Ctrl+Alt+Shift+K]
-- File ▸ Model Statistics
-- File ▸ Canvas Settings
-- File ▸ Resize Model
-- Edit ▸ Cut [Ctrl+X]
-- Edit ▸ Copy [Ctrl+C]
-- Edit ▸ Paste [Ctrl+V]
-- Edit ▸ Copy Parameter Value
-- Edit ▸ Paste Parameter Value
-- Edit ▸ Deselect Hidden and Locked Objects
-- Edit ▸ Search and Replace [Ctrl+F]
-- Show ▸ Grid
-- Show ▸ Grid ▸ Show Grid
-- Show ▸ Grid ▸ Grid settings
-- Show ▸ Guide
-- Show ▸ Guide ▸ Show Guide
-- Show ▸ Guide ▸ Show Guide
-- Show ▸ Guide ▸ Add Guide to Center
-- Show ▸ Guide ▸ Add Guides at Coordinates of Selected Vertices
-- Show ▸ Guide ▸ Guide Settings
-- Show ▸ Guide ▸ Snap Moving Vertices to Guide
-- Show ▸ Show ArtMesh vertex
-- Show ▸ Show ArtMesh's Vertex Number
-- Show ▸ Highlight vertices outside parent deformer
-- Show ▸ Highlight Deformer's Child Elements [Ctrl+Shift+D]
-- Show ▸ Highlight overlapping polygons
-- Show ▸ Show Child Elements When Resize Warp Deformer
-- Show ▸ Show Object Name at Cursor Position
-- Show ▸ Hide selected state
-- Show ▸ Focus on Selected Object [F]
-- Show ▸ Model Image
-- Show ▸ Display Quality
-- Show ▸ Display Quality ▸ Full Scale
-- Show ▸ Display Quality ▸ 1/2
-- Show ▸ Display Quality ▸ 1/4
-- Show ▸ Display Quality ▸ 1/8
-- Show ▸ Show/Hide Bounding Box
-- Show ▸ Onion skin
-- Show ▸ Onion skin ▸ Modeling View
-- Show ▸ Onion skin ▸ Animation View
-- Show ▸ Onion skin ▸ Form Animation View
-- Show ▸ Onion skin ▸ Onion skin setting
-- Show ▸ Track Trajectory
-- Show ▸ Track Trajectory ▸ Animation View
-- Show ▸ Track Trajectory ▸ Track Trajectory Settings
-- Modeling ▸ Deformer ▸ Auto Generation of Deformer
-- Modeling ▸ Deformer ▸ Select Deformer for Parent [Ctrl+D]
-- Modeling ▸ Deformer ▸ Select Deformer's Child Elements [Ctrl+Alt+D]
-- Modeling ▸ Deformer ▸ Delete Deformer and its Content [Ctrl+Delete]
-- Modeling ▸ Deformer ▸ Apply Deformer to Child Elements
-- Modeling ▸ Deformer ▸ Validate Deformer
-- Modeling ▸ Deformer ▸ Align Angle of Bounding Box
-- Modeling ▸ Parameter ▸ Reset to default values [Ctrl+1]
-- Modeling ▸ Parameter ▸ Lock Default Form [Ctrl+Shift+1]
-- Modeling ▸ Parameter ▸ Synchronize Parameter Values Across Tabs
-- Modeling ▸ Parameter ▸ Parameter settings
-- Modeling ▸ Parameter ▸ Parameter Group Settings
-- Modeling ▸ Parameter ▸ Set All Parameter Values as Default
-- Modeling ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Deformer
-- Modeling ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Motion
-- Modeling ▸ Parameter ▸ Multiple Keys Editing
-- Modeling ▸ Parameter ▸ Select Object Linked to Key
-- Modeling ▸ Parameter ▸ Arrange Parameter Configuration for Selected Object
-- Modeling ▸ Parameter ▸ Settings for Eye Blinking and Lip-sync
-- Modeling ▸ Parameter ▸ Validate Assigned Parameters
-- Modeling ▸ ArtMesh ▸ Change Draw Order of All ArtMeshes
-- Modeling ▸ ArtMesh ▸ Bulk Change Draw Order of ArtMeshes
-- Modeling ▸ ArtMesh ▸ Create artMesh for collision detection
-- Modeling ▸ ArtPath
-- Modeling ▸ ArtPath ▸ Automatic generation from a single ArtMesh
-- Modeling ▸ ArtPath ▸ Automatic generation from multiple ArtMeshes
-- Modeling ▸ ArtPath ▸ Apply Color
-- Modeling ▸ ArtPath ▸ Apply Opacity
-- Modeling ▸ ArtPath ▸ Apply Line Width
-- Modeling ▸ ArtPath ▸ Apply All
-- Modeling ▸ ArtPath ▸ Align with Outline ArtMesh
-- Modeling ▸ ArtPath ▸ Align with Fill ArtMesh
-- Modeling ▸ ArtPath ▸ Add control points to align with ArtMesh
-- Modeling ▸ ArtPath ▸ Add a point in the middle of all control points
-- Modeling ▸ ArtPath ▸ Add a point in the middle of the selected control point
-- Modeling ▸ ArtPath ▸ Open Auto Generation ArtPath Dialog
-- Modeling ▸ ArtPath ▸ Create DeformPath from ArtPath
-- Modeling ▸ ArtPath ▸ Bake ArtMesh deformation to ArtPath
-- Modeling ▸ ArtPath ▸ Follow all
-- Modeling ▸ ArtPath ▸ Cancel all
-- Modeling ▸ ArtPath ▸ Follow selected control points
-- Modeling ▸ ArtPath ▸ Release selected control point
-- Modeling ▸ ArtPath ▸ Open ArtPath Brush Settings Dialog
-- Modeling ▸ Glue ▸ Glue On/Off
-- Modeling ▸ Skinning
-- Modeling ▸ Skinning ▸ Skinning
-- Modeling ▸ Skinning ▸ Use deformation path for Skinning
-- Modeling ▸ Skinning ▸ Generate parameters for rotation deformer
-- Modeling ▸ Edit Form ▸ Confirm target when pasting multiple forms
-- Modeling ▸ Edit Form ▸ Zoom In / Zoom Out Specifying Magnification
-- Modeling ▸ Edit Form ▸ Shape Warp Deformer along Bezier Handle
-- Modeling ▸ Edit Form ▸ Expand Warp Deformer Based on Children Outside Range
-- Modeling ▸ Edit Form ▸ Revert to Original
-- Modeling ▸ Edit Form ▸ Update Original Shape of Deformers
-- Modeling ▸ Edit Form ▸ Delete Original Shape of All Deformers
-- Modeling ▸ Temporary deform tool
-- Modeling ▸ Temporary deform tool ▸ Enlarge/shrink
-- Modeling ▸ Temporary deform tool ▸ Rotation
-- Modeling ▸ Temporary deform tool ▸ Free transform
-- Modeling ▸ Temporary deform tool ▸ Perspective
-- Modeling ▸ Temporary deform tool ▸ Distort
-- Modeling ▸ Temporary deform tool ▸ Temporary warp deformation
-- Modeling ▸ Temporary deform tool ▸ Add columns
-- Modeling ▸ Temporary deform tool ▸ Remove columns
-- Modeling ▸ Temporary deform tool ▸ Add rows
-- Modeling ▸ Temporary deform tool ▸ Remove rows
-- Modeling ▸ Temporary deform tool ▸ Temporary path deformation
-- Modeling ▸ Temporary deform tool ▸ Deselect the temporary deform tool
-- Modeling ▸ Clipping ID
-- Modeling ▸ Clipping ID ▸ Select Clipping Mask
-- Modeling ▸ Clipping ID ▸ Reverse Clipping ID Lookup
-- Modeling ▸ Model Template ▸ Apply Template
-- Modeling ▸ Model Template ▸ Export template
-- Modeling ▸ Texture Atlas ▸ Switch between Model Image and Texture Atlas [T]
-- Modeling ▸ Texture Atlas ▸ Apply Texture Atlas to Model Image
-- Modeling ▸ Lock
-- Modeling ▸ Lock ▸ Lock/unlock Selected Objects [Ctrl+2]
-- Modeling ▸ Lock ▸ Lock the unselected objects [Ctrl+Shift+2]
-- Modeling ▸ Lock ▸ Unlock all [Ctrl+Alt+2]
-- Modeling ▸ Show/Hide
-- Modeling ▸ Show/Hide ▸ Show/Hide Selected Objects [Ctrl+3]
-- Modeling ▸ Show/Hide ▸ Hide the unselected objects [Ctrl+Shift+3]
-- Modeling ▸ Show/Hide ▸ Show all [Ctrl+Alt+3]
-- Modeling ▸ Show/Hide ▸ Show/Hide Guide Image [Ctrl+Alt+Shift+3]
-- Modeling ▸ Show/Hide ▸ Restore to Previous Visibility State
-- Modeling ▸ Edit Level
-- Modeling ▸ Edit Level ▸ Level 1 [1]
-- Modeling ▸ Edit Level ▸ Level 2 [2]
-- Modeling ▸ Edit Level ▸ Level 3 [3]
-- Modeling ▸ Convert Model ID
-- Modeling ▸ Bulk setting of model objects
-- Modeling ▸ Bulk setting of model objects ▸ Export
-- Modeling ▸ Bulk setting of model objects ▸ Import
-- Modeling ▸ Bulk setting of model parameters
-- Modeling ▸ Bulk setting of model parameters ▸ Export
-- Modeling ▸ Bulk setting of model parameters ▸ Import
-- Animation ▸ Material
-- Animation ▸ Material ▸ Reload Material of Selected Track
-- Animation ▸ Material ▸ Replace Material of Selected Track
-- Animation ▸ Material ▸ Replace Material of Selected Track
-- Animation ▸ Scene
-- Animation ▸ Scene ▸ New Scene
-- Animation ▸ Scene ▸ Import Scene
-- Animation ▸ Scene ▸ Generate Scenes Automatically from Audio Files
-- Animation ▸ Scene ▸ Enable/Disable Loop Editing Support
-- Animation ▸ Track
-- Animation ▸ Track ▸ Bake Animation from Parameter Controller
-- Animation ▸ Track ▸ Bake Animation from Physics
-- Animation ▸ Track ▸ Bake Animation from Motion-sync
-- Animation ▸ Track ▸ Apply Lip-sync from the Audio File
-- Animation ▸ Track ▸ Start Track at Current Position [Shift+B]
-- Animation ▸ Track ▸ End Track at Current Position [Shift+N]
-- Animation ▸ Track ▸ Move Track to Current Position [Shift+M]
-- Animation ▸ Timeline
-- Animation ▸ Timeline ▸ Move to Beginning [Home]
-- Animation ▸ Timeline ▸ Move to End [End]
-- Animation ▸ Timeline ▸ Move to Start Frame of Work Area [Shift+Home]
-- Animation ▸ Timeline ▸ Move to End Frame of Work Area [Shift+End]
-- Animation ▸ Timeline ▸ Previous frame [Page Up]
-- Animation ▸ Timeline ▸ Next frame [Page Down]
-- Animation ▸ Timeline ▸ Previous Keyframe [J]
-- Animation ▸ Timeline ▸ Next Keyframe [K]
-- Animation ▸ Timeline ▸ Previous Keyframe in Track [Shift+J]
-- Animation ▸ Timeline ▸ Next Keyframe in Track [Shift+K]
-- Animation ▸ Timeline ▸ Return to Previous Marker [Ctrl+J]
-- Animation ▸ Timeline ▸ Proceed to Next Marker [Ctrl+K]
-- Animation ▸ Timeline ▸ Return to the previous onion skin marker [Ctrl+Shift+J]
-- Animation ▸ Timeline ▸ Go to the next onion skin marker [Ctrl+Shift+K]
-- Animation ▸ Timeline ▸ Set as Start Frame of Work Area
-- Animation ▸ Timeline ▸ Set as End Frame of Work Area
-- Animation ▸ Timeline ▸ Display Entire Work Area [Shift+F]
-- Animation ▸ Timeline ▸ Display Entire Scene
-- Animation ▸ Timeline ▸ Reset Zoom
-- Animation ▸ Fade
-- Animation ▸ Fade ▸ Set fade-in/fade-out
-- Animation ▸ Fade ▸ Apply Fade-In/Fade-Out Settings to Other Scenes
-- Animation ▸ Parameter Controller
-- Animation ▸ Parameter Controller ▸ Parameter Controller Calculation Unit Settings
-- Animation ▸ Parameter Controller ▸ Reverse Direction Controller
-- Animation ▸ Parameter Controller ▸ Convert Direction Controller into 2 Single Point Controllers
-- Animation ▸ Parameter Controller ▸ Convert 2 Single Point Controllers into Direction Controller
-- Animation ▸ Parameter Controller ▸ Follow Target
-- Animation ▸ Parameter Controller ▸ Calculate collectively before playback
-- Animation ▸ Parameter Controller ▸ Show Controller
-- Animation ▸ Parameter Controller ▸ Controller Display Settings
-- Animation ▸ Parameter Bookmarks
-- Animation ▸ Parameter Bookmarks ▸ Display with Selected Parameters
-- Animation ▸ Parameter Bookmarks ▸ Delete Labels from Selected Tracks
-- Animation ▸ Parameter Bookmarks ▸ Duplicate All Labels
-- Animation ▸ Parameter Bookmarks ▸ Duplicate Labels Individually
-- Animation ▸ Parameter Bookmarks ▸ Hide All Labels
-- Animation ▸ Parameter Bookmarks ▸ Parameter Bookmark Display Settings
-- Animation ▸ Add Marker
-- Animation ▸ Playback [Enter]
-- Animation ▸ Switch Edit Mode [C]
-- Animation ▸ Gather files
-- Form Animation ▸ Deformer ▸ Select Deformer for Parent [Ctrl+D]
-- Form Animation ▸ Deformer ▸ Select Deformer's Child Elements [Ctrl+Alt+D]
-- Form Animation ▸ Temporary deform tool
-- Form Animation ▸ Temporary deform tool ▸ Enlarge/shrink
-- Form Animation ▸ Temporary deform tool ▸ Rotation
-- Form Animation ▸ Temporary deform tool ▸ Free transform
-- Form Animation ▸ Temporary deform tool ▸ Perspective
-- Form Animation ▸ Temporary deform tool ▸ Distort
-- Form Animation ▸ Temporary deform tool ▸ Temporary warp deformation
-- Form Animation ▸ Temporary deform tool ▸ Add columns
-- Form Animation ▸ Temporary deform tool ▸ Remove columns
-- Form Animation ▸ Temporary deform tool ▸ Add rows
-- Form Animation ▸ Temporary deform tool ▸ Remove rows
-- Form Animation ▸ Temporary deform tool ▸ Temporary path deformation
-- Form Animation ▸ Temporary deform tool ▸ Deselect the temporary deform tool
-- Form Animation ▸ Clipping ID
-- Form Animation ▸ Clipping ID ▸ Select Clipping Mask
-- Form Animation ▸ Clipping ID ▸ Reverse Clipping ID Lookup
-- Form Animation ▸ Lock
-- Form Animation ▸ Lock ▸ Lock/unlock Selected Objects [Ctrl+2]
-- Form Animation ▸ Lock ▸ Lock the unselected objects [Ctrl+Shift+2]
-- Form Animation ▸ Lock ▸ Unlock all [Ctrl+Alt+2]
-- Form Animation ▸ Show/Hide
-- Form Animation ▸ Show/Hide ▸ Show/Hide Selected Objects [Ctrl+3]
-- Form Animation ▸ Show/Hide ▸ Hide the unselected objects [Ctrl+Shift+3]
-- Form Animation ▸ Show/Hide ▸ Show all [Ctrl+Alt+3]
-- Form Animation ▸ Show/Hide ▸ Restore to Previous Visibility State
-- Form Animation ▸ Edit Level
-- Form Animation ▸ Edit Level ▸ Level 1 [1]
-- Form Animation ▸ Edit Level ▸ Level 2 [2]
-- Form Animation ▸ Edit Level ▸ Level 3 [3]
-- Form Animation ▸ Create form edit key
-- Form Animation ▸ Animation preview setting
-- Window ▸ Workspace
-- Window ▸ Workspace ▸  [CMenuItem]
-- Window ▸ Workspace ▸ Update Initial Layout
-- Window ▸ Workspace ▸ Workspace Settings
-- Window ▸ Hide Palette
-- Window ▸ Show Palette
-- Window ▸ Duplicate Tab
-- Window ▸ Switch to Previous Tab
-- Window ▸ Switch to Next Tab
-- Window ▸ Set All Views to Same Display Position
-- Window ▸ Reset Status
-- Help ▸ User Manual
-- Help ▸ Go to Live2D Web Page
-- Help ▸ Product Page
-- Help ▸ Download Page
-- Help ▸ Sample Model
-- Help ▸ Creators Forum
-- Help ▸ Live2D Help
-- Help ▸ Tutorial Video
-- Help ▸ Home
-- Help ▸ Display Operation
-- Help ▸ Open Log File
-- Help ▸ Open Auto Backup Folder
-- Help ▸ Update History
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Rotation Deformer Creation Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Arrow tool [A]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Lasso Tool [L]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Brush Selection tool [B]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Deform Path edit [P]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Deform Brush Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Edit Glue
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ ArtPath Tools
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Switch to Last Used Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Switch Workspace to Modeling
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Switch Workspace to Animation
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Switch workspace to Form Animation
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Lock ArtMesh [Shift+A]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Lock Deformer [Shift+D]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Show/hide ArtMesh
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Solo [S]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Apply Opacity
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Apply multiply color/screen color
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Select Objects of Selected Vertices
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Snapshot [Ctrl+5]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Show/hide snapshot [5]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Save snapshot guide image [Ctrl+Shift+5]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Display as original size
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Display All [Ctrl+0]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Flip canvas [R]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Play/Stop Random Pose
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Lightweight playback
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Highlight Frame Step frames
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Auto-scroll to Form Animation property of selected object
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Automatically scroll to properties of current parameter controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Enable moving indicator out of scene range
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Enable Operation of Keyframes Hidden by Shy
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Expand all tracks
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Select all keys when selecting parameters
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Exclude Frame Step When Bulk Inserting Keyframes
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Display 1 Frame Range at Indicator
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Display key values
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Display key name
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Auto resize
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Always edit continuous continuous Beziers
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Smart snap using Shift
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Make Beziers by dragging curves
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Snap to key position on curve
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Freeze/Unfreeze at Current Frame
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Freeze All
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Freeze Selected Properties
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Freeze Unselected Properties
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Unfreeze All
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Make art path control points thicker
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Make art path control points thinner
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Snap to Nearest Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Lock Draw Order Slider
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Path edit
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Path edit ▸ Add control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Path edit ▸ Delete control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Path edit ▸ Delete path
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Path edit ▸ Fold line
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Edit Glue
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Add control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Delete control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Adjust the opacity set in the control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Adjust the thickness set in the control point
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Fold line
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Stroke ArtPath
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Re-stroke ArtPath
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Join ArtPaths
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ ArtPath Tools ▸ Split ArtPath
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Brush Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Brush Tool ▸ Expansion Brush
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Deform Brush Tool ▸ Warp Deformer Shaping Brush
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool ▸ Select/Edit Controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool ▸ Add Single Point Controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool ▸ Add Direction Controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool ▸ Delete Controller
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Tool Details ▸ Parameter Controller Tool ▸ Edit Target
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Add Guide
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Add Guide ▸ Add a Horizontal Line to Mouse Position
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Add Guide ▸ Add a Vertical Line to Mouse Position
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Add Guide ▸ Add Horizontal/Vertical Lines to Mouse Position
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Palette Common Shortcuts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Palette Common Shortcuts ▸ Select for Movement
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Palette Common Shortcuts ▸ Move Here
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Delete selected Parts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Delete selected Parts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Disable drag & drop
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Part Settings
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Delete empty parts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Delete empty parts below child
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Part Shortcuts ▸ Delete empty deformers
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Deformer Shortcuts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Deformer Shortcuts ▸ Disable drag & drop
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Deformer Shortcuts ▸ Delete empty deformers below child
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Cancel Selection
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Combine/uncombine
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Previous
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Next
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select First Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Next Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Previous Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Last Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Default Key
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Fist Vertical Key(combined)
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Next Vertical Key(combined)
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Previous Vertical Key(combined)
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select Last Vertical Key(combined)
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Add Single Keyform
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Delete Keyform
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Select
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Adjust
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Change
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Edit keyform
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Display with Parameters of Selected Objects Only
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Replicate parameters
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Create folder
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Delete empty parameters
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Delete empty parameter groups
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Shortcuts ▸ Disable drag & drop
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Show
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Show ▸ Show [1]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Show ▸ Show [2]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Show ▸ Show [3]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Temporary Snapshots ▸ Show ▸ Show [4]
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Column operations for temporary warp deformations
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Column operations for temporary warp deformations ▸ Add columns
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Column operations for temporary warp deformations ▸ Remove columns
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Column operations for temporary warp deformations ▸ Add rows
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Column operations for temporary warp deformations ▸ Remove rows
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Blend Shape
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Bookmarks
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Bookmarks ▸ Display with Object at Cursor Position
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Parameter Bookmarks ▸ Select from Objects at Cursor Position
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Brush
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Brush ▸ Switch to Previous Brush Shape
-- Keyboard-only commands (no menu entry; reachable by shortcut / command palette) ▸ Brush ▸ Switch to Next Brush Shape
-- Mesh Edit mode ▸ Auto attach Edge [Ctrl+R]
-- Mesh Edit mode ▸ Paste with Copied Shape [Ctrl+Alt+V]
-- Mesh Edit mode ▸ Flip horizontally
-- Mesh Edit mode ▸ Flip vertically
-- Mesh Edit mode ▸ Invert Axis
-- Mesh Edit mode ▸ Glue / bind the selected vertices [Ctrl+G]
-- Mesh Edit mode ▸ Unglue / unbind the selected vertices [Ctrl+Shift+G]
-- Mesh Edit mode ▸ Stroke mesh-mapping
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Increase mesh width
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Reduce mesh width
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Increase divisions
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Reduce divisions
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Change the number of vertices in the mesh width
-- Mesh Edit mode ▸ Stroke mesh-mapping ▸ Confirm stroke [Shift+E]
-- Mesh Edit mode ▸ Subtools ▸ Lasso
-- Mesh Edit mode ▸ Subtools ▸ Add points
-- Mesh Edit mode ▸ Subtools ▸ Stroke mesh-mapping
+### Edit
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Cut [Ctrl+X] | c |  |
+| Copy [Ctrl+C] | c | generic copy of selected objects (Copy Form exists: Edit Form ▸ Copy Form) |
+| Paste [Ctrl+V] | c | generic paste (Paste Form exists) |
+| Copy Parameter Value | c |  |
+| Paste Parameter Value | c |  |
+| Deselect Hidden and Locked Objects | c |  |
+| Search and Replace [Ctrl+F] | c |  |
+
+### Show
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Grid | c |  |
+| Grid ▸ Show Grid | c |  |
+| Grid ▸ Grid settings | c |  |
+| Guide | c |  |
+| Guide ▸ Show Guide | c |  |
+| Guide ▸ Show Guide | c |  |
+| Guide ▸ Add Guide to Center | c |  |
+| Guide ▸ Add Guides at Coordinates of Selected Vertices | c |  |
+| Guide ▸ Guide Settings | c |  |
+| Guide ▸ Snap Moving Vertices to Guide | c |  |
+| Show ArtMesh vertex | c |  |
+| Show ArtMesh's Vertex Number | c |  |
+| Highlight vertices outside parent deformer | c |  |
+| Highlight Deformer's Child Elements [Ctrl+Shift+D] | c |  |
+| Highlight overlapping polygons | c |  |
+| Show Child Elements When Resize Warp Deformer | c |  |
+| Show Object Name at Cursor Position | c |  |
+| Hide selected state | c |  |
+| Focus on Selected Object [F] | c |  |
+| Model Image | c |  |
+| Texture Atlas | p | Modeling ▸ Texture Atlas |
+| Display Quality | c |  |
+| Display Quality ▸ Full Scale | c |  |
+| Display Quality ▸ 1/2 | c |  |
+| Display Quality ▸ 1/4 | c |  |
+| Display Quality ▸ 1/8 | c |  |
+| Show/Hide Bounding Box | c |  |
+| Onion skin | c |  |
+| Onion skin ▸ Modeling View | c |  |
+| Onion skin ▸ Animation View | c |  |
+| Onion skin ▸ Form Animation View | c |  |
+| Onion skin ▸ Onion skin setting | c |  |
+| Track Trajectory | c |  |
+| Track Trajectory ▸ Animation View | c |  |
+| Track Trajectory ▸ Track Trajectory Settings | c |  |
+
+### Modeling
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Deformer ▸ Auto Generation of Deformer | c |  |
+| Deformer ▸ Select Deformer for Parent [Ctrl+D] | c |  |
+| Deformer ▸ Select Deformer's Child Elements [Ctrl+Alt+D] | c |  |
+| Deformer ▸ Delete Deformer and its Content [Ctrl+Delete] | c |  |
+| Deformer ▸ Apply Deformer to Child Elements | c |  |
+| Deformer ▸ Validate Deformer | c |  |
+| Deformer ▸ Align Angle of Bounding Box | c |  |
+| Parameter ▸ Reset to default values [Ctrl+1] | b | Parameter palette Reset; toolbar Reset parameters |
+| Parameter ▸ Lock Default Form [Ctrl+Shift+1] | c |  |
+| Parameter ▸ Synchronize Parameter Values Across Tabs | c |  |
+| Parameter ▸ Parameter settings | c |  |
+| Parameter ▸ Parameter Group Settings | c |  |
+| Parameter ▸ Set All Parameter Values as Default | c |  |
+| Parameter ▸ Auto Generation of Face Motion | p | Modeling ▸ Auto Generation of Face Motion… (move under Parameter) |
+| Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Deformer | p | Auto Generation of Face Motion… dialog (move under Parameter) |
+| Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Motion | p | Auto Generation of Face Motion… dialog (move under Parameter) |
+| Parameter ▸ Auto Generation of Sway Motion | p | Modeling ▸ Auto Generation of Sway Motion… (move under Parameter) |
+| Parameter ▸ Apply 3D Rotation Expression | p | Modeling ▸ Apply 3D Rotation Expression… (move under Parameter) |
+| Parameter ▸ Multiple Keys Editing | c |  |
+| Parameter ▸ Select Object Linked to Key | c |  |
+| Parameter ▸ Arrange Parameter Configuration for Selected Object | c |  |
+| Parameter ▸ Settings for Eye Blinking and Lip-sync | c |  |
+| Parameter ▸ Motion-sync Settings | p | Modeling ▸ Motion-sync Settings… (move under Parameter) |
+| Parameter ▸ Validate Assigned Parameters | c |  |
+| ArtMesh ▸ Change Draw Order of All ArtMeshes | c |  |
+| ArtMesh ▸ Bulk Change Draw Order of ArtMeshes | c |  |
+| ArtMesh ▸ Create artMesh for collision detection | c |  |
+| ArtPath | b | toolbar ArtPath tool; Tool Details has the tool settings |
+| ArtPath ▸ Automatic generation from a single ArtMesh | c |  |
+| ArtPath ▸ Automatic generation from multiple ArtMeshes | c |  |
+| ArtPath ▸ Apply Color | c |  |
+| ArtPath ▸ Apply Opacity | c |  |
+| ArtPath ▸ Apply Line Width | c |  |
+| ArtPath ▸ Apply All | c |  |
+| ArtPath ▸ Align with Outline ArtMesh | c |  |
+| ArtPath ▸ Align with Fill ArtMesh | c |  |
+| ArtPath ▸ Add control points to align with ArtMesh | c |  |
+| ArtPath ▸ Add a point in the middle of all control points | c |  |
+| ArtPath ▸ Add a point in the middle of the selected control point | c |  |
+| ArtPath ▸ Open Auto Generation ArtPath Dialog | c |  |
+| ArtPath ▸ Create DeformPath from ArtPath | c |  |
+| ArtPath ▸ Bake ArtMesh deformation to ArtPath | c |  |
+| ArtPath ▸ Follow all | c |  |
+| ArtPath ▸ Cancel all | c |  |
+| ArtPath ▸ Follow selected control points | c |  |
+| ArtPath ▸ Release selected control point | c |  |
+| ArtPath ▸ Open ArtPath Brush Settings Dialog | c |  |
+| Glue ▸ Glue On/Off | c |  |
+| Skinning | c |  |
+| Skinning ▸ Skinning | c |  |
+| Skinning ▸ Use deformation path for Skinning | c |  |
+| Skinning ▸ Generate parameters for rotation deformer | c |  |
+| Edit Form ▸ Confirm target when pasting multiple forms | c |  |
+| Edit Form ▸ Zoom In / Zoom Out Specifying Magnification | c |  |
+| Edit Form ▸ Shape Warp Deformer along Bezier Handle | c |  |
+| Edit Form ▸ Expand Warp Deformer Based on Children Outside Range | c |  |
+| Edit Form ▸ Revert to Original | c |  |
+| Edit Form ▸ Update Original Shape of Deformers | c |  |
+| Edit Form ▸ Delete Original Shape of All Deformers | c |  |
+| Temporary deform tool | c |  |
+| Temporary deform tool ▸ Enlarge/shrink | c |  |
+| Temporary deform tool ▸ Rotation | c |  |
+| Temporary deform tool ▸ Free transform | c |  |
+| Temporary deform tool ▸ Perspective | c |  |
+| Temporary deform tool ▸ Distort | c |  |
+| Temporary deform tool ▸ Temporary warp deformation | c |  |
+| Temporary deform tool ▸ Add columns | c |  |
+| Temporary deform tool ▸ Remove columns | c |  |
+| Temporary deform tool ▸ Add rows | c |  |
+| Temporary deform tool ▸ Remove rows | c |  |
+| Temporary deform tool ▸ Temporary path deformation | c |  |
+| Temporary deform tool ▸ Deselect the temporary deform tool | c |  |
+| Clipping ID | c |  |
+| Clipping ID ▸ Select Clipping Mask | b | Inspector ▸ Add mask… |
+| Clipping ID ▸ Reverse Clipping ID Lookup | b | Parts palette: right-click a mask mesh row |
+| Model Template ▸ Apply Template | p | Modeling ▸ Model Template ▸ Apply Model Template… (rename) |
+| Model Template ▸ Export template | p | Modeling ▸ Model Template ▸ Export model template… (rename) |
+| Texture Atlas ▸ Switch between Model Image and Texture Atlas [T] | c |  |
+| Texture Atlas ▸ Apply Texture Atlas to Model Image | c |  |
+| Lock | b | Parts palette lock icons and ☰ menu |
+| Lock ▸ Lock/unlock Selected Objects [Ctrl+2] | c |  |
+| Lock ▸ Lock the unselected objects [Ctrl+Shift+2] | c |  |
+| Lock ▸ Unlock all [Ctrl+Alt+2] | b | Parts palette ☰ menu |
+| Show/Hide | c |  |
+| Show/Hide ▸ Show/Hide Selected Objects [Ctrl+3] | c |  |
+| Show/Hide ▸ Hide the unselected objects [Ctrl+Shift+3] | c |  |
+| Show/Hide ▸ Show all [Ctrl+Alt+3] | b | Parts palette ☰ menu |
+| Show/Hide ▸ Show/Hide Guide Image [Ctrl+Alt+Shift+3] | c |  |
+| Show/Hide ▸ Restore to Previous Visibility State | c |  |
+| Edit Level | b | toolbar Edit Level 1/2/3 |
+| Edit Level ▸ Level 1 [1] | b | toolbar button 1 and key 1 |
+| Edit Level ▸ Level 2 [2] | b | toolbar button 2 and key 2 |
+| Edit Level ▸ Level 3 [3] | b | toolbar button 3 and key 3 |
+| Convert Model ID | c |  |
+| Bulk setting of model objects | c |  |
+| Bulk setting of model objects ▸ Export | c |  |
+| Bulk setting of model objects ▸ Import | c |  |
+| Bulk setting of model parameters | c |  |
+| Bulk setting of model parameters ▸ Export | c |  |
+| Bulk setting of model parameters ▸ Import | c |  |
+
+### Animation
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Material | c |  |
+| Material ▸ Reload Material of Selected Track | c |  |
+| Material ▸ Replace Material of Selected Track | c |  |
+| Material ▸ Replace Material of Selected Track | c |  |
+| Scene | b | timeline Scene menu |
+| Scene ▸ New Scene | b | timeline Scene menu ▸ Create new scene |
+| Scene ▸ Import Scene | c |  |
+| Scene ▸ Generate Scenes Automatically from Audio Files | c |  |
+| Scene ▸ Enable/Disable Loop Editing Support | c |  |
+| Track | c |  |
+| Track ▸ Bake Animation from Parameter Controller | b | timeline Scene / Controllers menu |
+| Track ▸ Bake Animation from Physics | b | timeline Scene / Controllers menu |
+| Track ▸ Bake Animation from Motion-sync | b | timeline Scene / Controllers menu |
+| Track ▸ Apply Lip-sync from the Audio File | c |  |
+| Track ▸ Start Track at Current Position [Shift+B] | c |  |
+| Track ▸ End Track at Current Position [Shift+N] | c |  |
+| Track ▸ Move Track to Current Position [Shift+M] | c |  |
+| Timeline | c |  |
+| Timeline ▸ Move to Beginning [Home] | c |  |
+| Timeline ▸ Move to End [End] | c |  |
+| Timeline ▸ Move to Start Frame of Work Area [Shift+Home] | c |  |
+| Timeline ▸ Move to End Frame of Work Area [Shift+End] | c |  |
+| Timeline ▸ Previous frame [Page Up] | c |  |
+| Timeline ▸ Next frame [Page Down] | c |  |
+| Timeline ▸ Previous Keyframe [J] | c |  |
+| Timeline ▸ Next Keyframe [K] | c |  |
+| Timeline ▸ Previous Keyframe in Track [Shift+J] | c |  |
+| Timeline ▸ Next Keyframe in Track [Shift+K] | c |  |
+| Timeline ▸ Return to Previous Marker [Ctrl+J] | c |  |
+| Timeline ▸ Proceed to Next Marker [Ctrl+K] | c |  |
+| Timeline ▸ Return to the previous onion skin marker [Ctrl+Shift+J] | c |  |
+| Timeline ▸ Go to the next onion skin marker [Ctrl+Shift+K] | c |  |
+| Timeline ▸ Set as Start Frame of Work Area | c |  |
+| Timeline ▸ Set as End Frame of Work Area | c |  |
+| Timeline ▸ Display Entire Work Area [Shift+F] | c |  |
+| Timeline ▸ Display Entire Scene | c |  |
+| Timeline ▸ Reset Zoom | c |  |
+| Fade | b | timeline Scene ▸ Scene settings… (fade in / out) |
+| Fade ▸ Set fade-in/fade-out | b | timeline Scene ▸ Scene settings… |
+| Fade ▸ Apply Fade-In/Fade-Out Settings to Other Scenes | c |  |
+| Parameter Controller | b | timeline Controllers menu |
+| Parameter Controller ▸ Parameter Controller Calculation Unit Settings | c |  |
+| Parameter Controller ▸ Reverse Direction Controller | c |  |
+| Parameter Controller ▸ Convert Direction Controller into 2 Single Point Controllers | c |  |
+| Parameter Controller ▸ Convert 2 Single Point Controllers into Direction Controller | c |  |
+| Parameter Controller ▸ Follow Target | b | timeline Controllers menu |
+| Parameter Controller ▸ Calculate collectively before playback | c |  |
+| Parameter Controller ▸ Show Controller | c |  |
+| Parameter Controller ▸ Controller Display Settings | c |  |
+| Parameter Bookmarks | c |  |
+| Parameter Bookmarks ▸ Display with Selected Parameters | c |  |
+| Parameter Bookmarks ▸ Delete Labels from Selected Tracks | c |  |
+| Parameter Bookmarks ▸ Duplicate All Labels | c |  |
+| Parameter Bookmarks ▸ Duplicate Labels Individually | c |  |
+| Parameter Bookmarks ▸ Hide All Labels | c |  |
+| Parameter Bookmarks ▸ Parameter Bookmark Display Settings | c |  |
+| Add Marker | c |  |
+| Playback [Enter] | b | timeline play button and Space (spec shortcut: Enter) |
+| Switch Edit Mode [C] | c |  |
+| Gather files | c |  |
+
+### Form Animation
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Deformer | p | Modeling ▸ Deformer |
+| Deformer ▸ Select Deformer for Parent [Ctrl+D] | c |  |
+| Deformer ▸ Select Deformer's Child Elements [Ctrl+Alt+D] | c |  |
+| Temporary deform tool | c |  |
+| Temporary deform tool ▸ Enlarge/shrink | c |  |
+| Temporary deform tool ▸ Rotation | c |  |
+| Temporary deform tool ▸ Free transform | c |  |
+| Temporary deform tool ▸ Perspective | c |  |
+| Temporary deform tool ▸ Distort | c |  |
+| Temporary deform tool ▸ Temporary warp deformation | c |  |
+| Temporary deform tool ▸ Add columns | c |  |
+| Temporary deform tool ▸ Remove columns | c |  |
+| Temporary deform tool ▸ Add rows | c |  |
+| Temporary deform tool ▸ Remove rows | c |  |
+| Temporary deform tool ▸ Temporary path deformation | c |  |
+| Temporary deform tool ▸ Deselect the temporary deform tool | c |  |
+| Clipping ID | c |  |
+| Clipping ID ▸ Select Clipping Mask | b | Inspector ▸ Add mask… |
+| Clipping ID ▸ Reverse Clipping ID Lookup | b | Parts palette: right-click a mask mesh row |
+| Lock | b | Parts palette lock icons and ☰ menu |
+| Lock ▸ Lock/unlock Selected Objects [Ctrl+2] | c |  |
+| Lock ▸ Lock the unselected objects [Ctrl+Shift+2] | c |  |
+| Lock ▸ Unlock all [Ctrl+Alt+2] | b | Parts palette ☰ menu |
+| Show/Hide | c |  |
+| Show/Hide ▸ Show/Hide Selected Objects [Ctrl+3] | c |  |
+| Show/Hide ▸ Hide the unselected objects [Ctrl+Shift+3] | c |  |
+| Show/Hide ▸ Show all [Ctrl+Alt+3] | b | Parts palette ☰ menu |
+| Show/Hide ▸ Restore to Previous Visibility State | c |  |
+| Edit Level | b | toolbar Edit Level 1/2/3 |
+| Edit Level ▸ Level 1 [1] | b | toolbar button 1 and key 1 |
+| Edit Level ▸ Level 2 [2] | b | toolbar button 2 and key 2 |
+| Edit Level ▸ Level 3 [3] | b | toolbar button 3 and key 3 |
+| Create form edit key | c |  |
+| Animation preview setting | c |  |
+
+### Mesh Edit mode
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Finish Mesh editing [Ctrl+E] | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Automatically Generate Meshes(Mesh Editing Mode) | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Auto attach Edge [Ctrl+R] | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Reset Mesh | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Paste with Copied Shape [Ctrl+Alt+V] | c |  |
+| Flip horizontally | c | the Edit Form ▸ Flip… dialog flips forms, not mesh-edit vertices |
+| Flip vertically | c | as Flip horizontally |
+| Invert Axis | c |  |
+| Merge Vertices | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Glue / bind the selected vertices [Ctrl+G] | b | Ctrl+G; Tool Details ▸ Bind (two-mesh mesh edit) |
+| Unglue / unbind the selected vertices [Ctrl+Shift+G] | b | Ctrl+Shift+G; Tool Details ▸ Unbind |
+| Stroke mesh-mapping | c |  |
+| Stroke mesh-mapping ▸ Increase mesh width | c |  |
+| Stroke mesh-mapping ▸ Reduce mesh width | c |  |
+| Stroke mesh-mapping ▸ Increase divisions | c |  |
+| Stroke mesh-mapping ▸ Reduce divisions | c |  |
+| Stroke mesh-mapping ▸ Change the number of vertices in the mesh width | c |  |
+| Stroke mesh-mapping ▸ Confirm stroke [Shift+E] | c |  |
+| Subtools | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Select Arrow | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Lasso | p | toolbar Lasso (works in mesh edit) |
+| Subtools ▸ Deform brushes | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Add Point Tool | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Delete Vertex | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Eraser | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Add points | p | Keyform's Mesh Edit menu (spec name: Mesh Edit mode) |
+| Subtools ▸ Stroke mesh-mapping | c |  |
+
+### Window
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Workspace | c |  |
+| Workspace ▸  [CMenuItem] | b | Deformer ▸ ▶ (animation) |
+| Workspace ▸ Reset Current Layout | p | Window ▸ Reset Current Layout |
+| Workspace ▸ Update Initial Layout | c |  |
+| Workspace ▸ Workspace Settings | c |  |
+| Hide Palette | c |  |
+| Show Palette | c |  |
+| Duplicate Tab | c |  |
+| Switch to Previous Tab | c |  |
+| Switch to Next Tab | c |  |
+| Set All Views to Same Display Position | c |  |
+| Reset Status | c |  |
+
+### Help
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| User Manual | c | should open Keyform's documentation |
+| Go to Live2D Web Page | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+| Product Page | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+| Download Page | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+| Sample Model | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+| Creators Forum | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+| Live2D Help | c | should open Keyform's documentation |
+| Tutorial Video | a |  |
+| Home | b | Home tab (welcome page) |
+| Display Operation | c |  |
+| Open Log File | c |  |
+| Open Auto Backup Folder | c |  |
+| Update History | a | Live2D web pages / products (spec: Help links point to Keyform's own pages instead) |
+
+### Keyboard-only commands
+
+| Spec item | Class | Where it is now / note |
+|---|---|---|
+| Rotation Deformer Creation Tool | k- |  |
+| Arrow tool [A] | k+ | main window (model) |
+| Lasso Tool [L] | k+ | Image Output Settings dialog via File ▸ Export Image/Video ▸ Image… ▸ Lasso (model) |
+| Brush Selection tool [B] | k+ | similar: tooltip of Soft in the toolbar (model) |
+| Deform Path edit [P] | k- |  |
+| Deform Brush Tool | k- |  |
+| Edit Glue | k- |  |
+| ArtPath Tools | k+ | similar: tooltip of ArtPath in the toolbar (model) |
+| Parameter Controller | k+ | similar: Deformer ▸ Controllers (animation) |
+| Switch to Last Used Tool | k- |  |
+| Switch Workspace to Modeling | k- |  |
+| Switch Workspace to Animation | k- |  |
+| Switch workspace to Form Animation | k- |  |
+| Lock ArtMesh [Shift+A] | k- |  |
+| Lock Deformer [Shift+D] | k- |  |
+| Show/hide ArtMesh | k- |  |
+| Solo [S] | k- |  |
+| Apply Opacity | k- |  |
+| Apply multiply color/screen color | k- |  |
+| Select Objects of Selected Vertices | k- |  |
+| Snapshot [Ctrl+5] | k- |  |
+| Show/hide snapshot [5] | k- |  |
+| Save snapshot guide image [Ctrl+Shift+5] | k- |  |
+| Zoom out | k+ | Show ▸ Zoom Out (no document) |
+| Zoom in | k+ | Show ▸ Zoom In (no document) |
+| Display as original size | k- |  |
+| Display All [Ctrl+0] | k- |  |
+| Flip canvas [R] | k- |  |
+| Play/Stop Random Pose | k- |  |
+| Set Random Pose | k+ | Modeling ▸ Set Random Pose (model) |
+| Lightweight playback | k- |  |
+| Highlight Frame Step frames | k- |  |
+| Auto-scroll to Form Animation property of selected object | k- |  |
+| Automatically scroll to properties of current parameter controller | k- |  |
+| Enable moving indicator out of scene range | k- |  |
+| Enable Operation of Keyframes Hidden by Shy | k- |  |
+| Expand all tracks | k- |  |
+| Select all keys when selecting parameters | k- |  |
+| Exclude Frame Step When Bulk Inserting Keyframes | k- |  |
+| Display 1 Frame Range at Indicator | k- |  |
+| Display key values | k- |  |
+| Display key name | k- |  |
+| Auto resize | k- |  |
+| Always edit continuous continuous Beziers | k- |  |
+| Smart snap using Shift | k- |  |
+| Make Beziers by dragging curves | k- |  |
+| Snap to key position on curve | k- |  |
+| Freeze/Unfreeze at Current Frame | k- |  |
+| Freeze All | k- |  |
+| Freeze Selected Properties | k- |  |
+| Freeze Unselected Properties | k- |  |
+| Unfreeze All | k- |  |
+| Make art path control points thicker | k- |  |
+| Make art path control points thinner | k- |  |
+| Snap to Nearest Key | k- |  |
+| Lock Draw Order Slider | k- |  |
+| Tool Details | k+ | Window ▸ Tool Details (no document) |
+| Tool Details ▸ Deform Path edit | k- |  |
+| Tool Details ▸ Deform Path edit ▸ Add control point | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ Deform Path edit ▸ Delete control point | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ Deform Path edit ▸ Delete path | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ Deform Path edit ▸ Fold line | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ Edit Glue | k- |  |
+| Tool Details ▸ Edit Glue ▸ Weight brush A:B | k+ | Modeling ▸ Glue ▸ Weight brush A:B (model) |
+| Tool Details ▸ Edit Glue ▸ Weight brush A | k+ | Modeling ▸ Glue ▸ Weight brush A (model) |
+| Tool Details ▸ Edit Glue ▸ Weight brush B | k+ | Modeling ▸ Glue ▸ Weight brush B (model) |
+| Tool Details ▸ Edit Glue ▸ Re-merge Glue Vertices Tool | k+ | Modeling ▸ Glue ▸ Re-merge Glue Vertices Tool (model) |
+| Tool Details ▸ ArtPath Tools | k+ | similar: tooltip of ArtPath in the toolbar (model) |
+| Tool Details ▸ ArtPath Tools ▸ Add control point | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ ArtPath Tools ▸ Delete control point | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ ArtPath Tools ▸ Adjust the opacity set in the control point | k- |  |
+| Tool Details ▸ ArtPath Tools ▸ Adjust the thickness set in the control point | k- |  |
+| Tool Details ▸ ArtPath Tools ▸ Fold line | k+ | the toolbar ▸ Path (model) |
+| Tool Details ▸ ArtPath Tools ▸ Stroke ArtPath | k+ | the toolbar ▸ ArtPath (model) |
+| Tool Details ▸ ArtPath Tools ▸ Re-stroke ArtPath | k- |  |
+| Tool Details ▸ ArtPath Tools ▸ Join ArtPaths | k- |  |
+| Tool Details ▸ ArtPath Tools ▸ Split ArtPath | k+ | similar: tooltip of ArtPath in the toolbar (model) |
+| Tool Details ▸ Deform Brush Tool | k- |  |
+| Tool Details ▸ Deform Brush Tool ▸ Deform brushes | k+ | Mesh Edit ▸ Subtools ▸ Deform brushes (mesh edit) |
+| Tool Details ▸ Deform Brush Tool ▸ Expansion Brush | k- |  |
+| Tool Details ▸ Deform Brush Tool ▸ Warp Deformer Shaping Brush | k- |  |
+| Tool Details ▸ Parameter Controller Tool | k- |  |
+| Tool Details ▸ Parameter Controller Tool ▸ Select/Edit Controller | k+ | Deformer ▸ Controllers (animation) |
+| Tool Details ▸ Parameter Controller Tool ▸ Add Single Point Controller | k+ | Deformer ▸ Controllers (animation) |
+| Tool Details ▸ Parameter Controller Tool ▸ Add Direction Controller | k+ | Deformer ▸ Controllers (animation) |
+| Tool Details ▸ Parameter Controller Tool ▸ Delete Controller | k+ | label exists in the app (place not seen by the audit) |
+| Tool Details ▸ Parameter Controller Tool ▸ Edit Target | k- |  |
+| Add Guide | k- |  |
+| Add Guide ▸ Add a Horizontal Line to Mouse Position | k- |  |
+| Add Guide ▸ Add a Vertical Line to Mouse Position | k- |  |
+| Add Guide ▸ Add Horizontal/Vertical Lines to Mouse Position | k- |  |
+| Palette Common Shortcuts | k- |  |
+| Palette Common Shortcuts ▸ Select for Movement | k- |  |
+| Palette Common Shortcuts ▸ Move Here | k+ | label exists in the app (place not seen by the audit) |
+| Part Shortcuts | k- |  |
+| Part Shortcuts ▸ New Part | k+ | Parts ▸ ☰ (mesh edit) |
+| Part Shortcuts ▸ Delete selected Parts | k- |  |
+| Part Shortcuts ▸ Delete selected Parts | k- |  |
+| Part Shortcuts ▸ Disable drag & drop | k+ | Parts ▸ ☰ (mesh edit) |
+| Part Shortcuts ▸ Part Settings | k+ | Parts ▸ ☰ (mesh edit) |
+| Part Shortcuts ▸ Delete empty parts | k+ | Parts ▸ ☰ (mesh edit) |
+| Part Shortcuts ▸ Delete empty parts below child | k- |  |
+| Part Shortcuts ▸ Delete empty deformers | k- |  |
+| Deformer Shortcuts | k- |  |
+| Deformer Shortcuts ▸ Disable drag & drop | k+ | Parts ▸ ☰ (mesh edit) |
+| Deformer Shortcuts ▸ Delete empty deformers below child | k- |  |
+| Parameter Shortcuts | k- |  |
+| Parameter Shortcuts ▸ Cancel Selection | k- |  |
+| Parameter Shortcuts ▸ Combine/uncombine | k- |  |
+| Parameter Shortcuts ▸ Select Previous | k- |  |
+| Parameter Shortcuts ▸ Select Next | k- |  |
+| Parameter Shortcuts ▸ Select First Key | k- |  |
+| Parameter Shortcuts ▸ Select Next Key | k- |  |
+| Parameter Shortcuts ▸ Select Previous Key | k- |  |
+| Parameter Shortcuts ▸ Select Last Key | k- |  |
+| Parameter Shortcuts ▸ Select Default Key | k- |  |
+| Parameter Shortcuts ▸ Select Fist Vertical Key(combined) | k- |  |
+| Parameter Shortcuts ▸ Select Next Vertical Key(combined) | k- |  |
+| Parameter Shortcuts ▸ Select Previous Vertical Key(combined) | k- |  |
+| Parameter Shortcuts ▸ Select Last Vertical Key(combined) | k- |  |
+| Parameter Shortcuts ▸ Add Single Keyform | k- |  |
+| Parameter Shortcuts ▸ Delete Keyform | k- |  |
+| Parameter Shortcuts ▸ Select | k+ | the toolbar ▸ Path (model) |
+| Parameter Shortcuts ▸ Flip | k+ | dialog via Modeling ▸ Edit Form ▸ Flip… (model) |
+| Parameter Shortcuts ▸ Adjust | k- |  |
+| Parameter Shortcuts ▸ Change | k- |  |
+| Parameter Shortcuts ▸ Add 2 keys | k+ | context menu of a Parameter row ▸ Add 2 keys (model) |
+| Parameter Shortcuts ▸ Add 3 keys | k+ | context menu of a Parameter row ▸ Add 3 keys (model) |
+| Parameter Shortcuts ▸ Delete all keys | k+ | context menu of a Parameter row ▸ Delete all keys (model) |
+| Parameter Shortcuts ▸ Edit keyform | k- |  |
+| Parameter Shortcuts ▸ Display with Parameters of Selected Objects Only | k- |  |
+| Parameter Shortcuts ▸ Edit Parameter | k+ | context menu of a Parameter row ▸ Edit Parameter (model) |
+| Parameter Shortcuts ▸ Create Parameter | k+ | context menu of a Parameter row ▸ Create Parameter (model) |
+| Parameter Shortcuts ▸ Replicate parameters | k- |  |
+| Parameter Shortcuts ▸ Create folder | k- |  |
+| Parameter Shortcuts ▸ Delete | k+ | Edit ▸ Delete (no document) |
+| Parameter Shortcuts ▸ Delete empty parameters | k- |  |
+| Parameter Shortcuts ▸ Delete empty parameter groups | k- |  |
+| Parameter Shortcuts ▸ Disable drag & drop | k+ | Parts ▸ ☰ (mesh edit) |
+| Temporary Snapshots | k- |  |
+| Temporary Snapshots ▸ Save | k+ | File ▸ Save (no document) |
+| Temporary Snapshots ▸ Save ▸ Save [1] | k+ | File ▸ Save (no document) |
+| Temporary Snapshots ▸ Save ▸ Save [2] | k+ | File ▸ Save (no document) |
+| Temporary Snapshots ▸ Save ▸ Save [3] | k+ | File ▸ Save (no document) |
+| Temporary Snapshots ▸ Save ▸ Save [4] | k+ | File ▸ Save (no document) |
+| Temporary Snapshots ▸ Show | k+ | main window (no document) |
+| Temporary Snapshots ▸ Show ▸ Show [1] | k+ | main window (no document) |
+| Temporary Snapshots ▸ Show ▸ Show [2] | k+ | main window (no document) |
+| Temporary Snapshots ▸ Show ▸ Show [3] | k+ | main window (no document) |
+| Temporary Snapshots ▸ Show ▸ Show [4] | k+ | main window (no document) |
+| Column operations for temporary warp deformations | k- |  |
+| Column operations for temporary warp deformations ▸ Add columns | k- |  |
+| Column operations for temporary warp deformations ▸ Remove columns | k- |  |
+| Column operations for temporary warp deformations ▸ Add rows | k- |  |
+| Column operations for temporary warp deformations ▸ Remove rows | k- |  |
+| Blend Shape | k+ | label exists in the app (place not seen by the audit) |
+| Parameter Bookmarks | k- |  |
+| Parameter Bookmarks ▸ Display with Object at Cursor Position | k- |  |
+| Parameter Bookmarks ▸ Select from Objects at Cursor Position | k- |  |
+| Brush | k+ | main window (mesh edit) |
+| Brush ▸ Switch to Previous Brush Shape | k- |  |
+| Brush ▸ Switch to Next Brush Shape | k- |  |
+

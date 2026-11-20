@@ -125,7 +125,12 @@ def write_psd(path, layers):
     for _, im in layers:
         merged = Image.alpha_composite(merged, im)
     out = b"8BPS" + struct.pack(">H6xHIIHH", 1, 4, H, W, 8, 3)
-    out += struct.pack(">I", 0) + struct.pack(">I", 0)
+    # Colour mode data (empty), then image resources: ResolutionInfo
+    # (0x03ED, 72 dpi), which Photoshop always writes and strict readers
+    # expect.
+    res = struct.pack(">IHHIHH", 72 << 16, 1, 1, 72 << 16, 1, 1)
+    resources = b"8BIM" + struct.pack(">H", 0x03ED) + b"\0\0" + struct.pack(">I", len(res)) + res
+    out += struct.pack(">I", 0) + struct.pack(">I", len(resources)) + resources
     out += struct.pack(">I", len(lmi)) + lmi
     planes = merged.split()
     rows = [packbits(c.tobytes()[y * W:(y + 1) * W]) for c in planes for y in range(H)]

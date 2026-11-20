@@ -34,6 +34,8 @@ const SIGMA: f32 = 0.5;
 const IGNORE_AREA: usize = 800;
 /// Turning-angle corners (§3.4).
 const CORNER_DEG: f32 = 30.0;
+/// Contour sampling step for corner detection, working px (§3.2).
+const SAMPLING_STEP: f32 = 8.0;
 const AVERAGING: usize = 5;
 
 /// An alpha raster (row-major, one byte per pixel).
@@ -376,26 +378,41 @@ fn place_ring(contour: &[[f32; 2]], h: f32, min_points: usize) -> Vec<[f32; 2]> 
     let even = |count: usize, from: usize| -> Vec<[f32; 2]> {
         (0..count).map(|k| c[(from + k * n / count) % n]).collect()
     };
-    // Turning angle with a ±k window, smoothed [¼, ½, ¼] AVERAGING times.
-    let k = 3.min(n / 3).max(1);
-    let mut turn: Vec<f32> = (0..n)
+    // Turning angle at every contour sample (the contour sampled every
+    // SAMPLING_STEP working px, §3.2 fixed internals) with a ±1 sample
+    // window, smoothed [¼, ½, ¼] AVERAGING times. Sampled at 1 px, the turn
+    // was measured over a few px only, so the rounded ends of thin strokes
+    // never passed the corner threshold and got the minimum ring points
+    // (black-box comparison: the reference gives a brow about ten).
+    let step = (SAMPLING_STEP as usize).min(n / 3).max(1);
+    let ns = n / step;
+    let mut turn_s: Vec<f32> = (0..ns)
         .map(|i| {
-            let (a, b, d) = (c[(i + n - k) % n], c[i], c[(i + k) % n]);
+            let a = c[((i + ns - 1) % ns) * step];
+            let (b, d) = (c[i * step], c[((i + 1) % ns) * step]);
             let (u, v) = ([b[0] - a[0], b[1] - a[1]], [d[0] - b[0], d[1] - b[1]]);
             (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1])
         })
         .collect();
     for _ in 0..AVERAGING {
-        turn = (0..n)
-            .map(|i| 0.25 * turn[(i + n - 1) % n] + 0.5 * turn[i] + 0.25 * turn[(i + 1) % n])
+        turn_s = (0..ns)
+            .map(|i| {
+                0.25 * turn_s[(i + ns - 1) % ns] + 0.5 * turn_s[i] + 0.25 * turn_s[(i + 1) % ns]
+            })
             .collect();
     }
     let threshold = CORNER_DEG.to_radians();
-    let mut corners: Vec<usize> = (0..n)
+    // The turning angle of each corner, indexed on the 1 px contour.
+    let mut turn = vec![0.0f32; n];
+    for (i, t) in turn_s.iter().enumerate() {
+        turn[i * step] = *t;
+    }
+    let mut corners: Vec<usize> = (0..ns)
         .filter(|&i| {
-            let t = turn[i].abs();
-            t > threshold && t >= turn[(i + n - 1) % n].abs() && t > turn[(i + 1) % n].abs()
+            let t = turn_s[i].abs();
+            t > threshold && t >= turn_s[(i + ns - 1) % ns].abs() && t > turn_s[(i + 1) % ns].abs()
         })
+        .map(|i| i * step)
         .collect();
     // Keep the strongest of corners closer than h / 2.
     corners.sort_by(|&a, &b| turn[b].abs().total_cmp(&turn[a].abs()));
@@ -620,7 +637,10 @@ pub fn generate(
         for &i in pixels {
             mine[i] = true;
         }
-        // Size factor f (§3.3 step 5).
+        // Size factor f (§3.3 step 5). TODO(Q-0047): for thin layers the
+        // reference behaves as if f were at its maximum (denser ring,
+        // smaller margin, more skeleton points); single-island meshes get
+        // f = 1 here as the spec says.
         let a = ((pixels.len() as f32).sqrt() / (largest as f32).sqrt()).max(0.1);
         let t = (a.ln() / 0.1f32.ln()).clamp(0.0, 1.0);
         let f = density_scale.max(1e-3).powf(t);

@@ -1,0 +1,90 @@
+# spec path<TAB>class<TAB>note — hand review for menu_coverage.py (a/b/c/p/k+/k-)
+File ▸ Export For Runtime ▸ Export Physics settings	b	Physics Settings window (Modeling ▸ Physics Settings…): export from its menu
+File ▸ External Application Integration Settings	p	Show ▸ External Application Integration Settings… (move to File)
+File ▸ Export Image/Video ▸ GIF Animation	p	File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity)
+File ▸ Export Image/Video ▸ Still Image	p	File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity)
+File ▸ Export Image/Video ▸ Video	p	File ▸ Export Image/Video ▸ Image sequence / GIF / Video… (one dialog; split for parity)
+File ▸ Export For Runtime ▸ Export motion file	p	File ▸ Export For Runtime ▸ Export motion files (motion3.json)… (rename)
+Edit ▸ Copy	c	generic copy of selected objects (Copy Form exists: Edit Form ▸ Copy Form)
+Edit ▸ Paste	c	generic paste (Paste Form exists)
+Show ▸ Texture Atlas	p	Modeling ▸ Texture Atlas
+Show ▸ Display Quality ▸ 1/2	c	
+Modeling ▸ Parameter ▸ Reset to default values	b	Parameter palette Reset; toolbar Reset parameters
+Modeling ▸ Parameter ▸ Auto Generation of Face Motion	p	Modeling ▸ Auto Generation of Face Motion… (move under Parameter)
+Modeling ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Deformer	p	Auto Generation of Face Motion… dialog (move under Parameter)
+Modeling ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Motion	p	Auto Generation of Face Motion… dialog (move under Parameter)
+Modeling ▸ Parameter ▸ Auto Generation of Sway Motion	p	Modeling ▸ Auto Generation of Sway Motion… (move under Parameter)
+Modeling ▸ Parameter ▸ Apply 3D Rotation Expression	p	Modeling ▸ Apply 3D Rotation Expression… (move under Parameter)
+Modeling ▸ Parameter ▸ Motion-sync Settings	p	Modeling ▸ Motion-sync Settings… (move under Parameter)
+Modeling ▸ ArtPath	b	toolbar ArtPath tool; Tool Details has the tool settings
+Modeling ▸ Temporary deform tool ▸ Rotation	c	
+Modeling ▸ Clipping ID ▸ Select Clipping Mask	b	Inspector ▸ Add mask…
+Modeling ▸ Clipping ID ▸ Reverse Clipping ID Lookup	b	Parts palette: right-click a mask mesh row
+Modeling ▸ Lock	b	Parts palette lock icons and ☰ menu
+Modeling ▸ Lock ▸ Unlock all	b	Parts palette ☰ menu
+Modeling ▸ Show/Hide ▸ Show all	b	Parts palette ☰ menu
+Modeling ▸ Edit Level	b	toolbar Edit Level 1/2/3
+Modeling ▸ Edit Level ▸ Level 1	b	toolbar button 1 and key 1
+Modeling ▸ Edit Level ▸ Level 2	b	toolbar button 2 and key 2
+Modeling ▸ Edit Level ▸ Level 3	b	toolbar button 3 and key 3
+Modeling ▸ Model Template ▸ Apply Template	p	Modeling ▸ Model Template ▸ Apply Model Template… (rename)
+Modeling ▸ Model Template ▸ Export template	p	Modeling ▸ Model Template ▸ Export model template… (rename)
+Form Animation ▸ Parameter ▸ Reset to default values	b	Parameter palette Reset; toolbar Reset parameters
+Form Animation ▸ Parameter ▸ Auto Generation of Face Motion	p	Modeling ▸ Auto Generation of Face Motion… (move under Parameter)
+Form Animation ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Deformer	p	Auto Generation of Face Motion… dialog (move under Parameter)
+Form Animation ▸ Parameter ▸ Auto Generation of Face Motion ▸ Generate Face Motion	p	Auto Generation of Face Motion… dialog (move under Parameter)
+Form Animation ▸ Parameter ▸ Auto Generation of Sway Motion	p	Modeling ▸ Auto Generation of Sway Motion… (move under Parameter)
+Form Animation ▸ Parameter ▸ Apply 3D Rotation Expression	p	Modeling ▸ Apply 3D Rotation Expression… (move under Parameter)
+Form Animation ▸ Parameter ▸ Motion-sync Settings	p	Modeling ▸ Motion-sync Settings… (move under Parameter)
+Form Animation ▸ ArtPath	b	toolbar ArtPath tool; Tool Details has the tool settings
+Form Animation ▸ Temporary deform tool ▸ Rotation	c	
+Form Animation ▸ Clipping ID ▸ Select Clipping Mask	b	Inspector ▸ Add mask…
+Form Animation ▸ Clipping ID ▸ Reverse Clipping ID Lookup	b	Parts palette: right-click a mask mesh row
+Form Animation ▸ Lock	b	Parts palette lock icons and ☰ menu
+Form Animation ▸ Lock ▸ Unlock all	b	Parts palette ☰ menu
+Form Animation ▸ Show/Hide ▸ Show all	b	Parts palette ☰ menu
+Form Animation ▸ Edit Level	b	toolbar Edit Level 1/2/3
+Form Animation ▸ Edit Level ▸ Level 1	b	toolbar button 1 and key 1
+Form Animation ▸ Edit Level ▸ Level 2	b	toolbar button 2 and key 2
+Form Animation ▸ Edit Level ▸ Level 3	b	toolbar button 3 and key 3
+Form Animation ▸ Model Template ▸ Apply Template	p	Modeling ▸ Model Template ▸ Apply Model Template… (rename)
+Form Animation ▸ Model Template ▸ Export template	p	Modeling ▸ Model Template ▸ Export model template… (rename)
+Form Animation ▸ Deformer	p	Modeling ▸ Deformer
+Animation ▸ Scene	b	timeline Scene menu
+Animation ▸ Scene ▸ New Scene	b	timeline Scene menu ▸ Create new scene
+Animation ▸ Track ▸ Bake Animation from Parameter Controller	b	timeline Scene / Controllers menu
+Animation ▸ Track ▸ Bake Animation from Physics	b	timeline Scene / Controllers menu
+Animation ▸ Track ▸ Bake Animation from Motion-sync	b	timeline Scene / Controllers menu
+Animation ▸ Parameter Controller	b	timeline Controllers menu
+Animation ▸ Parameter Controller ▸ Follow Target	b	timeline Controllers menu
+Animation ▸ Fade	b	timeline Scene ▸ Scene settings… (fade in / out)
+Animation ▸ Fade ▸ Set fade-in/fade-out	b	timeline Scene ▸ Scene settings…
+Animation ▸ Playback	b	timeline play button and Space (spec shortcut: Enter)
+Mesh Edit mode ▸ Finish Mesh editing	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Automatically Generate Meshes(Mesh Editing Mode)	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Auto attach Edge	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Reset Mesh	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Merge Vertices	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Select Arrow	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Deform brushes	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Add Point Tool	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Delete Vertex	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Eraser	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Add points	p	Keyform's Mesh Edit menu (spec name: Mesh Edit mode)
+Mesh Edit mode ▸ Subtools ▸ Lasso	p	toolbar Lasso (works in mesh edit)
+Mesh Edit mode ▸ Flip horizontally	c	the Edit Form ▸ Flip… dialog flips forms, not mesh-edit vertices
+Mesh Edit mode ▸ Flip vertically	c	as Flip horizontally
+Mesh Edit mode ▸ Glue / bind the selected vertices	b	Ctrl+G; Tool Details ▸ Bind (two-mesh mesh edit)
+Mesh Edit mode ▸ Unglue / unbind the selected vertices	b	Ctrl+Shift+G; Tool Details ▸ Unbind
+Window ▸ Workspace ▸ [CMenuItem]	a	not a command: the spec's placeholder for the workspace list
+Window ▸ Workspace ▸ Reset Current Layout	p	Window ▸ Reset Current Layout
+Help ▸ Home	b	Home tab (welcome page)
+Help ▸ Go to Live2D Web Page	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ Product Page	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ Download Page	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ Creators Forum	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ Sample Model	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ Update History	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
+Help ▸ User Manual	c	should open Keyform's documentation
+Help ▸ Live2D Help	c	should open Keyform's documentation
