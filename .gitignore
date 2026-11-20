@@ -15,3 +15,6 @@ __pycache__/
 /local/
 # Third-party sample art and anything derived from it stays local.
 *Lua_Faye*
+*blitty*
+# Renders written next to a crate by tests are never committed.
+/crates/*/*.png
