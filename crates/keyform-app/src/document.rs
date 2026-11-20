@@ -1189,6 +1189,26 @@ impl Document {
         ))
     }
 
+    /// Rotation deformers drawn as a needle (origin and handle tip) while
+    /// not selected: every visible one in the Modeling workspace, as the
+    /// reference shows them (a thin red needle with a dot at the origin).
+    /// TODO(Q-0048): the spec doesn't describe this display yet.
+    pub fn idle_rotation_gizmos(&self) -> Vec<([f32; 2], [f32; 2])> {
+        if self.mode != Mode::Modeling {
+            return Vec::new();
+        }
+        (0..self.model.deformers.len())
+            .filter(|&d| {
+                let o = Selection::Deformer(d);
+                self.model.deformers[d].info.visible && !self.selection.objects.contains(&o)
+            })
+            .filter_map(|d| {
+                self.rotation_widget(Selection::Deformer(d))
+                    .map(|(o, t, _)| (o, t))
+            })
+            .collect()
+    }
+
     /// Starts rotating or scaling a rotation deformer from canvas point `at`.
     pub fn drag_begin_handle(
         &mut self,
@@ -3521,6 +3541,44 @@ mod e2e_regressions {
         assert!(
             (0.0..190.0).contains(&end),
             "scrolled into view (y {end}, frames {row_y:?})"
+        );
+    }
+
+    /// Rotation deformers show a needle while not selected (reference
+    /// look), hidden ones don't, and the selected one keeps its full
+    /// widget instead.
+    #[test]
+    fn idle_rotation_gizmos_for_unselected_rotations() {
+        let (mut d, _) = character("e2e-idle-gizmos");
+        let face = mesh(&d, "Face");
+        let values = d.values.clone();
+        let r = d
+            .try_edit("Create Rotation Deformer", |m| {
+                let nd = keyform_edit::objects::NewDeformer {
+                    name: "Head".into(),
+                    part: None,
+                    parent: None,
+                    children: &[face],
+                    values: &values,
+                };
+                keyform_edit::objects::create_rotation_deformer(m, &nd)
+            })
+            .unwrap();
+        d.tick(0.0, &PlaybackOptions::default(), &mut Log::default());
+        d.select(None);
+        assert_eq!(d.idle_rotation_gizmos().len(), 1);
+        d.select(Some(Selection::Deformer(r)));
+        assert!(
+            d.idle_rotation_gizmos().is_empty(),
+            "the selected one has its widget"
+        );
+        d.select(None);
+        std::sync::Arc::make_mut(&mut d.model.deformers[r])
+            .info
+            .visible = false;
+        assert!(
+            d.idle_rotation_gizmos().is_empty(),
+            "hidden ones aren't drawn"
         );
     }
 

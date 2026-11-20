@@ -1014,6 +1014,15 @@ fn draw_selection(
         return;
     };
     let stroke = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.85));
+    // Unselected rotation deformers: a thin red needle from the origin to
+    // the handle tip with a dot at the origin (reference look; TODO(Q-0048)).
+    let needle = Color32::from_rgba_unmultiplied(226, 72, 52, 210);
+    for (origin, tip) in doc.idle_rotation_gizmos() {
+        let (o, t) = (to_screen(origin), to_screen(tip));
+        painter.line_segment([o, t], egui::Stroke::new(1.5, needle));
+        painter.circle_filled(o, 6.5, needle.gamma_multiply(0.35));
+        painter.circle_filled(o, 3.5, needle);
+    }
     for &sel in &doc.selection.objects {
         match sel {
             Selection::ArtMesh(a) => {
