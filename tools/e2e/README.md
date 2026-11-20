@@ -11,9 +11,10 @@ tools/e2e/display.sh start      # Xvfb :99 when installed (CI), else weston + ro
 export KEYFORM_E2E_DISPLAY=:7   # the harness refuses any other display
 ```
 
-The harness needs a **debug** build: the UI map (`KEYFORM_UI_MAP`) and the
-scripted file dialogs (`KEYFORM_FILE_DIALOG`) are compiled out of release
-builds.
+The harness needs a build with debug assertions: the UI map
+(`KEYFORM_UI_MAP`) and the scripted file dialogs (`KEYFORM_FILE_DIALOG`) are
+ignored by release builds. A debug build works; `cargo build --profile e2e`
+gives an optimised one that keeps them (for large PSDs).
 
 ```sh
 cargo build -p keyform-app -p keyform-cli
