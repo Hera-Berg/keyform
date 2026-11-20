@@ -31,12 +31,14 @@ pub fn install(ctx: &egui::Context) {
 }
 
 /// Canvas facts of this frame (window points): the view rect, the canvas →
-/// window mapping of three points, and each art mesh's vertices.
+/// window mapping of three points, each art mesh's vertices and the
+/// selected vertices (mesh ID, vertex index).
 pub fn set_canvas(
     rect: egui::Rect,
     to_screen: &dyn Fn([f32; 2]) -> egui::Pos2,
     meshes: Vec<(String, Vec<[f32; 2]>)>,
     art_paths: Vec<(String, Vec<[f32; 2]>)>,
+    selected_points: Vec<(String, usize)>,
 ) {
     let pt = |p: egui::Pos2| json!([p.x, p.y]);
     let list = |v: Vec<(String, Vec<[f32; 2]>)>| -> Vec<Value> {
@@ -61,6 +63,7 @@ pub fn set_canvas(
         "y_axis": pt(to_screen([0.0, 1000.0])),
         "meshes": list(meshes),
         "art_paths": list(art_paths),
+        "selected_points": selected_points.into_iter().map(|(id, i)| json!([id, i])).collect::<Vec<_>>(),
     });
     if let Ok(mut c) = CANVAS.lock() {
         *c = Some(v);

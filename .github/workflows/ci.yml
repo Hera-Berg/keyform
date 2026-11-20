@@ -53,3 +53,49 @@ jobs:
         run: |
           sudo apt-get install -y desktop-file-utils shared-mime-info xdg-utils libglib2.0-bin
           packaging/linux/test-desktop-integration.sh target/debug/keyform fixtures/character.cmo3
+
+  # The scripted rigging session on the committed original PSD: real mouse
+  # and keyboard input on a private Xvfb display, then the output checks
+  # (files open, re-save unchanged, every parameter moves the render,
+  # golden snapshots, physics, motion). Debug builds: the UI map and the
+  # scripted file dialogs are compiled out of release builds.
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      KEYFORM_E2E_DISPLAY: ":99"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries, Xvfb, software rendering, Python packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev \
+            xvfb mesa-vulkan-drivers libgl1-mesa-dri python3-xlib python3-pil
+      - run: cargo build --locked -p keyform-app -p keyform-cli
+      - name: Scripted rigging session
+        run: |
+          tools/e2e/display.sh start
+          timeout 2400 python3 -I tools/e2e/session.py test-data/e2e/character.psd e2e-out \
+            --keyform target/debug/keyform --display :99
+      - name: Check the outputs
+        run: |
+          python3 -I tools/e2e/check.py e2e-out --keyform target/debug/keyform --kf target/debug/kf \
+            --golden test-data/e2e/golden
+      - name: Reachability audit
+        run: |
+          [ -S /tmp/.X11-unix/X99 ] || tools/e2e/display.sh start
+          timeout 2700 python3 -I tools/e2e/audit.py e2e-out/audit --keyform target/debug/keyform \
+            --display :99 --doc docs/reachability.md --check
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-session
+          path: |
+            e2e-out/*.png
+            e2e-out/*.gif
+            e2e-out/*.json
+            e2e-out/snapshots
+            e2e-out/keyform.log
+            e2e-out/audit
+          if-no-files-found: ignore

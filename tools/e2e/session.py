@@ -4,6 +4,10 @@ with real mouse and keyboard input (tools/e2e/harness.py).
 
 usage: session.py PSD OUTDIR [--keyform BIN] [--display :N] [--until N] [--lang ja]
 
+Steps: see STEPS at the end (31: deformers, keys for every standard parameter,
+clipping masks, arm parameters, three hair physics groups, atlas, save,
+export, scene keys, motion export, model3 motion entry).
+
 Outputs in OUTDIR: model.cmo3, model.can3, runtime/ (moc3, model3, physics3,
 motion3), step PNGs, session.gif, report.json (steps, timings, workflow
 notes)."""
@@ -38,8 +42,16 @@ def main():
     # Never the user's own display ($DISPLAY): the private test display only.
     ap.add_argument("--display", default=os.environ.get("KEYFORM_E2E_DISPLAY", ":7"))
     ap.add_argument("--until", type=int, default=999)
+    ap.add_argument("--profile", help="JSON rig profile (layer roles) for another PSD")
     ap.add_argument("--lang")
+    # Debugging only (not an acceptance run): a failed step saves
+    # OUT/checkpoint.cmo3 through File ▸ Save as…; --resume opens such a file
+    # through File ▸ Open… and continues at step --from.
+    ap.add_argument("--resume")
+    ap.add_argument("--from", dest="start", type=int, default=1)
     a = ap.parse_args()
+    if a.profile:
+        R.update(json.load(open(a.profile)))
     allowed = os.environ.get("KEYFORM_E2E_DISPLAY", ":7")
     if a.display != allowed:
         sys.exit(f"refusing to drive display {a.display}: only the private test display {allowed}")
@@ -50,13 +62,21 @@ def main():
     t0 = time.time()
     steps = STEPS
     try:
+        if a.resume:
+            h.answer_dialog(os.path.abspath(a.resume))
+            h.menu("File", "Open…")
+            time.sleep(2.5)
+            h.note(f"DEBUG RUN: resumed from {a.resume} at step {a.start}")
         for i, (name, fn) in enumerate(steps, 1):
             if i > a.until:
                 break
+            if i < a.start:
+                continue
             try:
                 fn(h, psd, out)
             except Exception:
                 dump(h, f"FAILED step {i} ({name})")
+                checkpoint(h, out, i)
                 raise
             h.step(name)
         dump(h, f"step {min(a.until, len(steps))}")
@@ -71,6 +91,24 @@ def main():
             json.dump(report, f, indent=2)
         h.save_gif(os.path.join(out, "session.gif"))
         h.close()
+
+
+def checkpoint(h, out, i):
+    """Saves the model as it is through File ▸ Save as… (debugging aid)."""
+    try:
+        h.key("Escape")
+        for _ in range(4):
+            close = [n for n in h.nodes("Close window", role="Button") if h.reachable(n)]
+            if not close:
+                break
+            h.click(h.center(close[0]))
+        path = os.path.join(out, "checkpoint.cmo3")
+        h.answer_dialog(path)
+        h.menu("File", "Save as…")
+        time.sleep(1.5)
+        print(f"[session] checkpoint before step {i}: {path} (resume with --resume {path} --from {i})")
+    except Exception as e:  # noqa: BLE001
+        print(f"[session] no checkpoint: {e}")
 
 
 # ---- steps ----------------------------------------------------------------
@@ -101,7 +139,7 @@ def inside(p, b, pad=2):
     return b[0] - pad <= p[0] <= b[2] + pad and b[1] - pad <= p[1] <= b[3] + pad
 
 
-def exposed_point(h, mesh_id):
+def exposed_point(h, mesh_id, avoid_vertices=0):
     """A point of the mesh that no mesh drawn above it covers (canvas list
     order is top first), so a click there hits this mesh."""
     meshes = h.canvas()["meshes"]
@@ -113,19 +151,52 @@ def exposed_point(h, mesh_id):
     cx = sum(p[0] for p in pts) / len(pts)
     cy = sum(p[1] for p in pts) / len(pts)
     cands = [(cx, cy)] + [((p[0] + cx) / 2, (p[1] + cy) / 2) for p in pts] + [tuple(p) for p in pts]
+    far = lambda c: all((c[0] - p[0]) ** 2 + (c[1] - p[1]) ** 2 >= avoid_vertices ** 2 for p in pts)
     for c in cands:
-        if inside(c, target["bbox"], -2) and not any(inside(c, b) for b in above):
+        if inside(c, target["bbox"], -2) and not any(inside(c, b) for b in above) and far(c):
             return c
     raise RuntimeError(f"no exposed point on {mesh_id}")
 
 
+def palette_region(h, which):
+    """(top, bottom) of the Parts or the Deformer palette's list area."""
+    tabs = {n["label"]: n for n in h.nodes(role="Tab")}
+    parts, deformer = tabs.get("Parts"), tabs.get("Deformer")
+    if which == "parts":
+        return (parts["rect"][3] + 30 if parts else 0, deformer["rect"][1] if deformer else 10000)
+    return (deformer["rect"][3] if deformer else 0, 10000)
+
+
+def scrolled_row(h, label, which):
+    """A row of the Parts or Deformer palette, wheeled into view when that
+    palette is scrolled (wheel over the palette, toward the row)."""
+    for _ in range(40):
+        top, bottom = palette_region(h, which)
+        rows = [n for n in h.nodes(label, role="Button") if not n.get("disabled") and n["rect"][0] < 450]
+        if not rows:
+            raise RuntimeError(f"no palette row {label!r}")
+        shown = [n for n in rows if h.reachable(n) and top <= n["visible"][1] < bottom]
+        if shown:
+            return shown[0]
+        hidden = [n for n in rows if not n.get("visible")]
+        if not hidden:
+            raise RuntimeError(f"palette row {label!r} not in the {which} palette")
+        n = hidden[0]
+        vis = [x for x in h.nodes(role="Button") if h.reachable(x) and x["rect"][0] < 450 and top <= x["visible"][1] < bottom]
+        if not vis:
+            raise RuntimeError(f"{which} palette not visible")
+        near = min(vis, key=lambda x: abs(x["rect"][1] - n["rect"][1]))
+        h.move(h.vcenter(near))
+        b = 5 if n["rect"][1] > near["rect"][1] else 4
+        h.button(b, True)
+        h.button(b, False)
+        h.settle(2)
+    raise RuntimeError(f"palette row {label!r} not reachable")
+
+
 def palette_row(h, label):
-    """The Parts palette row of an object (the topmost match: the Deformer
-    palette below lists objects too)."""
-    rows = [n for n in h.nodes(label, role="Button") if not n.get("disabled")]
-    if not rows:
-        raise RuntimeError(f"no palette row {label!r}")
-    return min(rows, key=lambda n: n["rect"][1])
+    """The Parts palette row of an object."""
+    return scrolled_row(h, label, "parts")
 
 
 def select_rows(h, ids):
@@ -140,10 +211,36 @@ def select_rows(h, ids):
             h.key_up("Control_L")
 
 
-HEAD = ["Face", "EyeWhiteL", "EyeWhiteR", "IrisL", "IrisR", "EyelidL", "EyelidR",
-        "BrowL", "BrowR", "Mouth", "FrontHair", "BackHair"]
-FACE = ["Face", "EyeWhiteL", "EyeWhiteR", "IrisL", "IrisR", "EyelidL", "EyelidR", "BrowL", "BrowR", "Mouth"]
-HAIR = ["FrontHair", "BackHair"]
+# The rig profile: which layers play which role. The default is the
+# committed generated PSD; --profile FILE.json overrides keys (e.g. for a
+# local PSD with other layer names).
+R = {
+    "face": "Face",                      # the head mesh dragged for Angle X / Y
+    "face_group": ["Face", "EyeWhiteL", "EyeWhiteR", "IrisL", "IrisR", "EyelidL", "EyelidR",
+                   "BrowL", "BrowR", "Mouth", "MouthInner"],
+    "eyelids": ["EyelidL", "EyelidR"],
+    "irises": ["IrisL", "IrisR"],
+    "whites": ["EyeWhiteL", "EyeWhiteR"],
+    "brows": ["BrowL", "BrowR"],
+    "mouth": "Mouth",                    # lower points open, corners form
+    "mouth_inner": ["MouthInner"],       # clipped by mouth_mask
+    "mouth_mask": "Mouth",
+    "hair_front": ["FrontHair"],
+    "hair_side": ["SideHairL", "SideHairR"],
+    "hair_back": ["BackHair"],
+    "body_group": ["Body", "Neck", "ArmL", "ArmR"],
+    "body": "Body",
+    "arms": ["ArmL", "ArmR"],
+    "delete": [],                        # layers to delete after the import
+}
+
+
+def head_group():
+    return R["face_group"] + R["hair_front"] + R["hair_side"] + R["hair_back"]
+
+
+def hair_warps():
+    return [("FrontHairWarp", R["hair_front"]), ("SideHairWarp", R["hair_side"]), ("BackHairWarp", R["hair_back"])]
 
 
 def name_and_create(h, title, name):
@@ -156,35 +253,47 @@ def name_and_create(h, title, name):
 
 
 def deformer_row(h, name):
-    """A Deformer palette row (the lowest match: the Parts palette is above)."""
-    rows = [n for n in h.nodes(name, role="Button") if not n.get("disabled")]
-    if not rows:
-        raise RuntimeError(f"no deformer row {name!r}")
-    return max(rows, key=lambda n: n["rect"][1])
+    """A Deformer palette row."""
+    return scrolled_row(h, name, "deformer")
 
 
 def head_rotation(h, psd, out):
     # Workflow fix found here: the Parts palette had no multi-select
     # (Ctrl/Shift+click) and highlighted only the primary object; eye
     # whites covered by iris and lid can't be Shift+clicked on the canvas.
-    select_rows(h, HEAD)
+    select_rows(h, head_group())
     h.menu("Modeling", "Deformer", "Create rotation deformer…")
     name_and_create(h, "Create Rotation Deformer", "Head")
     deformer_row(h, "Head")
 
 
 def face_warp(h, psd, out):
-    select_rows(h, FACE)
+    select_rows(h, R["face_group"])
     h.menu("Modeling", "Deformer", "Create Warp Deformer…")
     name_and_create(h, "Create Warp Deformer", "FaceWarp")
     deformer_row(h, "FaceWarp")
 
 
-def hair_warp(h, psd, out):
-    select_rows(h, HAIR)
+def make_hair_warps(h, psd, out):
+    for name, meshes in hair_warps():
+        select_rows(h, meshes)
+        h.menu("Modeling", "Deformer", "Create Warp Deformer…")
+        name_and_create(h, "Create Warp Deformer", name)
+        deformer_row(h, name)
+
+
+def body_deformers(h, psd, out):
+    """A warp for the body (with neck and arms), then a rotation deformer
+    per arm inside it."""
+    select_rows(h, R["body_group"])
     h.menu("Modeling", "Deformer", "Create Warp Deformer…")
-    name_and_create(h, "Create Warp Deformer", "HairWarp")
-    deformer_row(h, "HairWarp")
+    name_and_create(h, "Create Warp Deformer", "BodyWarp")
+    deformer_row(h, "BodyWarp")
+    for arm, name in zip(R["arms"], ("ArmLRot", "ArmRRot")):
+        select_rows(h, [arm])
+        h.menu("Modeling", "Deformer", "Create rotation deformer…")
+        name_and_create(h, "Create Rotation Deformer", name)
+        deformer_row(h, name)
 
 
 def param_label(h, name):
@@ -195,10 +304,18 @@ def param_label(h, name):
     over = (reset["rect"][0] - 200, reset["rect"][3] + 150)
     for _ in range(60):
         ls = [n for n in h.nodes(name, role="Label") if abs(n["rect"][0] - (reset["rect"][0] - 347)) < 60 or n["rect"][0] > 440]
-        vis = [n for n in ls if top < n["rect"][1] and n["rect"][3] < bottom]
+        # The label and its slider (the next slider below it) both in view.
+        sliders = h.nodes(role="Slider")
+
+        def slider_ok(lab):
+            below = [x for x in sliders if x["rect"][1] >= lab["rect"][1] and abs(x["rect"][0] - lab["rect"][0]) < 40]
+            return bool(below) and h.reachable(min(below, key=lambda x: x["rect"][1]))
+        vis = [n for n in ls if top < n["rect"][1] and n["rect"][3] < bottom and slider_ok(n)]
         if vis:
             return vis[0]
         up = bool(ls) and ls[0]["rect"][1] <= top
+        if ls and not up and ls[0]["rect"][1] < bottom:
+            up = False  # just below: wheel down a little
         h.move(over)
         b = 4 if up or not ls and _ % 20 >= 10 else 5
         h.button(b, True)
@@ -314,7 +431,24 @@ def select_mesh(h, name):
 def canvas_drag_object(h, mesh_id, dx, dy):
     """Drags the selected object on the canvas from an exposed point of one
     of its meshes (moves it in the current keyform)."""
-    p = h.canvas_point(exposed_point(h, mesh_id))
+    # Away from vertices: a press on a vertex of a selected object picks
+    # the vertex instead of moving the object.
+    try:
+        p = exposed_point(h, mesh_id, avoid_vertices=12)
+    except RuntimeError:
+        # Covered by other meshes' bounds (e.g. irises under the eyelids):
+        # a drag on a selected object takes priority, so a person drags it
+        # where they see it, inside it and away from its vertices.
+        m = h.mesh(mesh_id)
+        pts, b = m["points"], m["bbox"]
+        grid = [(b[0] + (b[2] - b[0]) * fx / 8, b[1] + (b[3] - b[1]) * fy / 8) for fx in range(2, 7) for fy in range(2, 7)]
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        grid.sort(key=lambda c: (c[0] - cx) ** 2 + (c[1] - cy) ** 2)
+        far = [c for c in grid if all((c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 >= 144 for q in pts)]
+        if not far:
+            raise RuntimeError(f"no point of {mesh_id} away from its vertices")
+        p = far[0]
+    p = h.canvas_point(p)
     h.drag(p, (p[0] + dx, p[1] + dy), steps=15)
 
 
@@ -357,18 +491,18 @@ def keys_face_angles(h, psd, out):
         key_op(h, param, "Add 3 keys")
         for where, d in (("min", dmin), ("max", dmax)):
             set_param(h, param, where)
-            canvas_drag_object(h, "Face", *d)
+            canvas_drag_object(h, R["face"], *d)
         reset_params(h)
-    select_deformer(h, "HairWarp")
+    select_deformer(h, "BackHairWarp")
     key_op(h, "Angle X", "Add 3 keys")
     for where, d in (("min", (-10, 0)), ("max", (10, 0))):
         set_param(h, "Angle X", where)
-        canvas_drag_object(h, "BackHair", *d)
+        canvas_drag_object(h, R["hair_back"][0], *d)
     reset_params(h)
 
 
 def keys_eyes(h, psd, out):
-    for mesh, param in (("EyelidL", "EyeL Open"), ("EyelidR", "EyeR Open")):
+    for mesh, param in zip(R["eyelids"], ("EyeL Open", "EyeR Open")):
         select_mesh(h, mesh)
         key_op(h, param, "Add 2 keys")
         set_param(h, param, "min", 0.0, 1.0)
@@ -380,12 +514,12 @@ def keys_eyes(h, psd, out):
 
 
 def keys_mouth(h, psd, out):
-    select_mesh(h, "Mouth")
+    select_mesh(h, R["mouth"])
     key_op(h, "Mouth Open", "Add 2 keys")
     set_param(h, "Mouth Open", "max", 0.0, 1.0)
     # The lower lip's vertices: click one, Shift+click the others (a rubber
     # band would start on the face mesh under the mouth and grab the face).
-    m = h.mesh("Mouth")
+    m = h.mesh(R["mouth"])
     b = m["bbox"]
     low = [p for p in m["points"] if p[1] > b[1] + 0.55 * (b[3] - b[1])]
     if not low:
@@ -399,30 +533,140 @@ def keys_mouth(h, psd, out):
     reset_params(h)
 
 
-def hair_sway_param(h, psd, out):
+def select_points(h, mesh_id, pred):
+    """Selects exactly the mesh's vertices matching pred(point, bbox): click
+    one, then Shift+click to add the others and to drop vertices left
+    selected from before (the canvas map lists the selected vertices)."""
+    m = h.mesh(mesh_id)
+    b = m["bbox"]
+    want = [k for k, p in enumerate(m["points"]) if pred(p, b)]
+    if not want:
+        raise RuntimeError(f"no matching vertices on {mesh_id}")
+    pt = lambda k: tuple(m["points"][k])
+
+    def selected():
+        return {i for mid, i in (h.canvas() or {}).get("selected_points", []) if mid == mesh_id}
+
+    h.click(h.canvas_point(pt(want[0])))
+    for _ in range(3):
+        sel = selected()
+        flip = [k for k in want if k not in sel] + [k for k in sel if k not in want]
+        if not flip:
+            return [pt(k) for k in want]
+        for k in flip:
+            h.key_down("Shift_L")
+            h.click(h.canvas_point(pt(k)))
+            h.key_up("Shift_L")
+    raise RuntimeError(f"could not select vertices {want} of {mesh_id} (selected {sorted(selected())})")
+
+
+def keys_eye_smile(h, psd, out):
+    for mesh, param in zip(R["eyelids"], ("EyeL Smile", "EyeR Smile")):
+        select_mesh(h, mesh)
+        key_op(h, param, "Add 2 keys")
+        set_param(h, param, "max", 0.0, 1.0)
+        h.shortcut("ctrl+a", ("Edit", "Select All"))
+        drag_selected_points(h, mesh, (0.0, 0.0, 1.0, 1.0), 0, 9)
+        reset_params(h)
+
+
+def keys_eyeballs(h, psd, out):
+    select_rows(h, R["irises"])
+    for param, dmin, dmax in (("Eyeball X", (-9, 0), (9, 0)), ("Eyeball Y", (0, 9), (0, -9))):
+        key_op(h, param, "Add 3 keys")
+        for where, d in (("min", dmin), ("max", dmax)):
+            set_param(h, param, where, -1.0, 1.0)
+            canvas_drag_object(h, R["irises"][0], *d)
+        reset_params(h)
+
+
+def keys_brows(h, psd, out):
+    for mesh, py, pa, outer in ((R["brows"][0], "BrowL Y", "BrowL Angle", 0), (R["brows"][1], "BrowR Y", "BrowR Angle", 1)):
+        select_mesh(h, mesh)
+        key_op(h, py, "Add 3 keys")
+        for where, d in (("min", (0, 9)), ("max", (0, -9))):
+            set_param(h, py, where, -1.0, 1.0)
+            canvas_drag_object(h, mesh, *d)
+        reset_params(h)
+        key_op(h, pa, "Add 3 keys")
+        # Drags beyond egui's click tolerance (6 px) so they register.
+        for where, dy in (("min", 10), ("max", -10)):
+            set_param(h, pa, where, -1.0, 1.0)
+            # The inner third of the brow (toward the nose; the outer ends
+            # sit under the front hair) goes down (min) or up (max).
+            pts = select_points(h, mesh, lambda p, b, o=outer: (p[0] > b[2] - (b[2] - b[0]) / 3) if o == 0 else (p[0] < b[0] + (b[2] - b[0]) / 3))
+            h.drag(h.canvas_point(pts[0]), (pts[0][0], pts[0][1] + dy), steps=12)
+        reset_params(h)
+
+
+def keys_mouth_form(h, psd, out):
+    select_mesh(h, R["mouth"])
+    key_op(h, "Mouth Form", "Add 3 keys")
+    for where, dy in (("min", 10), ("max", -10)):
+        set_param(h, "Mouth Form", where, -1.0, 1.0)
+        pts = select_points(h, R["mouth"], lambda p, b: p[0] < b[0] + 0.15 * (b[2] - b[0]) or p[0] > b[2] - 0.15 * (b[2] - b[0]))
+        h.drag(h.canvas_point(pts[0]), (pts[0][0], pts[0][1] + dy), steps=12)
+    reset_params(h)
+
+
+def clipping_masks(h, psd, out):
+    """Irises clipped by the eye whites, the inner mouth by the mouth
+    (Inspector ▸ Add mask…)."""
+    pairs = list(zip(R["irises"], R["whites"])) + [(m, R["mouth_mask"]) for m in R["mouth_inner"]]
+    for mesh, mask in pairs:
+        select_mesh(h, mesh)
+        btn = inspector_field(h, lambda n: n["role"] == "Button" and n["label"] == "Add mask…")
+        h.click(h.center(btn))
+        popup_pick(h, f"{mask}  (", h.center(btn), prefix=True)
+        h.settle(2)
+        clip = inspector_field(h, lambda n: n["role"] == "TextInput" and mask in (n["value"] or ""))
+        if not clip:
+            raise RuntimeError(f"{mesh} shows no mask {mask}")
+
+
+def create_parameter(h, name, pid, lo, default, hi):
     lab = param_label(h, "Angle X")
     h.click(h.center(lab), button=3)
     h.click_label("Create Parameter", role="Button")
     t = "Create Parameter"
     fields = h.in_window(t, role="TextInput")
-    h.set_field(fields[0], "Hair Sway")
+    h.set_field(fields[0], name)
     fields = h.in_window(t, role="TextInput")
-    h.set_field(fields[1], "ParamHairSway")
+    h.set_field(fields[1], pid)
     spins = h.in_window(t, role="SpinButton")
-    for f, v in zip(spins[:3], ("-1", "0", "1")):
+    for f, v in zip(spins[:3], (lo, default, hi)):
         h.set_field(f, v)
         spins = h.in_window(t, role="SpinButton")
     h.click(h.center(h.in_window(t, label="OK")[0]))
-    param_label(h, "Hair Sway")
+    param_label(h, name)
 
 
-def keys_hair_sway(h, psd, out):
-    select_deformer(h, "HairWarp")
-    key_op(h, "Hair Sway", "Add 3 keys")
-    for where, d in (("min", (-16, 0)), ("max", (16, 0))):
-        set_param(h, "Hair Sway", where, -1.0, 1.0)
-        canvas_drag_object(h, "BackHair", *d)
-    reset_params(h)
+def arm_params(h, psd, out):
+    create_parameter(h, "Arm L A", "ParamArmLA", "-10", "0", "10")
+    create_parameter(h, "Arm R A", "ParamArmRA", "-10", "0", "10")
+
+
+def keys_hair(h, psd, out):
+    for warp, param, mesh in (("FrontHairWarp", "Hair Move Front", R["hair_front"][0]),
+                              ("SideHairWarp", "Hair Move Side", R["hair_side"][0]),
+                              ("BackHairWarp", "Hair Move Back", R["hair_back"][0])):
+        select_deformer(h, warp)
+        key_op(h, param, "Add 3 keys")
+        for where, d in (("min", (-14, 0)), ("max", (14, 0))):
+            set_param(h, param, where, -1.0, 1.0)
+            canvas_drag_object(h, mesh, *d)
+        reset_params(h)
+
+
+def keys_arms(h, psd, out):
+    for rot, param, sign in (("ArmLRot", "Arm L A", 1), ("ArmRRot", "Arm R A", -1)):
+        select_deformer(h, rot)
+        key_op(h, param, "Add 3 keys")
+        for where, angle in (("min", -14 * sign), ("max", 14 * sign)):
+            set_param(h, param, where, -10.0, 10.0)
+            field = inspector_field(h, lambda n: n["role"] == "SpinButton" and n["value"].endswith("°"))
+            h.set_field(field, str(angle))
+        reset_params(h)
 
 
 def save_cmo3(h, psd, out):
@@ -440,52 +684,75 @@ def save_cmo3(h, psd, out):
 
 
 def keys_body(h, psd, out):
-    select_mesh(h, "Body")
-    key_op(h, "Body X", "Add 3 keys")
-    for where, d in (("min", (-12, 0)), ("max", (12, 0))):
-        set_param(h, "Body X", where, -10.0, 10.0)
-        canvas_drag_object(h, "Body", *d)
+    select_deformer(h, "BodyWarp")
+    for param, lo, hi, dmin, dmax in (("Body X", -10.0, 10.0, (-12, 0), (12, 0)),
+                                      ("Body Y", -10.0, 10.0, (0, 8), (0, -8)),
+                                      ("Body Z", -10.0, 10.0, (-9, 3), (9, 3))):
+        key_op(h, param, "Add 3 keys")
+        for where, d in (("min", dmin), ("max", dmax)):
+            set_param(h, param, where, lo, hi)
+            canvas_drag_object(h, R["body"], *d)
+        reset_params(h)
+    key_op(h, "Breath", "Add 2 keys")
+    set_param(h, "Breath", "max", 0.0, 1.0)
+    canvas_drag_object(h, R["body"], 0, -9)
     reset_params(h)
+
+
+PHYSICS_GROUPS = [("Hair Front", "Hair Move Front"), ("Hair Side", "Hair Move Side"), ("Hair Back", "Hair Move Back")]
 
 
 def physics_open(h, psd, out):
     h.menu("Modeling", "Physics Settings…")
     h.find("Physics Settings", role="Window")
+
+
+def physics_add_group(h, name):
     h.click(h.center(h.in_window("Physics Settings", label="Add…")[0]))
-    name = h.in_window("Add Physics Group", role="TextInput")[0]
-    h.click(h.center(name))
-    h.type("Hair")
-    h.click(h.center(h.in_window("Add Physics Group", label="OK")[0]))
+    field = h.in_window("Add Physics Group", role="TextInput")[0]
+    h.set_field(field, name)
+    if h.exists("Add Physics Group", role="Window"):
+        h.click(h.center(h.in_window("Add Physics Group", label="OK")[0]))
     time.sleep(0.5)
 
 
-def popup_pick(h, label, anchor, visible=330):
+def popup_pick(h, label, anchor, visible=330, prefix=False):
     """Clicks item `label` of a popup list opened at `anchor` (a menu or a
-    combo list). Items below the popup's visible band (about `visible` px
-    from its first item; clipped items still appear in the map) are first
-    wheeled into view."""
+    combo list; it may open above or below). Items scrolled out of the
+    popup are wheeled into view first."""
+    match = lambda n: n["label"] == label or prefix and n["label"].startswith(label)
     for _ in range(40):
-        items = [n for n in h.nodes(role="Button") if n["rect"][1] > anchor[1] + 4 and abs(n["rect"][0] - anchor[0]) < 160]
-        target = [n for n in items if n["label"] == label]
-        if not target:
+        items = [n for n in h.nodes(role="Button") if abs(n["rect"][0] - anchor[0]) < 160
+                 and abs(n["rect"][1] - anchor[1]) > 4 and match(n)]
+        if not items:
             raise RuntimeError(f"popup item {label!r} not found")
-        t = min(target, key=lambda n: abs(n["rect"][0] - anchor[0]))
-        col = [n for n in items if abs(n["rect"][0] - t["rect"][0]) < 2]
-        first = min(n["rect"][1] for n in col)
-        top = anchor[1] + 6
-        if t["rect"][1] >= top and t["rect"][3] <= top + visible:
+        t = min(items, key=lambda n: abs(n["rect"][0] - anchor[0]) + 0.01 * abs(n["rect"][1] - anchor[1]))
+        if h.reachable(t):
             h.click(h.center(t))
             return
-        h.move((t["rect"][0] + 30, top + 60))
-        h.button(5 if t["rect"][1] > top else 4, True)
-        h.button(5 if t["rect"][1] > top else 4, False)
+        # Wheel over the popup's visible items, toward the target.
+        col = [n for n in h.nodes(role="Button") if abs(n["rect"][0] - t["rect"][0]) < 2 and h.reachable(n)]
+        if not col:
+            raise RuntimeError(f"popup of {label!r} not visible")
+        near = min(col, key=lambda n: abs(n["rect"][1] - t["rect"][1]))
+        h.move(h.vcenter(near))
+        b = 5 if t["rect"][1] > near["rect"][1] else 4
+        h.button(b, True)
+        h.button(b, False)
         h.settle(2)
-        _ = first
     raise RuntimeError(f"popup item {label!r} not reachable")
 
 
-def physics_inputs_outputs(h, psd, out):
+def physics_groups(h, psd, out):
+    for group, output in PHYSICS_GROUPS:
+        physics_add_group(h, group)
+        physics_inputs_outputs(h, output)
+    h.click(h.center(h.in_window("Physics Settings", label="Close window")[0]))
+
+
+def physics_inputs_outputs(h, output):
     w = "Physics Settings"
+    h.click(h.center(h.in_window(w, label="Input settings")[0]))
     for param in ("Angle X", "Body X"):
         add = [n for n in h.in_window(w, label="Add…") if "Input parameter" not in n["label"]]
         # The inputs' Add… sits left of the hint text.
@@ -507,8 +774,7 @@ def physics_inputs_outputs(h, psd, out):
     if not combo:
         raise RuntimeError("no output parameter combo")
     h.click(h.center(combo[-1]))
-    popup_pick(h, "Hair Sway", h.center(combo[-1]))
-    h.click(h.center(h.in_window(w, label="Close window")[0]))
+    popup_pick(h, output, h.center(combo[-1]))
 
 
 def texture_atlas(h, psd, out):
@@ -646,34 +912,58 @@ def viewer_motion(h, psd, out):
         raise RuntimeError(f"model3.json lists no motion: {refs}")
 
 
+def delete_layers(h, psd, out):
+    """Deletes the meshes the profile marks for deletion (e.g. a layer the
+    artist named "[DELETE]"): select the row, Edit ▸ Delete."""
+    for name in R["delete"]:
+        select_mesh(h, name)
+        h.menu("Edit", "Delete")
+        time.sleep(0.5)
+        if any(n for n in h.nodes(name, role="Button") if h.reachable(n)):
+            raise RuntimeError(f"{name} was not deleted")
+
+
 def auto_mesh(h, psd, out):
+    before = sum(len(m["points"]) for m in h.canvas()["meshes"])
     select_all_meshes(h)
     h.menu("Modeling", "ArtMesh", "Automatic Mesh generator…")
     h.find("Automatic Mesh Generator", role="Window")
     h.click_label("OK")
     time.sleep(1)
-    tri = sum(len(m["points"]) for m in h.canvas()["meshes"])
-    if tri <= 4 * 14:
-        raise RuntimeError(f"auto mesh made no new vertices ({tri})")
+    for _ in range(300):  # large PSDs take a while
+        tri = sum(len(m["points"]) for m in h.canvas()["meshes"])
+        if tri > before:
+            break
+        time.sleep(0.5)
+    if tri <= before:
+        raise RuntimeError(f"auto mesh made no new vertices ({before} → {tri})")
 
 
 
 STEPS = [
     ("File ▸ Open the PSD", open_psd),
     ("Create a new model from the PSD", new_model_from_psd),
+    ("Delete the layers marked for deletion", delete_layers),
     ("Select all meshes; Automatic Mesh generator", auto_mesh),
     ("Rotation deformer for the head", head_rotation),
     ("Warp deformer for the face", face_warp),
-    ("Warp deformer for the hair", hair_warp),
+    ("Warp deformers for front, side and back hair", make_hair_warps),
+    ("Body warp and arm rotation deformers", body_deformers),
     ("Head rotation keys on Angle Z", keys_head_angle_z),
     ("Face and hair keys on Angle X / Y", keys_face_angles),
     ("Eyelid keys on EyeL / EyeR Open", keys_eyes),
     ("Mouth Open keys (points dragged)", keys_mouth),
-    ("Create the HairSway parameter", hair_sway_param),
-    ("Hair keys on Hair Sway", keys_hair_sway),
-    ("Body keys on Body Angle X", keys_body),
-    ("Modeling ▸ Physics Settings: add a Hair group", physics_open),
-    ("Physics inputs Angle X / Body X, output Hair Sway", physics_inputs_outputs),
+    ("Eye smile keys", keys_eye_smile),
+    ("Eyeball X / Y keys (both irises)", keys_eyeballs),
+    ("Brow Y and angle keys", keys_brows),
+    ("Mouth Form keys (corners)", keys_mouth_form),
+    ("Clipping masks: irises in the eye whites, inner mouth in the mouth", clipping_masks),
+    ("Create the Arm L A / Arm R A parameters", arm_params),
+    ("Hair sway keys (front, side, back)", keys_hair),
+    ("Arm rotation keys", keys_arms),
+    ("Body X / Y / Z and Breath keys", keys_body),
+    ("Modeling ▸ Physics Settings", physics_open),
+    ("Physics groups Hair Front / Side / Back (inputs Angle X, Body X)", physics_groups),
     ("Texture atlas (create, Auto Layout)", texture_atlas),
     ("File ▸ Save as model.cmo3", save_cmo3),
     ("File ▸ Export For Runtime (moc3, model3, physics3)", export_runtime),

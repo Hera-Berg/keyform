@@ -2,8 +2,9 @@
 """Writes test-data/e2e/character.psd: a small ORIGINAL layered character
 (simple shapes drawn here, no third-party art) for the end-to-end test.
 
-Layers (bottom to top): BackHair, Body, Neck, Face, EyeWhiteL/R, IrisL/R,
-EyelidL/R, BrowL/R, Mouth, FrontHair. RGB, 8 bit, RLE (PackBits) channel data.
+Layers (bottom to top): BackHair, ArmL/R, Body, Neck, Face, EyeWhiteL/R,
+IrisL/R, EyelidL/R, BrowL/R, Mouth, MouthInner (teeth and tongue, meant to
+be clipped by Mouth), SideHairL/R, FrontHair. RGB, 8 bit, RLE (PackBits) channel data.
 Needs Pillow only to draw; the PSD writer is below."""
 import struct
 import sys
@@ -38,6 +39,12 @@ def build():
     L = []
     L.append(("BackHair", layer(lambda d: (d.ellipse([140, 60, 460, 420], fill=HAIR_D),
                                             d.rectangle([150, 240, 450, 560], fill=HAIR_D)))))
+    for name, sx in (("ArmL", 1), ("ArmR", -1)):
+        def arm(d, sx=sx):
+            x = lambda v: 300 + sx * (v - 300)
+            d.polygon([(x(212), 478), (x(176), 486), (x(112), 742), (x(148), 754)], fill=CLOTH_D, outline=LINE)
+            d.ellipse([x(130) - 17, 748, x(130) + 17, 784], fill=SKIN, outline=LINE, width=2)
+        L.append((name, layer(arm)))
     L.append(("Body", layer(lambda d: (d.polygon([(200, 470), (400, 470), (450, 860), (150, 860)], fill=CLOTH, outline=CLOTH_D),
                                         d.line([(300, 480), (300, 850)], fill=CLOTH_D, width=4)))))
     L.append(("Neck", layer(lambda d: d.rectangle([272, 400, 328, 490], fill=SKIN_D))))
@@ -48,6 +55,13 @@ def build():
     L.append(("BrowL", layer(lambda d: d.line([(212, 232), (240, 222), (275, 228)], fill=HAIR_D, width=7))))
     L.append(("BrowR", layer(lambda d: d.line([(325, 228), (360, 222), (388, 232)], fill=HAIR_D, width=7))))
     L.append(("Mouth", layer(lambda d: (d.chord([272, 350, 328, 390], 0, 180, fill=(190, 70, 80, 255), outline=LINE, width=3)))))
+    L.append(("MouthInner", layer(lambda d: (d.rectangle([280, 370, 320, 377], fill=(255, 255, 255, 255)),
+                                              d.ellipse([288, 380, 312, 396], fill=(225, 110, 120, 255))))))
+    for name, sx in (("SideHairL", 1), ("SideHairR", -1)):
+        def side(d, sx=sx):
+            x = lambda v: 300 + sx * (v - 300)
+            d.polygon([(x(158), 190), (x(200), 196), (x(192), 470), (x(166), 488), (x(146), 462)], fill=HAIR, outline=HAIR_D)
+        L.append((name, layer(side)))
     L.append(("FrontHair", layer(lambda d: (d.pieslice([160, 80, 440, 330], 180, 360, fill=HAIR),
                                              d.polygon([(170, 205), (230, 205), (200, 300)], fill=HAIR),
                                              d.polygon([(260, 205), (330, 205), (290, 270)], fill=HAIR),

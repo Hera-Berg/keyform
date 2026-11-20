@@ -191,7 +191,18 @@ pub fn canvas_ui(
                     )
                 })
                 .collect();
-            crate::ui_map::set_canvas(rect, &to_screen, meshes, paths);
+            let selected = doc
+                .selection
+                .points
+                .iter()
+                .filter_map(|(o, i)| match o {
+                    crate::document::Selection::ArtMesh(m) => {
+                        Some((doc.model.art_meshes.get(*m)?.info.id.clone(), *i))
+                    }
+                    _ => None,
+                })
+                .collect();
+            crate::ui_map::set_canvas(rect, &to_screen, meshes, paths, selected);
         }
     }
     let painter = ui.painter_at(rect);

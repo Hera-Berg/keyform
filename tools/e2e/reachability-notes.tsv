@@ -1,0 +1,73 @@
+# label<TAB>how a person reaches it (entries the automatic walk can't reach:
+# they need a state it doesn't set up). Checked by reading the code and, where
+# noted, by the session. Keep in sync with docs/reachability.md.
+Edit ▸ Redo	Enabled after an Undo (Edit ▸ Undo, Ctrl+Z); the audit's states have no undo history
+Ctrl+Shift+Z	Second Redo shortcut (macOS order, menus.md); Edit ▸ Redo shows Ctrl+Y
+Backspace	Same as Delete (Edit ▸ Delete shows "Delete"); for keyboards without a Delete key
+Modeling ▸ Edit Form ▸ Paste Form	Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C) with a mesh or deformer selected
+Modeling ▸ Edit Form ▸ Blend Form…	Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C), like Paste Form
+Mesh Edit ▸ Delete Vertex	In mesh edit with vertices selected (click or rubber-band vertices first)
+Mesh Edit ▸ Mirror Edit ▸ Center of Selected Vertices	In mesh edit with vertices selected
+Confirm (Enter)	Toolbar ▸ Temp path, then click on the canvas: the Tool Details panel shows Confirm / Cancel
+Cancel (Esc)	Toolbar ▸ Temp path (Tool Details panel), as Confirm
+Approved	File ▸ External Application Integration Settings…: one checkbox per connected application (none connect in the audit)
+Remove	File ▸ External Application Integration Settings…: per connected application; also Model Settings rows (motions, expressions) when present
+Rename	Modeling ▸ Physics Settings…: group buttons ▸ Rename… shows the name field and this button
+Unlink	Modeling ▸ Physics Settings…: linked-animation menu, after "Link animation file…" linked a file
+Delete Controller	Animation workspace ▸ Controllers menu, with a parameter controller selected
+< Add all layers as new ArtMesh >	File ▸ Open a PSD with a model open: the PSD dialog lists these first (session step 1 uses the PSD flow without a model)
+< Register PSD file without adding ArtMeshes >	As above (PSD dialog with a model open)
+Don't show again.	Dialog "About Number of Keys for Extended Interpolation" (choosing extended interpolation for a parameter with fewer than 3 keys)
+Don't show again	Dialog "Paste Form: pair copies with targets" (Modeling ▸ Edit Form ▸ Paste Form with several copies)
+Do not show again	Dialog "Issues on Mask Settings" (shown on export when a mask setting needs attention)
+Use Center of Canvas	Modeling ▸ Edit Form ▸ Motion Mirroring…: mirror axis choice (disabled when only deformers are selected)
+Preview	Modeling ▸ Edit Form ▸ Blend Form…: preview checkbox
+Move Here	Drag a row in the Parts palette and right-click the drop target (context menu of a drop target)
+Reverse Clipping ID Lookup	Parts palette: right-click a mesh row that is used as a clipping mask
+Loop motion	Animation workspace ▸ Scene ▸ Scene settings…: export options section
+Restriction for SDK (handles move vertically only)	Animation workspace ▸ Scene ▸ Scene settings…
+Include in motion export	Animation workspace ▸ Scene ▸ Scene settings…
+Select all	Animation workspace ▸ Scene ▸ Bake Animation from Physics…: parameter list buttons
+Unselect all	Animation workspace ▸ Scene ▸ Bake Animation from Physics…
+Insert key to every frame	Animation workspace ▸ Scene ▸ Bake Animation from Physics…: key options
+Delete Form Edit	Animation workspace ▸ Form Edit menu, after a form edit exists for the selected mesh
+✕	Animation workspace ▸ Events menu: delete button next to each event (after "Add at frame …")
+Add key at playhead	Animation workspace: select an attribute row in the timeline, the curve editor shows it (session step: scene keys)
+Remove from model3.json	Model Settings (runtime model): next to each listed motion (session step: viewer motion adds one)
+Reset expression	Model Settings (runtime model) ▸ Expressions, with an expression selected
+Add parameter	Model Settings (runtime model) ▸ Expressions, editing an expression
+Add group	Model Settings (runtime model) ▸ Pose section
+Add HitArea meshes	Model Settings (runtime model) ▸ Hit Areas section
+Bulk Set	Inspector with several meshes selected: draw order
+Draw order group	Inspector with a part selected
+Offscreen drawing	Inspector with a part selected
+Still images (PNG)	File ▸ Export Image/Video ▸ Image sequence / GIF / Video…: format combo box
+Still images (JPEG)	As above: format combo box
+Video (MP4)	As above: format combo box
+scene	As above with Video: frame-rate "scene" button
+Delete the existing keys and add 3 keys	Modeling ▸ Auto Generation of Sway Motion… (and 3D rotation / face generators) when the chosen parameter doesn't have exactly 3 keys
+Flip sway horizontally	Modeling ▸ Auto Generation of Sway Motion…
+Synchronize left and right side setting values	Modeling ▸ face generator dialog (Auto Generation of Face Motion…)
+Update keyform	Generator dialogs (sway / 3D rotation / face): apply button
+Select Model Template…	Modeling ▸ Model Template ▸ Apply Model Template…, after choosing a template file
+Model Template list	As above
+Prioritize duplicate names	As above: mapping options
+Adjust to position and shape	As above
+Automatic mapping	As above
+Adjust to template	As above: blend-mode handling
+Don't change	As above
+Mask	As above
+Color Blend	As above
+Alpha Blend	As above
+Mapping Settings	Animation ▸ Motion-sync Settings…: tab (needs a motion-sync set; the audit's model has none)
+Audio Elements	Animation ▸ Motion-sync Settings…: tab
+Apply	Animation ▸ Motion-sync Settings…
+Confirm	Animation ▸ Motion-sync Settings…
+Set	Animation ▸ Motion-sync Settings…: mapping row
+Add parameter…	Animation ▸ Motion-sync Settings…: mapping
+Stop	Animation ▸ Motion-sync Settings…: audio preview playing
+Bind	Mesh edit of two meshes (select two meshes, Mesh edit): partner binding buttons
+Unbind	As Bind
+Done	Glue tool (Modeling ▸ Glue…): Tool Details panel
+Yes	Closing a modified document (File ▸ Close): save prompt
+No	Closing a modified document: save prompt

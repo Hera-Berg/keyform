@@ -21,8 +21,25 @@ import sys
 
 from PIL import Image, ImageChops
 
-DEFAULT_PARAMS = "ParamAngleX,ParamAngleY,ParamAngleZ,ParamEyeLOpen,ParamEyeROpen,ParamMouthOpenY,ParamBodyAngleX,ParamHairSway"
-DEFAULT_PHYSICS = "ParamAngleX:ParamHairSway"
+DEFAULT_PARAMS = ("ParamAngleX,ParamAngleY,ParamAngleZ,ParamEyeLOpen,ParamEyeROpen,ParamEyeLSmile,ParamEyeRSmile,"
+                  "ParamEyeBallX,ParamEyeBallY,ParamBrowLY,ParamBrowRY,ParamBrowLAngle,ParamBrowRAngle,"
+                  "ParamMouthForm,ParamMouthOpenY,ParamBodyAngleX,ParamBodyAngleY,ParamBodyAngleZ,ParamBreath,"
+                  "ParamHairFront,ParamHairSide,ParamHairBack,ParamArmLA,ParamArmRA")
+DEFAULT_PHYSICS = "ParamAngleX:ParamHairFront,ParamAngleX:ParamHairSide,ParamAngleX:ParamHairBack"
+HEADP = ["Face", "FrontHair", "SideHairL", "SideHairR", "BackHair"]
+# The layers each parameter should move (the session's rig).
+PARTS = {
+    "ParamAngleX": HEADP, "ParamAngleY": HEADP, "ParamAngleZ": HEADP,
+    "ParamEyeLOpen": ["EyelidL"], "ParamEyeROpen": ["EyelidR"],
+    "ParamEyeLSmile": ["EyelidL"], "ParamEyeRSmile": ["EyelidR"],
+    "ParamEyeBallX": ["IrisL", "IrisR"], "ParamEyeBallY": ["IrisL", "IrisR"],
+    "ParamBrowLY": ["BrowL"], "ParamBrowLAngle": ["BrowL"], "ParamBrowRY": ["BrowR"], "ParamBrowRAngle": ["BrowR"],
+    "ParamMouthForm": ["Mouth", "MouthInner"], "ParamMouthOpenY": ["Mouth", "MouthInner"],
+    "ParamBodyAngleX": ["Body", "Neck", "ArmL", "ArmR"], "ParamBodyAngleY": ["Body", "Neck", "ArmL", "ArmR"],
+    "ParamBodyAngleZ": ["Body", "Neck", "ArmL", "ArmR"], "ParamBreath": ["Body", "Neck", "ArmL", "ArmR"],
+    "ParamHairFront": ["FrontHair"], "ParamHairSide": ["SideHairL", "SideHairR"], "ParamHairBack": ["BackHair"],
+    "ParamArmLA": ["ArmL"], "ParamArmRA": ["ArmR"],
+}
 DEFAULT_CURVES = "ParamAngleX,ParamEyeLOpen,ParamEyeROpen,ParamMouthOpenY"
 
 
@@ -48,6 +65,52 @@ def ranges(model3, kf):
     return r
 
 
+def parts_from_profile(r):
+    """Rebuilds PARTS from a session.py rig profile (roles → layers)."""
+    g = lambda k, d: r.get(k, d)
+    head = [g("face", "Face")] + g("hair_front", []) + g("hair_side", []) + g("hair_back", [])
+    lids, irises, brows = g("eyelids", ["EyelidL", "EyelidR"]), g("irises", ["IrisL", "IrisR"]), g("brows", ["BrowL", "BrowR"])
+    mouth = [g("mouth", "Mouth")] + g("mouth_inner", [])
+    body = g("body_group", ["Body"])
+    arms = g("arms", ["ArmL", "ArmR"])
+    PARTS.update({
+        "ParamAngleX": head, "ParamAngleY": head, "ParamAngleZ": head,
+        "ParamEyeLOpen": lids[:1], "ParamEyeROpen": lids[1:], "ParamEyeLSmile": lids[:1], "ParamEyeRSmile": lids[1:],
+        "ParamEyeBallX": irises, "ParamEyeBallY": irises,
+        "ParamBrowLY": brows[:1], "ParamBrowLAngle": brows[:1], "ParamBrowRY": brows[1:], "ParamBrowRAngle": brows[1:],
+        "ParamMouthForm": mouth, "ParamMouthOpenY": mouth,
+        "ParamBodyAngleX": body, "ParamBodyAngleY": body, "ParamBodyAngleZ": body, "ParamBreath": body,
+        "ParamHairFront": g("hair_front", []), "ParamHairSide": g("hair_side", []), "ParamHairBack": g("hair_back", []),
+        "ParamArmLA": arms[:1], "ParamArmRA": arms[1:],
+    })
+
+
+def layer_boxes(psd):
+    try:
+        im = Image.open(psd)
+        return {name: box for name, _mode, box in (l[:3] for l in im.layers)}, im.size
+    except Exception:  # noqa: BLE001
+        return {}, None
+
+
+def changed_inside(a, b, boxes, canvas, margin=40, threshold=12):
+    """Fraction of the pixels that changed between renders a and b lying in
+    the union of `boxes` (canvas px, grown by `margin`)."""
+    a, b = Image.open(a).convert("RGBA"), Image.open(b).convert("RGBA")
+    k = canvas[1] / a.height
+    d = ImageChops.difference(a, b)
+    px = list(d.get_flattened_data()) if hasattr(d, "get_flattened_data") else list(d.getdata())
+    total = inside = 0
+    for i, p in enumerate(px):
+        if max(p) <= threshold:
+            continue
+        total += 1
+        x, y = (i % a.width) * k, (i // a.width) * k
+        if any(bx[0] - margin <= x <= bx[2] + margin and bx[1] - margin <= y <= bx[3] + margin for bx in boxes):
+            inside += 1
+    return (inside / total if total else 1.0), total
+
+
 def diff_stats(a, b, threshold=3):
     d = ImageChops.difference(a.convert("RGBA"), b.convert("RGBA"))
     px = list(d.get_flattened_data()) if hasattr(d, 'get_flattened_data') else list(d.getdata())
@@ -66,6 +129,8 @@ def main():
     ap.add_argument("--params", default=DEFAULT_PARAMS)
     ap.add_argument("--physics", default=DEFAULT_PHYSICS)
     ap.add_argument("--curves", default=DEFAULT_CURVES)
+    ap.add_argument("--profile", help="session.py rig profile (JSON) for the right-parts map")
+    ap.add_argument("--psd", default="test-data/e2e/character.psd", help="for the layer bounds of the right-parts check")
     ap.add_argument("--ranges", default="", help="ID=min:max,... for parameters not in the model's standard set")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
@@ -94,7 +159,11 @@ def main():
     std = {"ParamAngleX": (-30, 30), "ParamAngleY": (-30, 30), "ParamAngleZ": (-30, 30),
            "ParamEyeLOpen": (0, 1), "ParamEyeROpen": (0, 1), "ParamMouthOpenY": (0, 1),
            "ParamBodyAngleX": (-10, 10), "ParamBodyAngleY": (-10, 10), "ParamBodyAngleZ": (-10, 10),
-           "ParamHairSway": (-1, 1)}
+           "ParamHairSway": (-1, 1), "ParamEyeLSmile": (0, 1), "ParamEyeRSmile": (0, 1),
+           "ParamEyeBallX": (-1, 1), "ParamEyeBallY": (-1, 1), "ParamBrowLY": (-1, 1), "ParamBrowRY": (-1, 1),
+           "ParamBrowLAngle": (-1, 1), "ParamBrowRAngle": (-1, 1), "ParamMouthForm": (-1, 1), "ParamBreath": (0, 1),
+           "ParamHairFront": (-1, 1), "ParamHairSide": (-1, 1), "ParamHairBack": (-1, 1),
+           "ParamArmLA": (-10, 10), "ParamArmRA": (-10, 10)}
     for item in filter(None, a.ranges.split(",")):
         k, v = item.split("=")
         lo, hi = v.split(":")
@@ -105,6 +174,9 @@ def main():
     code, msg = run([a.kf, "render", model3, base, "--size", "400"])
     record("render at defaults", code == 0, msg)
     images = {"default": base}
+    boxes, canvas = layer_boxes(a.psd)
+    if a.profile:
+        parts_from_profile(json.load(open(a.profile)))
     defaults = {"ParamEyeLOpen": 1.0, "ParamEyeROpen": 1.0, "ParamEyeLSmile": 0.0}
     for pid in filter(None, a.params.split(",")):
         lo, hi = std.get(pid, (-30, 30))
@@ -129,6 +201,11 @@ def main():
             mean, bad = diff_stats(Image.open(other), Image.open(paths[tag]))
             ref = "the other end" if other != base else "the default"
             record(f"{pid} at {tag} ({v}) moves the model", bad > 20, f"{bad} pixels differ from {ref}")
+            want = [boxes[n] for n in PARTS.get(pid, []) if n in boxes]
+            if want and bad > 20:
+                frac, n = changed_inside(other, paths[tag], want, canvas)
+                record(f"{pid} at {tag} moves the right parts ({', '.join(PARTS[pid])})", frac >= 0.8,
+                       f"{frac:.0%} of {n} changed pixels on those layers")
     if a.golden:
         os.makedirs(a.golden, exist_ok=True)
         for name, path in images.items():
