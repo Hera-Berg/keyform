@@ -330,6 +330,209 @@ fn contours(f: &Field, level: f32) -> Vec<Vec<[f32; 2]>> {
     loops
 }
 
+/// A thin stroke's outer ring and skeleton points (working px).
+type ThinMesh = (Vec<[f32; 2]>, Vec<[f32; 2]>);
+
+/// Thin strokes (skeleton mode), as the reference builds them — fitted from
+/// black-box measurements of straight and curved strokes 60 / 120 / 240 px
+/// long and 4–20 px thick (TODO(Q-0047), table in the tests): the centre
+/// line, extended to the stroke's ends, is split into k = max(3,
+/// round(length / (interior spacing / 2))) equal intervals; each of the k + 1
+/// stations gets a ring point on either side, 0.55 × the outer margin
+/// outside the stroke; one ring point sits on the axis beyond each end, half
+/// an interval + 1 px out; and the k skeleton points are the interval
+/// midpoints. So the ring has 2k + 4 points. Returns None when the ridge
+/// isn't a single stroke (branches, blobs): the caller falls back to the
+/// contour ring.
+fn thin_stroke(
+    pixels: &[usize],
+    inside: &Field,
+    w: usize,
+    interior_spacing: f32,
+    outer_margin: f32,
+    inner_margin: f32,
+) -> Option<ThinMesh> {
+    // Ridge pixels: local maxima of the inside distance.
+    let h = inside.h;
+    let ridge: Vec<[f32; 2]> = pixels
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let (x, y) = (i % w, i / w);
+            let d = inside.v[i];
+            d > 0.0
+                && (y.saturating_sub(1)..=(y + 1).min(h - 1)).all(|yy| {
+                    (x.saturating_sub(1)..=(x + 1).min(w - 1)).all(|xx| inside.at(xx, yy) <= d)
+                })
+        })
+        .map(|i| [(i % w) as f32 + 0.5, (i / w) as f32 + 0.5])
+        .collect();
+    if ridge.len() < 2 {
+        return None;
+    }
+    // Order them into a centre line: start at the point farthest from an
+    // arbitrary one (an end), then walk to the nearest unvisited neighbour.
+    let far = |from: [f32; 2]| {
+        ridge
+            .iter()
+            .copied()
+            .max_by(|a, b| dist(*a, from).total_cmp(&dist(*b, from)))
+            .unwrap_or(from)
+    };
+    let a = far(ridge[0]);
+    let start = a;
+    let end = far(a);
+    // March along the stroke from one end: step 2 px along the heading,
+    // re-centre across the stroke where the inside distance peaks, and
+    // stop on leaving it. (Ridge pixels of curved thin strokes have gaps,
+    // so walking from pixel to pixel stopped early.)
+    let half_max = ridge
+        .iter()
+        .map(|&p| inside.sample(p))
+        .fold(0.0f32, f32::max);
+    let mut heading = {
+        let near: Vec<[f32; 2]> = ridge
+            .iter()
+            .copied()
+            .filter(|&p| dist(p, start) <= 6.0 && dist(p, start) > 0.3)
+            .collect();
+        let (mut dx, mut dy) = (end[0] - start[0], end[1] - start[1]);
+        if !near.is_empty() {
+            dx = near.iter().map(|p| p[0] - start[0]).sum::<f32>();
+            dy = near.iter().map(|p| p[1] - start[1]).sum::<f32>();
+        }
+        let l = dx.hypot(dy).max(1e-6);
+        [dx / l, dy / l]
+    };
+    let mut line = vec![start];
+    let span = half_max + 2.0;
+    for _ in 0..4000 {
+        let cur = line[line.len() - 1];
+        let ahead = [cur[0] + 2.0 * heading[0], cur[1] + 2.0 * heading[1]];
+        let normal = [-heading[1], heading[0]];
+        let mut best = (f32::MIN, ahead);
+        let mut o = -span;
+        while o <= span {
+            let q = [ahead[0] + o * normal[0], ahead[1] + o * normal[1]];
+            let d = inside.sample(q) - 0.01 * o.abs(); // ties: stay central
+            if d > best.0 {
+                best = (d, q);
+            }
+            o += 0.25;
+        }
+        if best.0 <= 0.0 {
+            break;
+        }
+        let p = best.1;
+        let d = [p[0] - cur[0], p[1] - cur[1]];
+        let l = d[0].hypot(d[1]).max(1e-6);
+        let h = [
+            0.5 * heading[0] + 0.5 * d[0] / l,
+            0.5 * heading[1] + 0.5 * d[1] / l,
+        ];
+        let hl = h[0].hypot(h[1]).max(1e-6);
+        heading = [h[0] / hl, h[1] / hl];
+        line.push(p);
+    }
+    // A single stroke: the path passes near (almost) every ridge pixel.
+    let seg_dist = |p: [f32; 2], a: [f32; 2], b: [f32; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l2 = (dx * dx + dy * dy).max(1e-9);
+        let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0);
+        (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+    };
+    let near_path = |q: [f32; 2]| {
+        line.windows(2)
+            .any(|w| seg_dist(q, w[0], w[1]) <= half_max + 1.5)
+    };
+    let covered = ridge.iter().filter(|&&q| near_path(q)).count();
+    if (covered as f32) < 0.8 * ridge.len() as f32 || line.len() < 2 {
+        return None; // branched or blob-like: not a single stroke
+    }
+    // Smooth the pixel path, then extend it to the stroke's ends along the
+    // end tangents.
+    let smooth: Vec<[f32; 2]> = (0..line.len())
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(2), (i + 2).min(line.len() - 1));
+            let n = (b - a + 1) as f32;
+            let sx: f32 = line[a..=b].iter().map(|p| p[0]).sum();
+            let sy: f32 = line[a..=b].iter().map(|p| p[1]).sum();
+            [sx / n, sy / n]
+        })
+        .collect();
+    let mut path = smooth;
+    let tangent = |a: [f32; 2], b: [f32; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = dx.hypot(dy).max(1e-6);
+        [dx / l, dy / l]
+    };
+    let reach = |p: [f32; 2], t: [f32; 2]| {
+        let mut q = p;
+        for _ in 0..200 {
+            let n = [q[0] + 0.25 * t[0], q[1] + 0.25 * t[1]];
+            if inside.sample(n) <= 0.0 {
+                break;
+            }
+            q = n;
+        }
+        q
+    };
+    let k = path.len();
+    let back = tangent(path[(k - 1).min(3)], path[0]);
+    let front = tangent(path[k.saturating_sub(4)], path[k - 1]);
+    let (head, tail) = (reach(path[0], back), reach(path[k - 1], front));
+    path.insert(0, head);
+    path.push(tail);
+    // Arc lengths.
+    let mut acc = vec![0.0f32];
+    for i in 1..path.len() {
+        acc.push(acc[i - 1] + dist(path[i - 1], path[i]));
+    }
+    let length = acc[acc.len() - 1];
+    if length < 1.0 {
+        return None;
+    }
+    let at = |s: f32| -> ([f32; 2], [f32; 2]) {
+        let s = s.clamp(0.0, length);
+        let i = acc.partition_point(|&a| a < s).clamp(1, path.len() - 1);
+        let (a, b) = (path[i - 1], path[i]);
+        let f = ((s - acc[i - 1]) / (acc[i] - acc[i - 1]).max(1e-6)).clamp(0.0, 1.0);
+        (
+            [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])],
+            tangent(a, b),
+        )
+    };
+    let intervals = ((length / (interior_spacing * 0.5)).round() as usize).max(3);
+    let step = length / intervals as f32;
+    let half = ridge
+        .iter()
+        .map(|&p| inside.sample(p))
+        .fold(0.0f32, f32::max);
+    if half >= 0.9 * inner_margin {
+        return None; // thick enough for the contour ring (the reference too)
+    }
+    let off = half + 0.55 * outer_margin;
+    let mut side_a = Vec::new();
+    let mut side_b = Vec::new();
+    for i in 0..=intervals {
+        let (p, t) = at(i as f32 * step);
+        let n = [-t[1], t[0]];
+        side_a.push([p[0] + n[0] * off, p[1] + n[1] * off]);
+        side_b.push([p[0] - n[0] * off, p[1] - n[1] * off]);
+    }
+    let cap = step * 0.5 + 1.0;
+    let (p0, t0) = at(0.0);
+    let (p1, t1) = at(length);
+    let mut ring = vec![[p0[0] - t0[0] * cap, p0[1] - t0[1] * cap]];
+    ring.extend(side_a);
+    ring.push([p1[0] + t1[0] * cap, p1[1] + t1[1] * cap]);
+    ring.extend(side_b.into_iter().rev());
+    let skeleton = (0..intervals)
+        .map(|i| at((i as f32 + 0.5) * step).0)
+        .collect();
+    Some((ring, skeleton))
+}
+
 fn area(p: &[[f32; 2]]) -> f32 {
     let n = p.len();
     (0..n)
@@ -637,10 +840,9 @@ pub fn generate(
         for &i in pixels {
             mine[i] = true;
         }
-        // Size factor f (§3.3 step 5). TODO(Q-0047): for thin layers the
-        // reference behaves as if f were at its maximum (denser ring,
-        // smaller margin, more skeleton points); single-island meshes get
-        // f = 1 here as the spec says.
+        // Size factor f (§3.3 step 5); the editor's size ratio is 1.0, so a
+        // mesh with one island gets f = 1 (Q-0047 answer). Thin strokes are
+        // denser for another reason: see thin_stroke.
         let a = ((pixels.len() as f32).sqrt() / (largest as f32).sqrt()).max(0.1);
         let t = (a.ln() / 0.1f32.ln()).clamp(0.0, 1.0);
         let f = density_scale.max(1e-3).powf(t);
@@ -670,7 +872,7 @@ pub fn generate(
         else {
             continue;
         };
-        let outer = place_ring(&contour, h_ring, s.min_bounds_pt.max(3) as usize);
+        let mut outer = place_ring(&contour, h_ring, s.min_bounds_pt.max(3) as usize);
         if outer.len() < 3 {
             continue;
         }
@@ -701,7 +903,23 @@ pub fn generate(
                 inner.clear();
             }
         }
-        if inner.is_empty() {
+        let thin = if inner.is_empty() {
+            thin_stroke(
+                pixels,
+                &inside,
+                w,
+                interior_spacing,
+                outer_margin,
+                inner_margin,
+            )
+        } else {
+            None
+        };
+        if let Some((ring_pts, skeleton)) = thin {
+            // TODO(Q-0047): fitted from the black box (see thin_stroke).
+            outer = ring_pts;
+            interior = skeleton;
+        } else if inner.is_empty() {
             // Skeleton mode: the inside distance ridge at interior spacing.
             let mut ridge: Vec<(usize, f32)> = pixels
                 .iter()
@@ -889,6 +1107,86 @@ mod tests {
         let heavy = generate(&img, IDENTITY, &presets()[2].1, 1.0);
         assert!(little.points.len() < g.points.len());
         assert!(heavy.points.len() > g.points.len());
+    }
+
+    /// A stroke (straight, or a 120° arc) of the given length and
+    /// thickness, rasterised into an image cropped to its bounds (as a PSD
+    /// layer's model image is).
+    fn stroke(kind: char, length: f32, t: f32) -> AlphaImage {
+        let centre: Vec<[f32; 2]> = (0..64)
+            .map(|i| {
+                let u = i as f32 / 63.0;
+                if kind == 'S' {
+                    [u * length, 0.0]
+                } else {
+                    let sweep = 120f32.to_radians();
+                    let r = length / sweep;
+                    let a = 270f32.to_radians() - sweep / 2.0 + sweep * u;
+                    [r * a.cos(), r * a.sin()]
+                }
+            })
+            .collect();
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for i in 0..centre.len() {
+            let (a, b) = (
+                centre[i.saturating_sub(1)],
+                centre[(i + 1).min(centre.len() - 1)],
+            );
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx.hypot(dy).max(1e-6);
+            let n = [-dy / l * t / 2.0, dx / l * t / 2.0];
+            left.push([centre[i][0] + n[0], centre[i][1] + n[1]]);
+            right.push([centre[i][0] - n[0], centre[i][1] - n[1]]);
+        }
+        let mut poly = left;
+        poly.extend(right.into_iter().rev());
+        let (x0, y0) = poly
+            .iter()
+            .fold((f32::MAX, f32::MAX), |m, p| (m.0.min(p[0]), m.1.min(p[1])));
+        let (x1, y1) = poly
+            .iter()
+            .fold((f32::MIN, f32::MIN), |m, p| (m.0.max(p[0]), m.1.max(p[1])));
+        let (w, h) = ((x1 - x0).ceil() as u32 + 1, (y1 - y0).ceil() as u32 + 1);
+        let alpha = (0..w * h)
+            .map(|i| {
+                let p = [x0 + (i % w) as f32 + 0.5, y0 + (i / w) as f32 + 0.5];
+                if in_polygon(p, &poly) {
+                    255
+                } else {
+                    0
+                }
+            })
+            .collect();
+        AlphaImage {
+            width: w,
+            height: h,
+            alpha,
+        }
+    }
+
+    /// Thin strokes against the reference editor's Automatic Mesh (default
+    /// settings), measured in the black box (Q-0047): (ring, inner) vertex
+    /// counts for straight and curved strokes, thickness 4–20 px. The ring
+    /// is 2k + 4 points and the k inner points sit on the stroke, with
+    /// k = max(3, round(working length / 25)).
+    #[test]
+    fn thin_strokes_match_the_reference() {
+        let defaults = MeshGenerateSetting::default();
+        for kind in ['S', 'C'] {
+            for (length, ring, inner) in [(60.0, 10, 3), (120.0, 10, 3), (240.0, 14, 5)] {
+                for t in [4.0, 7.0, 12.0, 20.0] {
+                    let g = generate(&stroke(kind, length, t), IDENTITY, &defaults, 2.0);
+                    let ring_points = g.edges.len();
+                    let inner_points = g.points.len() - ring_points;
+                    assert_eq!(
+                        (ring_points, inner_points),
+                        (ring, inner),
+                        "{kind}{length}_T{t}: ring / inner"
+                    );
+                }
+            }
+        }
     }
 
     /// Found by the e2e session: the same layer gave a different mesh on

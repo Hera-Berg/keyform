@@ -1,0 +1,722 @@
+[
+ {
+  "layer": "S060_T04",
+  "kind": "S",
+  "length": 60,
+  "thickness": 4,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 192.9,
+   "spacing": 19.3,
+   "margin": 10.9,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 197.8,
+   "spacing": 19.8,
+   "margin": 11.4,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S060_T07",
+  "kind": "S",
+  "length": 60,
+  "thickness": 7,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 197.8,
+   "spacing": 19.8,
+   "margin": 10.7,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 202.6,
+   "spacing": 20.3,
+   "margin": 11.4,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S060_T12",
+  "kind": "S",
+  "length": 60,
+  "thickness": 12,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 204.5,
+   "spacing": 20.4,
+   "margin": 9.8,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 210.3,
+   "spacing": 21.0,
+   "margin": 10.6,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S060_T20",
+  "kind": "S",
+  "length": 60,
+  "thickness": 20,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 218.6,
+   "spacing": 21.9,
+   "margin": 9.1,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 229.0,
+   "spacing": 22.9,
+   "margin": 10.4,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S060_T40",
+  "kind": "S",
+  "length": 60,
+  "thickness": 40,
+  "m0": {
+   "total": 8,
+   "ring": 6,
+   "perimeter": 304.1,
+   "spacing": 50.7,
+   "margin": 17.5,
+   "skeleton": 2,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 6,
+   "ring": 5,
+   "perimeter": 291.4,
+   "spacing": 58.3,
+   "margin": 13.8,
+   "skeleton": 1,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S120_T04",
+  "kind": "S",
+  "length": 120,
+  "thickness": 4,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 344.2,
+   "spacing": 34.4,
+   "margin": 13.0,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 348.9,
+   "spacing": 34.9,
+   "margin": 13.3,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S120_T07",
+  "kind": "S",
+  "length": 120,
+  "thickness": 7,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 348.8,
+   "spacing": 34.9,
+   "margin": 13.1,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 352.0,
+   "spacing": 35.2,
+   "margin": 13.3,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S120_T12",
+  "kind": "S",
+  "length": 120,
+  "thickness": 12,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 353.8,
+   "spacing": 35.4,
+   "margin": 12.2,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 358.1,
+   "spacing": 35.8,
+   "margin": 12.5,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S120_T20",
+  "kind": "S",
+  "length": 120,
+  "thickness": 20,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 364.8,
+   "spacing": 36.5,
+   "margin": 11.4,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 370.4,
+   "spacing": 37.0,
+   "margin": 12.0,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S120_T40",
+  "kind": "S",
+  "length": 120,
+  "thickness": 40,
+  "m0": {
+   "total": 9,
+   "ring": 6,
+   "perimeter": 426.7,
+   "spacing": 71.1,
+   "margin": 14.2,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 6,
+   "ring": 5,
+   "perimeter": 392.1,
+   "spacing": 78.4,
+   "margin": 15.2,
+   "skeleton": 1,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S240_T04",
+  "kind": "S",
+  "length": 240,
+  "thickness": 4,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 595.7,
+   "spacing": 42.6,
+   "margin": 12.9,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 602.3,
+   "spacing": 43.0,
+   "margin": 13.1,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S240_T07",
+  "kind": "S",
+  "length": 240,
+  "thickness": 7,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 599.8,
+   "spacing": 42.8,
+   "margin": 13.1,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 604.9,
+   "spacing": 43.2,
+   "margin": 13.3,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S240_T12",
+  "kind": "S",
+  "length": 240,
+  "thickness": 12,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 604.2,
+   "spacing": 43.2,
+   "margin": 12.3,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 610.3,
+   "spacing": 43.6,
+   "margin": 12.6,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S240_T20",
+  "kind": "S",
+  "length": 240,
+  "thickness": 20,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 614.2,
+   "spacing": 43.9,
+   "margin": 11.8,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 622.3,
+   "spacing": 44.4,
+   "margin": 12.3,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "S240_T40",
+  "kind": "S",
+  "length": 240,
+  "thickness": 40,
+  "m0": {
+   "total": 15,
+   "ring": 10,
+   "perimeter": 665.9,
+   "spacing": 66.6,
+   "margin": 16.9,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 10,
+   "ring": 7,
+   "perimeter": 625.7,
+   "spacing": 89.4,
+   "margin": 16.6,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C060_T04",
+  "kind": "C",
+  "length": 60,
+  "thickness": 4,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 184.5,
+   "spacing": 18.4,
+   "margin": 10.8,
+   "skeleton": 2,
+   "other_inner": 1
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 202.2,
+   "spacing": 20.2,
+   "margin": 13.2,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C060_T07",
+  "kind": "C",
+  "length": 60,
+  "thickness": 7,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 191.2,
+   "spacing": 19.1,
+   "margin": 10.4,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 210.5,
+   "spacing": 21.0,
+   "margin": 12.9,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C060_T12",
+  "kind": "C",
+  "length": 60,
+  "thickness": 12,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 203.1,
+   "spacing": 20.3,
+   "margin": 9.8,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 226.7,
+   "spacing": 22.7,
+   "margin": 13.0,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C060_T20",
+  "kind": "C",
+  "length": 60,
+  "thickness": 20,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 222.2,
+   "spacing": 22.2,
+   "margin": 8.2,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 252.3,
+   "spacing": 25.2,
+   "margin": 13.2,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C060_T40",
+  "kind": "C",
+  "length": 60,
+  "thickness": 40,
+  "m0": {
+   "total": 6,
+   "ring": 4,
+   "perimeter": 303.1,
+   "spacing": 75.8,
+   "margin": 19.7,
+   "skeleton": 2,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 6,
+   "ring": 5,
+   "perimeter": 293.6,
+   "spacing": 58.7,
+   "margin": 13.2,
+   "skeleton": 1,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C120_T04",
+  "kind": "C",
+  "length": 120,
+  "thickness": 4,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 330.9,
+   "spacing": 33.1,
+   "margin": 14.8,
+   "skeleton": 1,
+   "other_inner": 2
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 355.8,
+   "spacing": 35.6,
+   "margin": 15.3,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C120_T07",
+  "kind": "C",
+  "length": 120,
+  "thickness": 7,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 330.1,
+   "spacing": 33.0,
+   "margin": 13.9,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 358.2,
+   "spacing": 35.8,
+   "margin": 15.0,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C120_T12",
+  "kind": "C",
+  "length": 120,
+  "thickness": 12,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 337.7,
+   "spacing": 33.8,
+   "margin": 12.6,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 367.6,
+   "spacing": 36.8,
+   "margin": 14.6,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C120_T20",
+  "kind": "C",
+  "length": 120,
+  "thickness": 20,
+  "m0": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 359.1,
+   "spacing": 35.9,
+   "margin": 11.2,
+   "skeleton": 3,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 13,
+   "ring": 10,
+   "perimeter": 387.4,
+   "spacing": 38.7,
+   "margin": 14.6,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C120_T40",
+  "kind": "C",
+  "length": 120,
+  "thickness": 40,
+  "m0": {
+   "total": 12,
+   "ring": 8,
+   "perimeter": 424.7,
+   "spacing": 53.1,
+   "margin": 16.6,
+   "skeleton": 4,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 6,
+   "ring": 5,
+   "perimeter": 390.2,
+   "spacing": 78.0,
+   "margin": 16.4,
+   "skeleton": 1,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C240_T04",
+  "kind": "C",
+  "length": 240,
+  "thickness": 4,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 582.6,
+   "spacing": 41.6,
+   "margin": 14.3,
+   "skeleton": 2,
+   "other_inner": 3
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 605.7,
+   "spacing": 43.3,
+   "margin": 15.3,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C240_T07",
+  "kind": "C",
+  "length": 240,
+  "thickness": 7,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 587.1,
+   "spacing": 41.9,
+   "margin": 14.3,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 610.2,
+   "spacing": 43.6,
+   "margin": 15.0,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C240_T12",
+  "kind": "C",
+  "length": 240,
+  "thickness": 12,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 595.1,
+   "spacing": 42.5,
+   "margin": 13.7,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 615.5,
+   "spacing": 44.0,
+   "margin": 14.5,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C240_T20",
+  "kind": "C",
+  "length": 240,
+  "thickness": 20,
+  "m0": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 593.1,
+   "spacing": 42.4,
+   "margin": 11.4,
+   "skeleton": 5,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 19,
+   "ring": 14,
+   "perimeter": 631.6,
+   "spacing": 45.1,
+   "margin": 14.4,
+   "skeleton": 5,
+   "other_inner": 0
+  }
+ },
+ {
+  "layer": "C240_T40",
+  "kind": "C",
+  "length": 240,
+  "thickness": 40,
+  "m0": {
+   "total": 16,
+   "ring": 9,
+   "perimeter": 652.1,
+   "spacing": 72.5,
+   "margin": 15.8,
+   "skeleton": 7,
+   "other_inner": 0
+  },
+  "m1": {
+   "total": 10,
+   "ring": 7,
+   "perimeter": 622.7,
+   "spacing": 89.0,
+   "margin": 18.1,
+   "skeleton": 3,
+   "other_inner": 0
+  }
+ }
+]
