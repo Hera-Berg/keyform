@@ -31,6 +31,9 @@ pub struct ViewGpu {
     /// Guides snapping the current drag (vertical, horizontal): drawn
     /// highlighted.
     snapping: [Option<usize>; 2],
+    /// The dragged rotation deformer, whose origin also snaps to the other
+    /// rotation deformers' origins (view-aids.md §1).
+    snap_rotation: Option<usize>,
     /// The texture page shown in mesh edit mode (texture index).
     mesh_texture: Option<(usize, egui::TextureHandle)>,
     /// The texture images the renderer was built with (data address and
@@ -362,7 +365,6 @@ pub fn canvas_ui(
         &to_screen,
         gpu.guide_drag,
         gpu.snapping,
-        tokens.accent,
     );
     if doc.mesh_edit.is_some() {
         draw_mesh_edit(ui.ctx(), &painter, doc, gpu, rect, &to_screen, tokens);
@@ -600,6 +602,7 @@ fn arrow_tool(
     if !ph.dragging {
         gpu.snap_anchor = None;
         gpu.snapping = [None, None];
+        gpu.snap_rotation = None;
     }
     // Double-clicking an art mesh starts mesh edit (Environment Settings ▸
     // Modeling, default on; settings-keys.md).
@@ -692,6 +695,18 @@ fn arrow_tool(
                 if let Err(e) = doc.drag_begin(points) {
                     doc.notice = Some(e);
                 }
+                // A rotation deformer dragged alone snaps by its origin.
+                if let ([o @ crate::document::Selection::Deformer(d)], false, true, true) = (
+                    doc.selection.objects.as_slice(),
+                    points,
+                    aids.snap_guides,
+                    aids.show_guides,
+                ) {
+                    if let Some((origin, _, _)) = doc.rotation_widget(*o) {
+                        gpu.snap_anchor = Some(origin);
+                        gpu.snap_rotation = Some(*d);
+                    }
+                }
             }
         }
     }
@@ -737,13 +752,26 @@ fn arrow_tool(
                 let mut total = [cb[0] - ca[0], cb[1] - ca[1]];
                 // Snap Moving Vertices to Guide: the grabbed point lands
                 // on guides within 2 screen pixels (view-aids.md §1).
-                if let Some(anchor) = gpu.snap_anchor.filter(|_| aids.guides_on(doc)) {
+                if let Some(anchor) = gpu.snap_anchor.filter(|_| {
+                    aids.snap_guides
+                        && aids.show_guides
+                        && doc.mode == crate::document::Mode::Modeling
+                }) {
+                    let s = crate::view_aids::snap_distance(doc.view.zoom);
                     let moved = [anchor[0] + total[0], anchor[1] + total[1]];
-                    let (snapped, hit) = crate::view_aids::snap(
-                        &doc.model.guides,
-                        moved,
-                        crate::view_aids::snap_distance(doc.view.zoom),
-                    );
+                    let (mut snapped, hit) = crate::view_aids::snap(&doc.model.guides, moved, s);
+                    if let Some(me) = gpu.snap_rotation {
+                        let others: Vec<[f32; 2]> = (0..doc.model.deformers.len())
+                            .filter(|&d| d != me)
+                            .filter_map(|d| {
+                                doc.rotation_widget(crate::document::Selection::Deformer(d))
+                            })
+                            .map(|w| w.0)
+                            .collect();
+                        if let Some(p) = crate::view_aids::snap_to_points(&others, moved, s) {
+                            snapped = p;
+                        }
+                    }
                     total = [snapped[0] - anchor[0], snapped[1] - anchor[1]];
                     gpu.snapping = hit;
                 }

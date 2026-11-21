@@ -503,6 +503,93 @@ impl Document {
         changed
     }
 
+    /// The model track Copy / Paste Parameter Value act on in the
+    /// Animation view: the selected track if it is a model track.
+    fn selected_model_track(&self) -> Option<usize> {
+        let st = self.anim.as_ref()?;
+        let (ti, _) = st.selected?;
+        let t = st.scene()?.tracks.get(ti)?;
+        matches!(t.kind, TrackKind::Model(_)).then_some(ti)
+    }
+
+    /// Edit ▸ Copy Parameter Value in the Animation view: the selected
+    /// model track's parameter curves at the current frame (menus.md
+    /// "Behaviour of simple commands"), else the scene's first model track.
+    pub fn anim_param_values(&self) -> Option<Vec<(String, f32)>> {
+        let st = self.anim.as_ref()?;
+        let ti = self
+            .selected_model_track()
+            .or_else(|| st.model_track().map(|(i, _)| i))?;
+        let TrackKind::Model(m) = &st.scene()?.tracks.get(ti)?.kind else {
+            return None;
+        };
+        let frame = st.frame.round();
+        Some(
+            m.params
+                .iter()
+                .filter_map(|a| {
+                    let p = param_index(&self.model, a)?;
+                    let v = keyform_anim::scene::eval_curve(&a.curve, frame) as f32;
+                    Some((self.model.parameters[p].id.clone(), v))
+                })
+                .collect(),
+        )
+    }
+
+    /// Edit ▸ Paste Parameter Value in the Animation view: keys every
+    /// copied parameter (by ID) on the selected model track at the current
+    /// frame, as one undo step. Returns how many were keyed.
+    pub fn anim_paste_param_values(&mut self, copied: &[(String, f32)]) -> Result<usize, String> {
+        use keyform_anim::scene::{clamp_range, refresh, set_key};
+        let ti = self
+            .selected_model_track()
+            .ok_or("Please select the model track to paste onto")?;
+        let ids: Vec<Option<String>> = {
+            let st = self.anim.as_ref().ok_or("No animation")?;
+            let Some(TrackKind::Model(m)) =
+                st.scene().and_then(|s| s.tracks.get(ti)).map(|t| &t.kind)
+            else {
+                return Err("Please select the model track to paste onto".into());
+            };
+            m.params
+                .iter()
+                .map(|a| param_index(&self.model, a).map(|p| self.model.parameters[p].id.clone()))
+                .collect()
+        };
+        let st = self.anim.as_mut().ok_or("No animation")?;
+        let before = st.doc.animation.clone();
+        let legacy = st.doc.animation.smooth_legacy;
+        let frame = st.frame.round() as i32;
+        let scene = st.scene;
+        let ct = st
+            .scene()
+            .map(|s| s.default_param_curve)
+            .unwrap_or_default();
+        let mut n = 0;
+        if let TrackKind::Model(m) = &mut st.doc.animation.scenes[scene].tracks[ti].kind {
+            for (a, id) in m.params.iter_mut().zip(&ids) {
+                let Some(v) = id
+                    .as_ref()
+                    .and_then(|id| copied.iter().find(|(c, _)| c == id))
+                    .map(|c| c.1)
+                else {
+                    continue;
+                };
+                let range = clamp_range(a);
+                set_key(&mut a.curve, frame, f64::from(v), ct);
+                refresh(&mut a.curve, range.0, range.1, legacy);
+                n += 1;
+            }
+        }
+        if st.doc.animation != before {
+            st.undo
+                .push(("Paste Parameter Value".into(), UndoStep::Anim(before)));
+            st.redo.clear();
+            st.dirty = true;
+        }
+        Ok(n)
+    }
+
     /// Opens a `.can3` with its linked model in the Animation workspace.
     pub fn open_animation(path: &Path, log: &mut Log) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;

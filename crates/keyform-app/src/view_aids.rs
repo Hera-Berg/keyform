@@ -2,17 +2,11 @@
 //! their settings dialogs and snapping. spec: 50-ui/view-aids.md §1,
 //! 50-ui/menus.md (Show)
 //!
-//! Observed in the reference (black box, 2026-11-21; TODO(Q-0050)):
-//! - grid: lines every "Grid spacing (px)" canvas pixels (default 50) from
-//!   the canvas origin, over the canvas only, 1 px, in "Grid Color"
-//!   (default #808080, settings-keys.md `ViewGridColor`) at about 25 %;
-//! - guides: lines across the whole view in their colour (new guides black
-//!   at 60/255 alpha, drawn noticeably stronger: ~40 % on screen);
-//! - Add Guide to Center adds a horizontal guide at the canvas's centre y
-//!   and a vertical one at its centre x, and turns Show Guide on;
-//! - Guide Settings: a table (No, Type, Position, Color, Memo) with New
-//!   Guide / Delete, Features ▸ Edit All Guide Colors…, Setting ▸ Default
-//!   Guide Line Color….
+//! Grid: view-aids.md §6. Guides: view-aids.md §1 (stored RGBA, snapping
+//! guides green, selected or dragged guides 3 px wide). The Guide Settings
+//! layout (table No / Type / Position / Color / Memo, New Guide / Delete,
+//! Features ▸ Edit All Guide Colors…, Setting ▸ Default Guide Line
+//! Color…) follows the reference (Q-0050).
 
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use keyform_model::Guide;
@@ -84,6 +78,19 @@ pub fn snap(guides: &[Guide], p: [f32; 2], s: f32) -> ([f32; 2], [Option<usize>;
     (out, hit)
 }
 
+/// The nearest of `points` inside a ±`s` box around `p` (rotation
+/// deformers snapping to each other's origins, view-aids.md §1).
+pub fn snap_to_points(points: &[[f32; 2]], p: [f32; 2], s: f32) -> Option<[f32; 2]> {
+    points
+        .iter()
+        .copied()
+        .filter(|q| (q[0] - p[0]).abs() <= s && (q[1] - p[1]).abs() <= s)
+        .min_by(|a, b| {
+            let d = |q: &[f32; 2]| (q[0] - p[0]).hypot(q[1] - p[1]);
+            d(a).total_cmp(&d(b))
+        })
+}
+
 /// The guide whose line passes within 3 screen pixels of `p`.
 pub fn guide_hit(doc: &Document, to_screen: &dyn Fn([f32; 2]) -> Pos2, p: Pos2) -> Option<usize> {
     doc.model
@@ -135,34 +142,12 @@ pub fn draw(
     to_screen: &dyn Fn([f32; 2]) -> Pos2,
     drag: GuideDrag,
     snapping: [Option<usize>; 2],
-    accent: Color32,
 ) {
     if doc.mode != Mode::Modeling {
         return;
     }
     if aids.show_grid && aids.grid_spacing > 0.0 {
-        let (w, h) = (
-            doc.model.canvas.width as f32,
-            doc.model.canvas.height as f32,
-        );
-        let step = aids.grid_spacing;
-        // Skip a grid finer than 4 screen pixels (it would only grey out).
-        let on_screen = (to_screen([step, 0.0]) - to_screen([0.0, 0.0])).length();
-        let lines = (w / step) as usize + (h / step) as usize;
-        if on_screen >= 4.0 && lines < 4000 {
-            let [r, g, b] = aids.grid_color;
-            let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, g, b, 64));
-            let mut x = 0.0;
-            while x <= w + 1e-3 {
-                painter.line_segment([to_screen([x, 0.0]), to_screen([x, h])], stroke);
-                x += step;
-            }
-            let mut y = 0.0;
-            while y <= h + 1e-3 {
-                painter.line_segment([to_screen([0.0, y]), to_screen([w, y])], stroke);
-                y += step;
-            }
-        }
+        draw_grid(painter, doc, aids, to_screen);
     }
     if aids.guides_on(doc) {
         for (i, g) in doc.model.guides.iter().enumerate() {
@@ -171,22 +156,71 @@ pub fn draw(
                 _ => g.position,
             };
             let (a, b) = line_ends(doc, g, position, to_screen);
-            let snapped = snapping.contains(&Some(i)) || drag.is_some_and(|d| d.0 == i);
-            let stroke = if snapped {
-                Stroke::new(1.5, accent)
+            let wide = drag.is_some_and(|d| d.0 == i) || doc.guide_selected == Some(i);
+            let color = if snapping.contains(&Some(i)) {
+                Color32::from_rgb(0, 255, 0)
             } else {
-                Stroke::new(1.0, guide_color(g.color))
+                guide_color(g.color)
             };
-            painter.line_segment([a, b], stroke);
+            painter.line_segment([a, b], Stroke::new(if wide { 3.0 } else { 1.0 }, color));
         }
     }
 }
 
-/// A guide's colour as drawn: its alpha boosted (the reference draws the
-/// default 60/255 black at about 40 %).
+/// The grid (view-aids.md §6): lines every spacing/5 canvas px from the
+/// canvas origin, over the canvas only; every 5th is a major line. Close up
+/// (at least 1 screen px per canvas px) minor lines are 0.8 wide at alpha
+/// × 0.25 and major lines 1.0 wide at × 0.5; zoomed out the minor lines
+/// are hidden and the major lines are at × 0.3.
+fn draw_grid(
+    painter: &egui::Painter,
+    doc: &Document,
+    aids: &ViewAids,
+    to_screen: &dyn Fn([f32; 2]) -> Pos2,
+) {
+    let (w, h) = (
+        doc.model.canvas.width as f32,
+        doc.model.canvas.height as f32,
+    );
+    let minor = aids.grid_spacing / 5.0;
+    let px_per_canvas = (to_screen([1.0, 0.0]) - to_screen([0.0, 0.0])).length();
+    let close = px_per_canvas >= 1.0;
+    let [r, g, b] = aids.grid_color;
+    let color = |a: f32| Color32::from_rgba_unmultiplied(r, g, b, (a * 255.0).round() as u8);
+    let (minor_stroke, major_stroke) = if close {
+        (Stroke::new(0.8, color(0.25)), Stroke::new(1.0, color(0.5)))
+    } else {
+        (Stroke::NONE, Stroke::new(1.0, color(0.3)))
+    };
+    for (len, other, vertical) in [(w, h, true), (h, w, false)] {
+        let count = (len / minor).floor() as usize;
+        if count > 20_000 {
+            continue;
+        }
+        for k in 0..=count {
+            let major = k % 5 == 0;
+            if !major && !close {
+                continue;
+            }
+            let t = k as f32 * minor;
+            let (a, b) = if vertical {
+                ([t, 0.0], [t, other])
+            } else {
+                ([0.0, t], [other, t])
+            };
+            painter.line_segment(
+                [to_screen(a), to_screen(b)],
+                if major { major_stroke } else { minor_stroke },
+            );
+        }
+    }
+}
+
+/// A guide's colour: its stored RGBA, premultiplied by its own alpha
+/// (view-aids.md §1; no extra factor).
 fn guide_color(c: [f32; 4]) -> Color32 {
     let u = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Color32::from_rgba_unmultiplied(u(c[0]), u(c[1]), u(c[2]), u((c[3] * 1.75).min(1.0)))
+    Color32::from_rgba_unmultiplied(u(c[0]), u(c[1]), u(c[2]), u(c[3]))
 }
 
 /// Show ▸ Guide ▸ Add Guide to Center: a horizontal guide at the canvas's
@@ -451,6 +485,7 @@ pub fn guides_dialog(
                 }
             });
         });
+    doc.guide_selected = st.selected.filter(|&i| i < table.len());
     if let Some(redo) = undo {
         if redo {
             doc.redo();
@@ -473,6 +508,7 @@ pub fn guides_dialog(
     } else {
         st.guides_open = false;
         st.guides = None;
+        doc.guide_selected = None;
     }
 }
 
@@ -501,6 +537,12 @@ pub fn show_menu(
         ui.checkbox(
             &mut aids.show_guides,
             crate::i18n::tr("Show Guide (Modeling View)"),
+        );
+        // No animation-view guides exist (view-aids.md §1): shown disabled.
+        let mut off = false;
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut off, crate::i18n::tr("Show Guide (Animation view)")),
         );
         ui.separator();
         let mut add = None;
@@ -578,5 +620,8 @@ mod tests {
         let (p, hit) = snap(&guides, [101.5, 49.5], s);
         assert_eq!(p, [101.5, 50.0], "x is 1.5 units away: only y snaps");
         assert_eq!(hit, [None, Some(1)]);
+        let pts = [[10.0, 10.0], [10.5, 11.5]];
+        assert_eq!(snap_to_points(&pts, [10.4, 10.9], 1.0), Some([10.5, 11.5]));
+        assert_eq!(snap_to_points(&pts, [12.5, 10.0], 1.0), None);
     }
 }

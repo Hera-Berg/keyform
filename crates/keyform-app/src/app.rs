@@ -108,10 +108,13 @@ pub struct KeyformApp {
     status: CanvasStatus,
     pub palettes: PaletteState,
     recent: Vec<PathBuf>,
-    /// Edit ▸ Copy / Cut of objects (TODO(Q-0050)).
+    /// Edit ▸ Copy / Cut of objects, shared by all open documents
+    /// (object-clipboard.md §1).
     object_clip: Option<keyform_edit::clipboard::ObjectClipboard>,
     /// Edit ▸ Copy Parameter Value.
     param_clip: Option<Vec<(String, f32)>>,
+    /// The part-children question of Copy (`Some(cut)` while asked).
+    copy_prompt: Option<bool>,
     screenshot: Option<ScreenshotRequest>,
     frames: u32,
     last_time: Option<f64>,
@@ -238,15 +241,7 @@ enum ObjCmd {
 /// What Edit ▸ Copy puts on the system clipboard: the copied objects'
 /// names (the objects themselves stay inside Keyform).
 fn clipboard_text(clip: &keyform_edit::clipboard::ObjectClipboard) -> String {
-    use keyform_edit::clipboard::CopiedObject;
-    let names: Vec<&str> = clip
-        .objects
-        .iter()
-        .map(|o| match o {
-            CopiedObject::ArtMesh { mesh, .. } => mesh.info.display_name(),
-            CopiedObject::Deformer { deformer, .. } => deformer.info.display_name(),
-        })
-        .collect();
+    let names: Vec<&str> = clip.objects.iter().map(|o| o.display_name()).collect();
     names.join("\n")
 }
 
@@ -394,6 +389,7 @@ impl KeyformApp {
             recent,
             object_clip: None,
             param_clip: None,
+            copy_prompt: None,
             screenshot,
             frames: 0,
             last_time: None,
@@ -913,8 +909,7 @@ impl KeyformApp {
                     self.open_dialog();
                 }
                 if ui
-                    .add_enabled(
-                        !self.recent.is_empty(),
+                    .add(
                         egui::Button::new(crate::i18n::tr("Open Recent File"))
                             .shortcut_text("Ctrl+Shift+O"),
                     )
@@ -1129,7 +1124,7 @@ impl KeyformApp {
                 let has_objects = self
                     .active
                     .and_then(|i| self.slots.get(i))
-                    .is_some_and(|s| s.doc.copy_objects().is_some());
+                    .is_some_and(|s| s.doc.copy_objects(true).is_some());
                 if ui
                     .add_enabled(
                         has_objects,
@@ -1174,24 +1169,16 @@ impl KeyformApp {
                     )
                     .clicked()
                 {
-                    if let Some(d) = self.active_doc() {
-                        let v = d.copy_parameter_values();
-                        self.log.status = format!("Copied {} parameter values", v.len());
-                        self.param_clip = Some(v);
-                    }
+                    self.copy_param_values();
                 }
                 if ui
                     .add_enabled(
-                        self.active.is_some() && self.param_clip.is_some(),
+                        self.active.is_some(),
                         egui::Button::new(crate::i18n::tr("Paste Parameter Value")),
                     )
                     .clicked()
                 {
-                    let clip = self.param_clip.clone().unwrap_or_default();
-                    if let Some(d) = self.active_doc() {
-                        let n = d.paste_parameter_values(&clip);
-                        self.log.status = format!("Pasted {n} parameter values");
-                    }
+                    self.paste_param_values();
                 }
                 ui.separator();
                 if ui
@@ -2604,30 +2591,125 @@ impl KeyformApp {
         }
     }
 
-    /// File ▸ Open Recent File: opens the most recently opened file (just
-    /// activates it when it is open), as the reference does (TODO(Q-0050)).
+    /// File ▸ Open Recent File: opens the newest Recent Files entry
+    /// (menus.md "Behaviour of simple commands").
     fn open_recent_file(&mut self) {
-        if let Some(p) = self.recent.first().cloned() {
-            self.open(&p);
+        match self.recent.first().cloned() {
+            None => self.log.info("No recent file"),
+            Some(p) if !p.exists() => self.log.error(format!("{}: file not found", p.display())),
+            Some(p) => self.open(&p),
         }
     }
 
-    /// Edit ▸ Copy: the selected art meshes and deformers. Also puts their
-    /// names on the system clipboard, so Ctrl+V reaches the app as a paste.
-    fn copy_active(&mut self, ctx: Option<&egui::Context>) -> bool {
-        let Some(clip) = self
+    /// Edit ▸ Copy Parameter Value: one app-wide snapshot by parameter ID;
+    /// in the Animation view, of the selected model track at the playhead.
+    fn copy_param_values(&mut self) {
+        let Some(d) = self.active_doc() else { return };
+        let v = if d.mode == Mode::Animation && d.anim.is_some() {
+            d.anim_param_values()
+        } else {
+            Some(d.copy_parameter_values())
+        };
+        if let Some(v) = v {
+            self.log.status = format!("Copied {} parameter values", v.len());
+            self.param_clip = Some(v);
+        }
+    }
+
+    /// Edit ▸ Paste Parameter Value: sets the snapshot's parameters by ID
+    /// (not an undo step); in the Animation view, keys them on the selected
+    /// model track at the playhead (one undo step).
+    fn paste_param_values(&mut self) {
+        let Some(clip) = self.param_clip.clone() else {
+            self.log
+                .warn("Please execute after copying the Parameter values");
+            return;
+        };
+        let Some(d) = self.active_doc() else { return };
+        let r = if d.mode == Mode::Animation && d.anim.is_some() {
+            d.anim_paste_param_values(&clip)
+        } else {
+            Ok(d.paste_parameter_values(&clip))
+        };
+        match r {
+            Ok(n) => self.log.status = format!("Pasted {n} parameter values"),
+            Err(e) => self.log.warn(e),
+        }
+    }
+
+    /// Edit ▸ Copy (object-clipboard.md §1). A selected part with
+    /// unselected children first asks whether to copy them.
+    fn copy_active(&mut self, ctx: Option<&egui::Context>) {
+        self.copy_or_cut(ctx, false);
+    }
+
+    /// Edit ▸ Cut: Copy, then delete the originals (one undo step).
+    fn cut_active(&mut self, ctx: Option<&egui::Context>) {
+        self.copy_or_cut(ctx, true);
+    }
+
+    fn copy_or_cut(&mut self, ctx: Option<&egui::Context>, cut: bool) {
+        let ask = self
             .active
             .and_then(|i| self.slots.get(i))
-            .and_then(|s| s.doc.copy_objects())
-        else {
-            return false;
+            .is_some_and(|s| s.doc.editable() && s.doc.copy_needs_children_prompt());
+        if ask {
+            self.copy_prompt = Some(cut);
+        } else {
+            self.finish_copy(ctx, cut, true);
+        }
+    }
+
+    /// Copies (or cuts) the selection; also puts the copied objects' names
+    /// on the system clipboard, so Ctrl+V reaches the app as a paste.
+    fn finish_copy(&mut self, ctx: Option<&egui::Context>, cut: bool, with_children: bool) {
+        let Some(d) = self.active_doc() else { return };
+        let clip = if cut {
+            match d.cut_objects(with_children) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.log.warn(e);
+                    return;
+                }
+            }
+        } else {
+            d.copy_objects(with_children)
         };
-        self.log.status = format!("Copied {} object(s)", clip.objects.len());
+        let Some(clip) = clip else { return };
+        self.log.status = format!(
+            "{} {} object(s)",
+            if cut { "Cut" } else { "Copied" },
+            clip.objects.len()
+        );
         if let Some(ctx) = ctx {
             ctx.copy_text(clipboard_text(&clip));
         }
         self.object_clip = Some(clip);
-        true
+    }
+
+    /// "Do you want to copy part's child objects?" (object-clipboard.md §1).
+    fn copy_prompt_window(&mut self, ctx: &egui::Context) {
+        let Some(cut) = self.copy_prompt else { return };
+        let mut answer = None;
+        egui::Window::new(crate::i18n::tr("Confirm"))
+            .id(egui::Id::new("copy-children-prompt"))
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(crate::i18n::tr("Do you want to copy part's child objects?"));
+                ui.horizontal(|ui| {
+                    if ui.button(crate::i18n::tr("Yes")).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button(crate::i18n::tr("No")).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if let Some(with_children) = answer {
+            self.copy_prompt = None;
+            self.finish_copy(Some(ctx), cut, with_children);
+        }
     }
 
     /// A clipboard key: `c` / `x` / `v`, with Shift for Copy / Paste Form.
@@ -2660,23 +2742,21 @@ impl KeyformApp {
         }
     }
 
-    /// Edit ▸ Cut: Copy, then Delete.
-    fn cut_active(&mut self, ctx: Option<&egui::Context>) {
-        if self.copy_active(ctx) {
-            self.delete_active();
-        }
-    }
-
-    /// Edit ▸ Paste: copies of the copied objects above the selection.
+    /// Edit ▸ Paste (object-clipboard.md §4).
     fn paste_active(&mut self) {
         let Some(clip) = self.object_clip.clone() else {
+            self.log.warn("Unable to copy");
             return;
         };
-        if let Some(d) = self.active_doc() {
-            match d.paste_objects(&clip) {
-                Ok(n) => self.log.status = format!("Pasted {n} object(s)"),
-                Err(e) => self.log.warn(e),
+        let Some(d) = self.active_doc() else { return };
+        match d.paste_objects(&clip) {
+            Ok((n, warnings)) => {
+                self.log.status = format!("Pasted {n} object(s)");
+                for w in warnings {
+                    self.log.warn(w);
+                }
             }
+            Err(e) => self.log.warn(e),
         }
     }
 
@@ -3350,6 +3430,7 @@ impl eframe::App for KeyformApp {
         }
         self.shortcuts(&ctx);
         self.external_api(&ctx);
+        self.copy_prompt_window(&ctx);
         let act = crate::env_settings::show(&ctx, &mut self.env, &mut self.settings, &self.recent);
         if act.reset_dialogs {
             ctx.memory_mut(|m| m.reset_areas());

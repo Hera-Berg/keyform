@@ -434,6 +434,11 @@ pub struct Document {
     pub notice: Option<String>,
     /// Environment Settings that act on documents (set by the app).
     pub prefs: Prefs,
+    /// The guide selected in Guide Settings (drawn 3 px wide).
+    pub guide_selected: Option<usize>,
+    /// This open document's identity for the session (same-document paste,
+    /// object-clipboard.md §3 fileContentInstanceGuid).
+    pub instance: u64,
     /// A parameter dialog requested by a palette (taken by the app).
     pub param_request: Option<crate::param_dialog::Request>,
     /// Result of the mask check, recomputed when the model changes
@@ -816,6 +821,11 @@ impl Document {
             edit_level: 2,
             notice: None,
             prefs: Prefs::default(),
+            guide_selected: None,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             param_request: None,
             mask_issues: keyform_edit::mask_issues(&model),
             mode: if palette_from_children {
@@ -1486,44 +1496,132 @@ impl Document {
         })
     }
 
-    /// Edit ▸ Copy: the selected art meshes and deformers.
-    /// TODO(Q-0050): observed behaviour (keyform_edit::clipboard).
-    pub fn copy_objects(&self) -> Option<keyform_edit::clipboard::ObjectClipboard> {
+    /// Whether Edit ▸ Copy / Cut must first ask "Do you want to copy part's
+    /// child objects?" (object-clipboard.md §1).
+    pub fn copy_needs_children_prompt(&self) -> bool {
+        keyform_edit::clipboard::needs_children_prompt(&self.model, &self.selection.objects)
+    }
+
+    /// Edit ▸ Copy (object-clipboard.md §1): the selection, with the
+    /// descendants of selected parts when `with_children`.
+    pub fn copy_objects(
+        &self,
+        with_children: bool,
+    ) -> Option<keyform_edit::clipboard::ObjectClipboard> {
         if !self.editable() || self.mode != Mode::Modeling {
             return None;
         }
-        keyform_edit::clipboard::copy_objects(&self.model, &self.selection.objects)
+        keyform_edit::clipboard::copy_objects(
+            &self.model,
+            &self.selection.objects,
+            self.instance,
+            with_children,
+        )
     }
 
-    /// Edit ▸ Paste: puts copies above the selected object (or at the top
-    /// of the root part) and selects them. Returns how many were pasted.
+    /// Edit ▸ Cut: Copy, then delete the originals, as one undo step "Cut";
+    /// nothing is selected afterwards.
+    pub fn cut_objects(
+        &mut self,
+        with_children: bool,
+    ) -> Result<Option<keyform_edit::clipboard::ObjectClipboard>, String> {
+        let Some(clip) = self.copy_objects(with_children) else {
+            return Ok(None);
+        };
+        let guids: Vec<(Selection, String)> = keyform_edit::clipboard::palette_order(&self.model)
+            .into_iter()
+            .filter(|o| {
+                clip.objects.iter().any(|c| match (&c.object, o) {
+                    (keyform_edit::clipboard::CopiedObject::Part(p), Selection::Part(i)) => {
+                        self.model.parts[*i].info.guid == p.info.guid
+                    }
+                    (
+                        keyform_edit::clipboard::CopiedObject::Deformer(d),
+                        Selection::Deformer(i),
+                    ) => self.model.deformers[*i].info.guid == d.info.guid,
+                    (
+                        keyform_edit::clipboard::CopiedObject::ArtMesh { mesh, .. },
+                        Selection::ArtMesh(i),
+                    ) => self.model.art_meshes[*i].info.guid == mesh.info.guid,
+                    (
+                        keyform_edit::clipboard::CopiedObject::Glue { glue, .. },
+                        Selection::Glue(i),
+                    ) => self.model.glues[*i].info.guid == glue.info.guid,
+                    _ => false,
+                })
+            })
+            .filter_map(|o| Some((o, crate::palettes::info(&self.model, o)?.guid.clone())))
+            .collect();
+        let values = self.values.clone();
+        self.try_edit("Cut", |m| {
+            // Glue and meshes, then deformers, then parts from the deepest.
+            for (o, g) in &guids {
+                match o {
+                    Selection::Glue(_) => {
+                        if let Some(i) = m.glues.iter().position(|x| x.info.guid == *g) {
+                            keyform_edit::objects::delete_glue(m, i)?;
+                        }
+                    }
+                    Selection::ArtMesh(_) => {
+                        if let Some(i) = m.art_meshes.iter().position(|x| x.info.guid == *g) {
+                            keyform_edit::objects::delete_art_mesh(m, i)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for (o, g) in &guids {
+                if let Selection::Deformer(_) = o {
+                    if let Some(d) = m.deformers.iter().position(|x| x.info.guid == *g) {
+                        keyform_edit::objects::delete_deformer(m, d, &values)?;
+                    }
+                }
+            }
+            for (o, g) in guids.iter().rev() {
+                if let Selection::Part(_) = o {
+                    if let Some(p) = m.parts.iter().position(|x| x.info.guid == *g) {
+                        keyform_edit::objects::delete_part(m, p)?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        self.select(None);
+        Ok(Some(clip))
+    }
+
+    /// Edit ▸ Paste (object-clipboard.md §4): one undo step "Paste" that
+    /// also selects the pasted objects. Returns how many were pasted and
+    /// the objects that couldn't be.
     pub fn paste_objects(
         &mut self,
         clip: &keyform_edit::clipboard::ObjectClipboard,
-    ) -> Result<usize, String> {
+    ) -> Result<(usize, Vec<String>), String> {
         if self.mode != Mode::Modeling {
-            return Err("Objects are pasted in the Modeling workspace.".into());
+            return Err("Please select Modeling View".into());
         }
-        let above = self.primary();
         if !self.editable() {
             return Err("Only projects can be edited.".into());
         }
-        let numbered = self.prefs.paste_numbered_names;
         let mut m = self.model.clone();
-        let made = keyform_edit::clipboard::paste_objects(&mut m, clip, above)?;
-        if numbered {
-            keyform_edit::clipboard::number_names(&mut m, &made);
+        let r = keyform_edit::clipboard::paste_objects(
+            &mut m,
+            clip,
+            &self.selection.objects,
+            self.instance,
+            self.prefs.paste_numbered_names,
+        )?;
+        let n = r.objects.len();
+        if n > 0 {
+            let mut set = SelectionSet::of(None);
+            set.objects = r.objects;
+            self.selection = set;
+            self.model = m;
+            self.history
+                .commit("Paste", StepKind::Real, self.edit_state(), false);
+            self.model_changed();
         }
-        let n = made.len();
-        // The pasted objects are selected within the same undo step.
-        let mut set = SelectionSet::of(None);
-        set.objects = made;
-        self.selection = set;
-        self.model = m;
-        self.history
-            .commit("Paste", StepKind::Real, self.edit_state(), false);
-        self.model_changed();
-        Ok(n)
+        Ok((n, r.warnings))
     }
 
     /// Edit ▸ Copy Parameter Value: every parameter's current value.
@@ -3641,31 +3739,32 @@ pub(crate) mod e2e_regressions {
     /// Rotation deformers show a needle while not selected (reference
     /// look), hidden ones don't, and the selected one keeps its full
     /// widget instead.
-    /// Edit ▸ Copy / Paste of an art mesh (observed reference behaviour,
-    /// Q-0050): the copy is selected, keeps the name, gets a new ID, sits
-    /// above the selected original; one undo step removes it; the result
-    /// saves and reopens.
+    /// Edit ▸ Copy / Paste of an art mesh (object-clipboard.md): the copy
+    /// is selected, keeps the name, gets the next ID, sits above the
+    /// selected original; one undo step removes it; the result saves and
+    /// reopens. Cut is one step too.
     #[test]
     fn copy_paste_objects_and_undo() {
         let (mut d, path) = character("e2e-copy-paste");
         let brow = mesh(&d, "BrowR");
-        d.select(Some(brow));
-        let clip = d.copy_objects().unwrap();
-        let n = d.model.art_meshes.len();
-        assert_eq!(d.paste_objects(&clip).unwrap(), 1);
-        assert_eq!(d.model.art_meshes.len(), n + 1);
-        let new = d.model.art_meshes.last().unwrap();
-        assert_eq!(new.info.id, "BrowR2");
         let Selection::ArtMesh(orig) = brow else {
             unreachable!()
         };
+        d.select(Some(brow));
+        let clip = d.copy_objects(true).unwrap();
+        let n = d.model.art_meshes.len();
+        assert_eq!(d.paste_objects(&clip).unwrap().0, 1);
+        assert_eq!(d.model.art_meshes.len(), n + 1);
+        let new = d.model.art_meshes.last().unwrap();
+        assert_eq!(new.info.id, "BrowR2");
         assert_eq!(new.info.name, d.model.art_meshes[orig].info.name);
+        assert_eq!(new.target, d.model.art_meshes[orig].target, "same parent");
         assert_eq!(d.selection.objects, vec![Selection::ArtMesh(n)]);
         d.prefs.paste_numbered_names = true;
         d.paste_objects(&clip).unwrap();
         let numbered = d.model.art_meshes[n + 1].info.display_name().to_owned();
         assert_ne!(numbered, d.model.art_meshes[orig].info.display_name());
-        assert!(numbered.ends_with(char::is_numeric), "{numbered}");
+        assert_eq!(d.model.art_meshes[n + 1].info.id, "BrowR3");
         d.undo();
         d.undo();
         assert_eq!(d.model.art_meshes.len(), n, "one undo step per paste");
@@ -3674,6 +3773,35 @@ pub(crate) mod e2e_regressions {
         let back = Document::open(&path, &mut Log::default()).unwrap();
         assert_eq!(back.model.art_meshes.len(), n + 1);
         assert!(back.model.art_meshes.iter().any(|a| a.info.id == "BrowR2"));
+        // Cut: one step, nothing selected afterwards.
+        d.select(Some(Selection::ArtMesh(n)));
+        d.cut_objects(true).unwrap().unwrap();
+        assert_eq!(d.model.art_meshes.len(), n);
+        assert!(d.selection.objects.is_empty());
+        d.undo();
+        assert_eq!(d.model.art_meshes.len(), n + 1);
+    }
+
+    /// Pasting into another open document (object-clipboard.md §4): the
+    /// mesh comes with its image, its parent deformer is matched by ID, and
+    /// the result saves and reopens.
+    #[test]
+    fn paste_into_another_document() {
+        let (mut a, _) = character("e2e-paste-a");
+        let (mut b, path_b) = character("e2e-paste-b");
+        let brow = mesh(&a, "BrowR");
+        a.select(Some(brow));
+        let clip = a.copy_objects(true).unwrap();
+        let n = b.model.art_meshes.len();
+        let images = b.model.model_images.len();
+        let (pasted, warnings) = b.paste_objects(&clip).unwrap();
+        assert_eq!((pasted, warnings.len()), (1, 0), "{warnings:?}");
+        let new = b.model.art_meshes.last().unwrap();
+        assert_eq!(new.model_image, Some(images), "the image was brought along");
+        assert_eq!(b.model.model_images.len(), images + 1);
+        b.save_project(None).unwrap();
+        let back = Document::open(&path_b, &mut Log::default()).unwrap();
+        assert_eq!(back.model.art_meshes.len(), n + 1);
     }
 
     /// Edit ▸ Copy / Paste Parameter Value sets every parameter back.

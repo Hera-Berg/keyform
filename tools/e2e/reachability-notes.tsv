@@ -72,8 +72,7 @@ Done	Glue tool (Modeling ▸ Glue…): Tool Details panel
 Yes	Closing a modified document (File ▸ Close): save prompt
 No	Closing a modified document: save prompt
 Edit ▸ Paste	Enabled after Edit ▸ Copy or Cut (Ctrl+C / Ctrl+X) of an art mesh or deformer in the Modeling workspace
-Edit ▸ Paste Parameter Value	Enabled after Edit ▸ Copy Parameter Value
-File ▸ Open Recent File	Enabled once a file has been opened (the audit starts with no recent files)
 Show ▸ Guide ▸ Add Guides at Coordinates of Selected Vertices	Enabled with vertices selected (Arrow tool: press on a vertex of a selected art mesh)
 Vertical	Show ▸ Guide ▸ Guide Settings (Modeling View)…: the Type combo of a guide row (after New Guide or Add Guide to Center)
 Animation ▸ Track ▸ Bake Animation from Motion-sync	Enabled in an animation whose scene has a sound track and whose model has motion-sync settings (Modeling ▸ Parameter ▸ Motion-sync Settings…); like the timeline Scene menu entry
+Show ▸ Guide ▸ Show Guide (Animation view)	Always disabled: the reference command does nothing and no animation-view guides exist (view-aids.md §1)

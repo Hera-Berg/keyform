@@ -181,7 +181,7 @@ fn modeling(ui: &mut egui::Ui, s: &mut Settings) {
     });
     ui.checkbox(
         &mut s.paste_numbered_names,
-        crate::i18n::tr("Add a number to the names of pasted objects"),
+        crate::i18n::tr("Add number to the end of the name when pasting an object"),
     );
 }
 

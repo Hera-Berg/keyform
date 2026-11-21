@@ -143,7 +143,7 @@ pub struct Guide {
 
 impl Guide {
     /// The colour the reference gives new guides: black at 60/255 alpha
-    /// (observed, TODO(Q-0050)).
+    /// (view-aids.md §1 defaults).
     pub const DEFAULT_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.235_294_12];
 
     pub fn new(vertical: bool, position: f32) -> Self {

@@ -285,12 +285,18 @@ class Harness:
             self.key_down(k)
         self.move(a)
         time.sleep(0.1)
+        # Frames between hover, press, motion and release, as a person's
+        # drag has: on slow frames (software rendering in CI) a whole drag
+        # otherwise lands in one frame and reads as a click.
+        self.settle(1, timeout=1.0)
         self.button(button, True)
+        self.settle(1, timeout=1.0)
         for i in range(1, steps + 1):
             t = i / steps
             self.move((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
             time.sleep(0.02)
         time.sleep(0.1)
+        self.settle(1, timeout=1.0)
         self.button(button, False)
         for k in reversed(mods):
             self.key_up(k)
@@ -298,10 +304,13 @@ class Harness:
 
     def stroke(self, pts, button=1):
         self.move(pts[0])
+        self.settle(1, timeout=1.0)
         self.button(button, True)
+        self.settle(1, timeout=1.0)
         for p in pts[1:]:
             self.move(p)
             time.sleep(0.02)
+        self.settle(1, timeout=1.0)
         self.button(button, False)
         self.settle(3)
 
