@@ -73,6 +73,13 @@ pub struct MirrorDialog {
 }
 
 impl FormDialogs {
+    /// Environment Settings ▸ "Redisplay all dialogs that are hidden".
+    pub fn redisplay_hidden(&mut self) {
+        self.ext_dont_show = false;
+        self.multi_paste_off = false;
+        self.pairing_dont_show = false;
+    }
+
     pub fn open_blend(&mut self) {
         self.blend = Some((50.0, false, None));
     }

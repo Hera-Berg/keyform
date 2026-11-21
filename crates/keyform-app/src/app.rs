@@ -108,6 +108,10 @@ pub struct KeyformApp {
     status: CanvasStatus,
     pub palettes: PaletteState,
     recent: Vec<PathBuf>,
+    /// Edit ▸ Copy / Cut of objects (TODO(Q-0050)).
+    object_clip: Option<keyform_edit::clipboard::ObjectClipboard>,
+    /// Edit ▸ Copy Parameter Value.
+    param_clip: Option<Vec<(String, f32)>>,
     screenshot: Option<ScreenshotRequest>,
     frames: u32,
     last_time: Option<f64>,
@@ -152,6 +156,10 @@ pub struct KeyformApp {
     api_server: Option<crate::external_server::Server>,
     plugins: crate::external_host::Plugins,
     api_window: bool,
+    /// Grid settings / Guide Settings dialogs.
+    aid_dialogs: crate::view_aids::AidDialogs,
+    /// File ▸ Environment Settings….
+    env: crate::env_settings::EnvDialog,
     api_mode: &'static str,
     api_recording: crate::external_host::ApiRecording,
     physics_editor: crate::physics_editor::PhysicsEditor,
@@ -184,6 +192,18 @@ pub struct Settings {
     pub api_port: u16,
     /// UI language (dialogs.md §11 "Language").
     pub lang: crate::i18n::Lang,
+    /// Show ▸ Grid / Guide settings (view-aids.md §1).
+    pub aids: crate::view_aids::ViewAids,
+    /// Environment Settings (dialogs.md §11; defaults settings-keys.md).
+    pub dark_theme: bool,
+    /// `visibleRecentFileFullPath` (default false).
+    pub recent_full_path: bool,
+    /// `AppSetting.ArtMesh.isStartMeshEditorByDoubleClick` (default true).
+    pub mesh_edit_double_click: bool,
+    /// `AppSetting.Deformer.rotationDefomer.stepDeg` (default 45).
+    pub rotation_step: f32,
+    /// "Add a number when pasting objects" (default false).
+    pub paste_numbered_names: bool,
 }
 
 impl Default for Settings {
@@ -194,8 +214,29 @@ impl Default for Settings {
             api_enabled: false,
             api_port: crate::external_api::DEFAULT_PORT,
             lang: crate::i18n::Lang::En,
+            aids: crate::view_aids::ViewAids::default(),
+            dark_theme: true,
+            recent_full_path: false,
+            mesh_edit_double_click: true,
+            rotation_step: 45.0,
+            paste_numbered_names: false,
         }
     }
+}
+
+/// What Edit ▸ Copy puts on the system clipboard: the copied objects'
+/// names (the objects themselves stay inside Keyform).
+fn clipboard_text(clip: &keyform_edit::clipboard::ObjectClipboard) -> String {
+    use keyform_edit::clipboard::CopiedObject;
+    let names: Vec<&str> = clip
+        .objects
+        .iter()
+        .map(|o| match o {
+            CopiedObject::ArtMesh { mesh, .. } => mesh.info.display_name(),
+            CopiedObject::Deformer { deformer, .. } => deformer.info.display_name(),
+        })
+        .collect();
+    names.join("\n")
 }
 
 const SETTINGS_KEY: &str = "keyform.settings";
@@ -261,7 +302,6 @@ impl KeyformApp {
         files: Vec<PathBuf>,
         screenshot: Option<ScreenshotRequest>,
     ) -> Self {
-        let tokens = theme::apply(&cc.egui_ctx, true);
         let cjk = crate::fonts::install(&cc.egui_ctx);
         let recent = cc
             .storage
@@ -286,6 +326,7 @@ impl KeyformApp {
             .storage
             .and_then(|s| eframe::get_value::<Settings>(s, SETTINGS_KEY))
             .unwrap_or_default();
+        let tokens = theme::apply(&cc.egui_ctx, settings.dark_theme);
         let plugins = cc
             .storage
             .and_then(|s| eframe::get_value::<crate::external_host::Plugins>(s, PLUGINS_KEY))
@@ -301,6 +342,8 @@ impl KeyformApp {
             api_server: None,
             plugins,
             api_window: false,
+            aid_dialogs: Default::default(),
+            env: Default::default(),
             api_mode: "Modeling",
             api_recording: Default::default(),
             settings,
@@ -333,11 +376,13 @@ impl KeyformApp {
             next_uid: 1,
             log: Log::default(),
             tokens,
-            dark: true,
+            dark: settings.dark_theme,
             rs: cc.wgpu_render_state.clone(),
             status: CanvasStatus::default(),
             palettes: PaletteState::default(),
             recent,
+            object_clip: None,
+            param_clip: None,
             screenshot,
             frames: 0,
             last_time: None,
@@ -753,13 +798,30 @@ impl KeyformApp {
                 {
                     self.open_dialog();
                 }
+                if ui
+                    .add_enabled(
+                        !self.recent.is_empty(),
+                        egui::Button::new(crate::i18n::tr("Open Recent File"))
+                            .shortcut_text("Ctrl+Shift+O"),
+                    )
+                    .clicked()
+                {
+                    self.open_recent_file();
+                }
                 ui.menu_button(crate::i18n::tr("Recent Files"), |ui| {
                     let recent = self.recent.clone();
                     if recent.is_empty() {
                         ui.weak(crate::i18n::tr("(none)"));
                     }
                     for p in recent {
-                        if ui.button(p.display().to_string()).clicked() {
+                        let full = p.display().to_string();
+                        let label = if self.settings.recent_full_path {
+                            full.clone()
+                        } else {
+                            p.file_name()
+                                .map_or(full.clone(), |n| n.to_string_lossy().into_owned())
+                        };
+                        if ui.button(label).on_hover_text(full).clicked() {
                             self.open(&p);
                         }
                     }
@@ -880,6 +942,14 @@ impl KeyformApp {
                 });
                 ui.separator();
                 if ui
+                    .button(crate::i18n::tr("Environment Settings…"))
+                    .clicked()
+                {
+                    let s = self.settings;
+                    self.env.open(&s);
+                }
+                ui.separator();
+                if ui
                     .add(egui::Button::new(crate::i18n::tr("Exit")).shortcut_text("Alt+F4"))
                     .clicked()
                 {
@@ -911,6 +981,37 @@ impl KeyformApp {
                     r.on_hover_text(n);
                 }
                 ui.separator();
+                let has_objects = self
+                    .active
+                    .and_then(|i| self.slots.get(i))
+                    .is_some_and(|s| s.doc.copy_objects().is_some());
+                if ui
+                    .add_enabled(
+                        has_objects,
+                        egui::Button::new(crate::i18n::tr("Cut")).shortcut_text("Ctrl+X"),
+                    )
+                    .clicked()
+                {
+                    self.cut_active(Some(ui.ctx()));
+                }
+                if ui
+                    .add_enabled(
+                        has_objects,
+                        egui::Button::new(crate::i18n::tr("Copy")).shortcut_text("Ctrl+C"),
+                    )
+                    .clicked()
+                {
+                    self.copy_active(Some(ui.ctx()));
+                }
+                if ui
+                    .add_enabled(
+                        self.active.is_some() && self.object_clip.is_some(),
+                        egui::Button::new(crate::i18n::tr("Paste")).shortcut_text("Ctrl+V"),
+                    )
+                    .clicked()
+                {
+                    self.paste_active();
+                }
                 if ui
                     .add_enabled(
                         self.active.is_some(),
@@ -919,6 +1020,33 @@ impl KeyformApp {
                     .clicked()
                 {
                     self.delete_active();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        self.active.is_some(),
+                        egui::Button::new(crate::i18n::tr("Copy Parameter Value")),
+                    )
+                    .clicked()
+                {
+                    if let Some(d) = self.active_doc() {
+                        let v = d.copy_parameter_values();
+                        self.log.status = format!("Copied {} parameter values", v.len());
+                        self.param_clip = Some(v);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        self.active.is_some() && self.param_clip.is_some(),
+                        egui::Button::new(crate::i18n::tr("Paste Parameter Value")),
+                    )
+                    .clicked()
+                {
+                    let clip = self.param_clip.clone().unwrap_or_default();
+                    if let Some(d) = self.active_doc() {
+                        let n = d.paste_parameter_values(&clip);
+                        self.log.status = format!("Pasted {n} parameter values");
+                    }
                 }
                 ui.separator();
                 if ui
@@ -945,6 +1073,17 @@ impl KeyformApp {
                 }
             });
             ui.menu_button(crate::i18n::tr("Show"), |ui| {
+                let doc = self
+                    .active
+                    .and_then(|i| self.slots.get_mut(i))
+                    .map(|s| &mut s.doc);
+                crate::view_aids::show_menu(
+                    ui,
+                    &mut self.settings.aids,
+                    &mut self.aid_dialogs,
+                    doc,
+                );
+                ui.separator();
                 ui.checkbox(
                     &mut self.settings.mask_warnings,
                     crate::i18n::tr("Always show warnings regarding masks"),
@@ -1051,6 +1190,7 @@ impl KeyformApp {
                     .changed()
                 {
                     self.dark = dark;
+                    self.settings.dark_theme = dark;
                     self.tokens = theme::apply(ui.ctx(), dark);
                 }
             });
@@ -2128,6 +2268,82 @@ impl KeyformApp {
         }
     }
 
+    /// File ▸ Open Recent File: opens the most recently opened file (just
+    /// activates it when it is open), as the reference does (TODO(Q-0050)).
+    fn open_recent_file(&mut self) {
+        if let Some(p) = self.recent.first().cloned() {
+            self.open(&p);
+        }
+    }
+
+    /// Edit ▸ Copy: the selected art meshes and deformers. Also puts their
+    /// names on the system clipboard, so Ctrl+V reaches the app as a paste.
+    fn copy_active(&mut self, ctx: Option<&egui::Context>) -> bool {
+        let Some(clip) = self
+            .active
+            .and_then(|i| self.slots.get(i))
+            .and_then(|s| s.doc.copy_objects())
+        else {
+            return false;
+        };
+        self.log.status = format!("Copied {} object(s)", clip.objects.len());
+        if let Some(ctx) = ctx {
+            ctx.copy_text(clipboard_text(&clip));
+        }
+        self.object_clip = Some(clip);
+        true
+    }
+
+    /// A clipboard key: `c` / `x` / `v`, with Shift for Copy / Paste Form.
+    fn clipboard_command(&mut self, ctx: &egui::Context, key: u8, shift: bool) {
+        let special = self.forms.special;
+        match (key, shift) {
+            (b'c', false) => {
+                self.copy_active(Some(ctx));
+            }
+            (b'x', false) => self.cut_active(Some(ctx)),
+            (b'v', false) => self.paste_active(),
+            (b'c', true) | (b'v', true) => {
+                let Some(d) = self
+                    .active_doc()
+                    .filter(|d| d.editable() && d.mesh_edit.is_none())
+                else {
+                    return;
+                };
+                let r = if key == b'c' {
+                    d.copy_form()
+                        .inspect(|_| ctx.copy_text("Keyform form".into()))
+                } else {
+                    d.paste_form("Paste Form", 1.0, special)
+                };
+                if let Err(e) = r {
+                    self.log.warn(e);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Edit ▸ Cut: Copy, then Delete.
+    fn cut_active(&mut self, ctx: Option<&egui::Context>) {
+        if self.copy_active(ctx) {
+            self.delete_active();
+        }
+    }
+
+    /// Edit ▸ Paste: copies of the copied objects above the selection.
+    fn paste_active(&mut self) {
+        let Some(clip) = self.object_clip.clone() else {
+            return;
+        };
+        if let Some(d) = self.active_doc() {
+            match d.paste_objects(&clip) {
+                Ok(n) => self.log.status = format!("Pasted {n} object(s)"),
+                Err(e) => self.log.warn(e),
+            }
+        }
+    }
+
     fn delete_active(&mut self) {
         if let Some(d) = self.active_doc() {
             let tolerance = 1.0 / d.view.zoom.max(1e-6);
@@ -2181,6 +2397,32 @@ impl KeyformApp {
             self.save_as_active();
         } else if save {
             self.save_active();
+        }
+        // File ▸ Open Recent File [Ctrl+Shift+O] (before Ctrl+O, which
+        // would also match).
+        if ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::O))) {
+            self.open_recent_file();
+        }
+        // Ctrl+C / X / V (and with Shift) reach the app as clipboard events,
+        // not keys (egui-winit): Edit ▸ Cut / Copy / Paste of objects, and
+        // with Shift Edit Form ▸ Copy Form / Paste Form (menus.md).
+        if !ctx.egui_wants_keyboard_input() {
+            let (events, shift) = ctx.input(|i| {
+                let ev: Vec<u8> = i
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Copy => Some(b'c'),
+                        egui::Event::Cut => Some(b'x'),
+                        egui::Event::Paste(_) => Some(b'v'),
+                        _ => None,
+                    })
+                    .collect();
+                (ev, i.modifiers.shift)
+            });
+            for e in events {
+                self.clipboard_command(ctx, e, shift);
+            }
         }
         // Delete (shortcuts.md: Delete / Backspace).
         if !ctx.egui_wants_keyboard_input()
@@ -2472,6 +2714,7 @@ struct Viewer<'a> {
     new_request: &'a mut bool,
     mask_warnings: bool,
     mask_dialog: &'a mut bool,
+    aids: crate::view_aids::ViewAids,
 }
 
 impl Viewer<'_> {
@@ -2519,6 +2762,7 @@ impl TabViewer for Viewer<'_> {
                     self.rs,
                     self.tokens,
                     self.status,
+                    &self.aids,
                 );
                 if r.clicked()
                     || r.dragged()
@@ -2727,6 +2971,45 @@ impl eframe::App for KeyformApp {
         }
         self.shortcuts(&ctx);
         self.external_api(&ctx);
+        let act = crate::env_settings::show(&ctx, &mut self.env, &mut self.settings, &self.recent);
+        if act.reset_dialogs {
+            ctx.memory_mut(|m| m.reset_areas());
+            self.log.status = "Dialog sizes and positions were reset".into();
+        }
+        if act.clear_recent {
+            self.recent.clear();
+        }
+        if act.redisplay_dialogs {
+            self.settings.mask_dialog_suppressed = false;
+            self.forms.redisplay_hidden();
+        }
+        if self.settings.dark_theme != self.dark {
+            self.dark = self.settings.dark_theme;
+            self.tokens = theme::apply(&ctx, self.dark);
+        }
+        if crate::i18n::current() != self.settings.lang {
+            crate::i18n::set(self.settings.lang);
+        }
+        for s in &mut self.slots {
+            s.doc.prefs = crate::document::Prefs {
+                rotation_step: self.settings.rotation_step,
+                mesh_edit_double_click: self.settings.mesh_edit_double_click,
+                paste_numbered_names: self.settings.paste_numbered_names,
+            };
+        }
+        crate::view_aids::grid_dialog(&ctx, &mut self.aid_dialogs, &mut self.settings.aids);
+        {
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::view_aids::guides_dialog(
+                &ctx,
+                &mut self.aid_dialogs,
+                &mut self.settings.aids,
+                doc,
+            );
+        }
         if !self.initial_values.is_empty() {
             for (id, v) in std::mem::take(&mut self.initial_values) {
                 for s in &mut self.slots {
@@ -2890,6 +3173,7 @@ impl eframe::App for KeyformApp {
                     new_request: &mut new_request,
                     mask_warnings: self.settings.mask_warnings,
                     mask_dialog: &mut self.mask_dialog,
+                    aids: self.settings.aids,
                 };
                 DockArea::new(&mut self.dock).show_inside(ui, &mut viewer);
             });

@@ -124,6 +124,37 @@ pub struct Model {
     /// On-screen model-image resolution divisor (1, 2, 4, 8); 0 = not
     /// stored (1). Display only. spec: 70-advanced/psd-import.md §3.1
     pub preview_reduction: u32,
+    /// Ruler guides of the Modeling view (an editing aid saved with the
+    /// model). spec: 50-ui/view-aids.md §1
+    pub guides: Vec<Guide>,
+}
+
+/// A ruler guide: a horizontal line at canvas y = `position`, or a vertical
+/// one at x = `position`. spec: 50-ui/view-aids.md §1
+#[derive(Clone, Debug, PartialEq)]
+pub struct Guide {
+    pub guid: Guid,
+    pub vertical: bool,
+    pub position: f32,
+    /// RGBA, 0…1.
+    pub color: [f32; 4],
+    pub memo: String,
+}
+
+impl Guide {
+    /// The colour the reference gives new guides: black at 60/255 alpha
+    /// (observed, TODO(Q-0050)).
+    pub const DEFAULT_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.235_294_12];
+
+    pub fn new(vertical: bool, position: f32) -> Self {
+        Self {
+            guid: new_guid(),
+            vertical,
+            position,
+            color: Self::DEFAULT_COLOR,
+            memo: String::new(),
+        }
+    }
 }
 
 impl Model {
@@ -158,6 +189,7 @@ impl Model {
             && self.lip_sync_parameters == other.lip_sync_parameters
             && self.target_version == other.target_version
             && self.preview_reduction == other.preview_reduction
+            && self.guides == other.guides
     }
 
     /// True if `other` holds the same data. Shared objects are compared by
@@ -194,6 +226,7 @@ impl Model {
             && self.lip_sync_parameters == other.lip_sync_parameters
             && self.target_version == other.target_version
             && self.preview_reduction == other.preview_reduction
+            && self.guides == other.guides
     }
 
     /// Whether art mesh `a` is drawn with the "illegal" look: a setting the

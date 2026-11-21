@@ -539,6 +539,27 @@ impl<'a, 'd> Loader<'a, 'd> {
             }
         }
 
+        // Ruler guides of the Modeling view (view-aids.md §1).
+        if let Some(g) = root.field("guides")? {
+            for e in g.list("guidesModeling")? {
+                m.guides.push(keyform_model::Guide {
+                    guid: e
+                        .field("guid")?
+                        .and_then(|u| u.attr("uuid").map(str::to_owned))
+                        .unwrap_or_default(),
+                    vertical: e.enum_value("type")? == Some("VERTICAL"),
+                    position: e.f32("position")?.unwrap_or(0.0),
+                    color: [
+                        e.f32("colorRed")?.unwrap_or(0.0),
+                        e.f32("colorGreen")?.unwrap_or(0.0),
+                        e.f32("colorBlue")?.unwrap_or(0.0),
+                        e.f32("colorAlpha")?.unwrap_or(1.0),
+                    ],
+                    memo: e.string("memo")?.unwrap_or_default(),
+                });
+            }
+        }
+
         if let Some(opts) = root.field("modelOptions")? {
             if let Some(e) = opts.own_field("MODEL_EXPORT_SETTING_KEY")? {
                 m.export = ExportSettings {

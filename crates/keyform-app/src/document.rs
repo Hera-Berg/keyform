@@ -107,7 +107,27 @@ pub enum Handle {
 }
 
 /// Angle increment of Shift-rotation (Environment ▸ Modeling default).
-const ROTATE_SNAP: f32 = 45.0;
+/// Environment Settings that act on documents (dialogs.md §11, defaults
+/// settings-keys.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prefs {
+    /// Shift-rotation increment of rotation deformers, degrees.
+    pub rotation_step: f32,
+    /// Double-clicking an art mesh starts mesh edit.
+    pub mesh_edit_double_click: bool,
+    /// Pasted objects' names get a number too.
+    pub paste_numbered_names: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            rotation_step: 45.0,
+            mesh_edit_double_click: true,
+            paste_numbered_names: false,
+        }
+    }
+}
 
 /// Binding more parameters than this to one object shows a warning
 /// (palettes.md §3).
@@ -412,6 +432,8 @@ pub struct Document {
     drag: Option<Drag>,
     /// A message for the log from a canvas tool (taken by the app).
     pub notice: Option<String>,
+    /// Environment Settings that act on documents (set by the app).
+    pub prefs: Prefs,
     /// A parameter dialog requested by a palette (taken by the app).
     pub param_request: Option<crate::param_dialog::Request>,
     /// Result of the mask check, recomputed when the model changes
@@ -793,6 +815,7 @@ impl Document {
             drag: None,
             edit_level: 2,
             notice: None,
+            prefs: Prefs::default(),
             param_request: None,
             mask_issues: keyform_edit::mask_issues(&model),
             mode: if palette_from_children {
@@ -1296,8 +1319,14 @@ impl Document {
                 let ang = |p: [f32; 2]| (p[1] - centre[1]).atan2(p[0] - centre[0]);
                 let mut delta = (ang(cur) - ang(*start)).to_degrees();
                 delta = (delta + 180.0).rem_euclid(360.0) - 180.0;
-                keyform_edit::rotate(&mut m, *target, *cell, delta, shift.then_some(ROTATE_SNAP))
-                    .map(|_| ())
+                keyform_edit::rotate(
+                    &mut m,
+                    *target,
+                    *cell,
+                    delta,
+                    shift.then_some(self.prefs.rotation_step),
+                )
+                .map(|_| ())
             }
             DragKind::Scale {
                 target,
@@ -1455,6 +1484,67 @@ impl Document {
             Ok((!glues.is_empty())
                 .then(|| format!("Glue removed with its ArtMesh: {}", glues.join(", "))))
         })
+    }
+
+    /// Edit ▸ Copy: the selected art meshes and deformers.
+    /// TODO(Q-0050): observed behaviour (keyform_edit::clipboard).
+    pub fn copy_objects(&self) -> Option<keyform_edit::clipboard::ObjectClipboard> {
+        if !self.editable() || self.mode != Mode::Modeling {
+            return None;
+        }
+        keyform_edit::clipboard::copy_objects(&self.model, &self.selection.objects)
+    }
+
+    /// Edit ▸ Paste: puts copies above the selected object (or at the top
+    /// of the root part) and selects them. Returns how many were pasted.
+    pub fn paste_objects(
+        &mut self,
+        clip: &keyform_edit::clipboard::ObjectClipboard,
+    ) -> Result<usize, String> {
+        if self.mode != Mode::Modeling {
+            return Err("Objects are pasted in the Modeling workspace.".into());
+        }
+        let above = self.primary();
+        if !self.editable() {
+            return Err("Only projects can be edited.".into());
+        }
+        let numbered = self.prefs.paste_numbered_names;
+        let mut m = self.model.clone();
+        let made = keyform_edit::clipboard::paste_objects(&mut m, clip, above)?;
+        if numbered {
+            keyform_edit::clipboard::number_names(&mut m, &made);
+        }
+        let n = made.len();
+        // The pasted objects are selected within the same undo step.
+        let mut set = SelectionSet::of(None);
+        set.objects = made;
+        self.selection = set;
+        self.model = m;
+        self.history
+            .commit("Paste", StepKind::Real, self.edit_state(), false);
+        self.model_changed();
+        Ok(n)
+    }
+
+    /// Edit ▸ Copy Parameter Value: every parameter's current value.
+    pub fn copy_parameter_values(&self) -> Vec<(String, f32)> {
+        keyform_edit::clipboard::copy_parameter_values(&self.model, &self.values)
+    }
+
+    /// Edit ▸ Paste Parameter Value: sets every copied parameter (by ID)
+    /// as if by hand. Returns how many were set.
+    pub fn paste_parameter_values(&mut self, copied: &[(String, f32)]) -> usize {
+        let mut values = self.values.clone();
+        let n = keyform_edit::clipboard::paste_parameter_values(&self.model, &mut values, copied);
+        for (p, v) in values.into_iter().enumerate() {
+            if copied
+                .iter()
+                .any(|(id, _)| self.model.parameters.get(p).is_some_and(|x| x.id == *id))
+            {
+                self.set_manual(p, v);
+            }
+        }
+        n
     }
 
     /// Generate and Register Glue: binds the one selected vertex on each of
@@ -3551,6 +3641,75 @@ mod e2e_regressions {
     /// Rotation deformers show a needle while not selected (reference
     /// look), hidden ones don't, and the selected one keeps its full
     /// widget instead.
+    /// Edit ▸ Copy / Paste of an art mesh (observed reference behaviour,
+    /// Q-0050): the copy is selected, keeps the name, gets a new ID, sits
+    /// above the selected original; one undo step removes it; the result
+    /// saves and reopens.
+    #[test]
+    fn copy_paste_objects_and_undo() {
+        let (mut d, path) = character("e2e-copy-paste");
+        let brow = mesh(&d, "BrowR");
+        d.select(Some(brow));
+        let clip = d.copy_objects().unwrap();
+        let n = d.model.art_meshes.len();
+        assert_eq!(d.paste_objects(&clip).unwrap(), 1);
+        assert_eq!(d.model.art_meshes.len(), n + 1);
+        let new = d.model.art_meshes.last().unwrap();
+        assert_eq!(new.info.id, "BrowR2");
+        let Selection::ArtMesh(orig) = brow else {
+            unreachable!()
+        };
+        assert_eq!(new.info.name, d.model.art_meshes[orig].info.name);
+        assert_eq!(d.selection.objects, vec![Selection::ArtMesh(n)]);
+        d.prefs.paste_numbered_names = true;
+        d.paste_objects(&clip).unwrap();
+        let numbered = d.model.art_meshes[n + 1].info.display_name().to_owned();
+        assert_ne!(numbered, d.model.art_meshes[orig].info.display_name());
+        assert!(numbered.ends_with(char::is_numeric), "{numbered}");
+        d.undo();
+        d.undo();
+        assert_eq!(d.model.art_meshes.len(), n, "one undo step per paste");
+        d.redo();
+        d.save_project(None).unwrap();
+        let back = Document::open(&path, &mut Log::default()).unwrap();
+        assert_eq!(back.model.art_meshes.len(), n + 1);
+        assert!(back.model.art_meshes.iter().any(|a| a.info.id == "BrowR2"));
+    }
+
+    /// Edit ▸ Copy / Paste Parameter Value sets every parameter back.
+    #[test]
+    fn copy_paste_parameter_values() {
+        let (mut d, _) = character("e2e-param-values");
+        d.set_manual(0, d.model.parameters[0].max);
+        let copied = d.copy_parameter_values();
+        d.reset_parameters();
+        assert_ne!(d.values[0], d.model.parameters[0].max);
+        assert_eq!(d.paste_parameter_values(&copied), d.model.parameters.len());
+        assert_eq!(d.values[0], d.model.parameters[0].max);
+    }
+
+    /// Show ▸ Guide ▸ Add Guide to Center and guide moves are undoable
+    /// model edits that save (view-aids.md §1).
+    #[test]
+    fn guides_are_saved_with_the_model() {
+        let (mut d, path) = character("e2e-guides");
+        let g = crate::view_aids::center_guides(&d, keyform_model::Guide::DEFAULT_COLOR);
+        assert_eq!(g.len(), 2);
+        let (w, h) = (d.model.canvas.width as f32, d.model.canvas.height as f32);
+        assert_eq!((g[0].vertical, g[0].position), (false, h / 2.0));
+        assert_eq!((g[1].vertical, g[1].position), (true, w / 2.0));
+        d.try_edit("Add Guide", |m| {
+            m.guides.extend(g);
+            Ok(())
+        })
+        .unwrap();
+        d.save_project(None).unwrap();
+        let back = Document::open(&path, &mut Log::default()).unwrap();
+        assert_eq!(back.model.guides, d.model.guides);
+        d.undo();
+        assert!(d.model.guides.is_empty());
+    }
+
     #[test]
     fn idle_rotation_gizmos_for_unselected_rotations() {
         let (mut d, _) = character("e2e-idle-gizmos");

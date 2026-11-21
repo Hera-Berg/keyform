@@ -127,7 +127,10 @@ def spec_menu_items():
             continue
         sc = re.search(r"\[([^\]]+)\]", text)
         label = re.sub(r"\[[^\]]*\]", "", text).replace("…", "").replace("☑", "").strip()
-        label = re.sub(r"\s+\(.*\)$", "", label).strip()
+        # A trailing note in parentheses is dropped, except a view qualifier
+        # ("Show Grid (Modeling View)"), which tells items apart.
+        if not re.search(r"\((?:[^()]*\b[Vv]iew)\)$", label):
+            label = re.sub(r"\s+\(.*\)$", "", label).strip()
         stack = stack[:depth] + [label]
         items.append({"path": [top] + stack, "shortcut": sc.group(1) if sc else "", "dialog": "…" in text})
     return items

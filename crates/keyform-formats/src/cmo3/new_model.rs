@@ -294,4 +294,21 @@ mod tests {
         let back = Cmo3Document::read(&bytes).unwrap();
         assert!(back.model.same_data(&doc.model));
     }
+
+    /// Guides are saved and read back (view-aids.md §1), and an unchanged
+    /// document still saves byte-identically.
+    #[test]
+    fn guides_round_trip() {
+        let mut doc = Cmo3Document::new_model("G", 600, 900).unwrap();
+        assert!(doc.model.guides.is_empty());
+        let mut g = keyform_model::Guide::new(true, 300.0);
+        g.memo = "centre & axis".into();
+        g.color = [1.0, 0.0, 0.0, 0.5];
+        doc.model.guides = vec![keyform_model::Guide::new(false, 450.0), g];
+        let bytes = doc.save_bytes().unwrap();
+        let mut back = Cmo3Document::read(&bytes).unwrap();
+        assert_eq!(back.model.guides, doc.model.guides);
+        let again = back.save_bytes().unwrap();
+        assert_eq!(again, bytes, "unchanged guides re-save byte-identically");
+    }
 }

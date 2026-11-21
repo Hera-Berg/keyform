@@ -24,6 +24,13 @@ pub struct ViewGpu {
     /// Canvas drags start on the first pixel of movement (not after egui's
     /// click tolerance), so vertices and objects can be nudged by 1 px.
     pub drag: CanvasDrag,
+    /// A guide being dragged (index, canvas position); committed on release.
+    guide_drag: crate::view_aids::GuideDrag,
+    /// The grabbed point of a drag that snaps to guides (canvas, at start).
+    snap_anchor: Option<[f32; 2]>,
+    /// Guides snapping the current drag (vertical, horizontal): drawn
+    /// highlighted.
+    snapping: [Option<usize>; 2],
     /// The texture page shown in mesh edit mode (texture index).
     mesh_texture: Option<(usize, egui::TextureHandle)>,
     /// The texture images the renderer was built with (data address and
@@ -111,6 +118,7 @@ pub fn canvas_ui(
     rs: Option<&egui_wgpu::RenderState>,
     tokens: &Tokens,
     status: &mut CanvasStatus,
+    aids: &crate::view_aids::ViewAids,
 ) -> egui::Response {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -163,7 +171,7 @@ pub fn canvas_ui(
         // Ctrl gives the Arrow tool temporarily (canvas-and-tools.md §3).
         crate::glue_tool::input(ui, &response, doc, rect, ppp);
     } else {
-        arrow_tool(ui, &response, doc, gpu, rect, ppp);
+        arrow_tool(ui, &response, doc, gpu, rect, ppp, aids);
     }
 
     let view = view_of(doc, rect, ppp);
@@ -347,6 +355,15 @@ pub fn canvas_ui(
         }
     }
 
+    crate::view_aids::draw(
+        &painter,
+        doc,
+        aids,
+        &to_screen,
+        gpu.guide_drag,
+        gpu.snapping,
+        tokens.accent,
+    );
     if doc.mesh_edit.is_some() {
         draw_mesh_edit(ui.ctx(), &painter, doc, gpu, rect, &to_screen, tokens);
     } else {
@@ -532,6 +549,7 @@ fn arrow_tool(
     gpu: &mut ViewGpu,
     rect: Rect,
     ppp: f32,
+    aids: &crate::view_aids::ViewAids,
 ) {
     use crate::document::SelectionSet;
     let typing = ui.ctx().egui_wants_keyboard_input();
@@ -550,6 +568,52 @@ fn arrow_tool(
     let to_canvas = |p: Pos2| view.to_canvas([(p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp]);
     let ph = gpu.drag.phase(ui, response);
     let press = press_pos(ui);
+    let to_screen = |p: [f32; 2]| -> Pos2 {
+        let q = view.to_px(p);
+        rect.min + egui::vec2(q[0], q[1]) / ppp
+    };
+    // A guide being dragged follows the pointer (view-aids.md §1).
+    if let Some((i, _)) = gpu.guide_drag {
+        let vertical = doc.model.guides.get(i).is_some_and(|g| g.vertical);
+        if ph.dragging {
+            if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                let c = to_canvas(p);
+                gpu.guide_drag = Some((i, if vertical { c[0] } else { c[1] }));
+            }
+        } else {
+            let pos = gpu.guide_drag.take().map(|g| g.1);
+            if let Some(pos) =
+                pos.filter(|p| doc.model.guides.get(i).is_some_and(|g| g.position != *p))
+            {
+                if let Err(e) = doc.try_edit("Move Guide", |m| {
+                    if let Some(g) = m.guides.get_mut(i) {
+                        g.position = pos;
+                    }
+                    Ok(())
+                }) {
+                    doc.notice = Some(e);
+                }
+            }
+        }
+        return;
+    }
+    if !ph.dragging {
+        gpu.snap_anchor = None;
+        gpu.snapping = [None, None];
+    }
+    // Double-clicking an art mesh starts mesh edit (Environment Settings ▸
+    // Modeling, default on; settings-keys.md).
+    if doc.prefs.mesh_edit_double_click && !shift && response.double_clicked() {
+        if let Some(q) = press.map(to_canvas) {
+            if let Some(hit @ crate::document::Selection::ArtMesh(_)) = doc.hit_test(q) {
+                doc.select(Some(hit));
+                if let Err(e) = doc.start_mesh_edit() {
+                    doc.notice = Some(e);
+                }
+                return;
+            }
+        }
+    }
     if ph.started || ph.clicked {
         let Some(press) = press else { return };
         let q = to_canvas(press);
@@ -589,6 +653,18 @@ fn arrow_tool(
                 set.set_points(vec![pt]);
             }
             drag_points = true;
+            if aids.snap_guides && aids.guides_on(doc) {
+                gpu.snap_anchor = doc.object_points(pt.0).get(pt.1).copied();
+            }
+        } else if let Some(i) = ph
+            .started
+            .then(|| aids.guides_on(doc))
+            .filter(|&on| on)
+            .and_then(|_| crate::view_aids::guide_hit(doc, &to_screen, press))
+        {
+            // Pressing on a guide drags it.
+            gpu.guide_drag = doc.model.guides.get(i).map(|g| (i, g.position));
+            return;
         } else if !shift && ph.started && doc.selected_hit(q, radius).is_some() {
             // A drag inside a selected object moves it (a plain click still
             // picks the mesh under the pointer).
@@ -658,7 +734,20 @@ fn arrow_tool(
         if ph.dragging {
             if let (Some(a), Some(b)) = (press, ui.input(|i| i.pointer.interact_pos())) {
                 let (ca, cb) = (to_canvas(a), to_canvas(b));
-                doc.drag_update([cb[0] - ca[0], cb[1] - ca[1]], shift);
+                let mut total = [cb[0] - ca[0], cb[1] - ca[1]];
+                // Snap Moving Vertices to Guide: the grabbed point lands
+                // on guides within 2 screen pixels (view-aids.md §1).
+                if let Some(anchor) = gpu.snap_anchor.filter(|_| aids.guides_on(doc)) {
+                    let moved = [anchor[0] + total[0], anchor[1] + total[1]];
+                    let (snapped, hit) = crate::view_aids::snap(
+                        &doc.model.guides,
+                        moved,
+                        crate::view_aids::snap_distance(doc.view.zoom),
+                    );
+                    total = [snapped[0] - anchor[0], snapped[1] - anchor[1]];
+                    gpu.snapping = hit;
+                }
+                doc.drag_update(total, shift);
             }
         } else {
             doc.drag_end();
@@ -1464,7 +1553,15 @@ mod tests {
             let mut out = ctx.run_ui(input, |ui| {
                 let rect = ui.max_rect();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-                super::arrow_tool(ui, &response, &mut doc, &mut gpu, rect, 1.0);
+                super::arrow_tool(
+                    ui,
+                    &response,
+                    &mut doc,
+                    &mut gpu,
+                    rect,
+                    1.0,
+                    &Default::default(),
+                );
             });
             out.textures_delta.clear();
             doc.tick(0.0, &PlaybackOptions::default(), &mut log);

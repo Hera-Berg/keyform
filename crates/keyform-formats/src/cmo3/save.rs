@@ -19,6 +19,7 @@ use keyform_model::*;
 
 mod extended;
 mod grid;
+mod guides;
 mod mesh;
 mod motion_sync;
 mod objects;
@@ -79,6 +80,7 @@ impl Cmo3Document {
         let ctx = &mut ctx;
         params::sync_parameters(&mut root, ctx, s, old, new)?;
         random_pose::sync_random_pose(&mut root, ctx, old, new)?;
+        guides::sync_guides(&mut root, ctx, old, new)?;
         // New layered images, model images and atlas pages (art meshes
         // created below refer to them).
         textures::sync_textures(&mut root, ctx, &self.archive, old, new)?;

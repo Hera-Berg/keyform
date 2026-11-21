@@ -5,6 +5,7 @@ pub mod artpath;
 pub mod automesh;
 pub mod blend_limits;
 pub mod checks;
+pub mod clipboard;
 pub mod deform_path;
 pub mod face;
 pub mod form_tools;

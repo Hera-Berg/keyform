@@ -14,6 +14,7 @@ mod blend_limits_dialog;
 mod canvas;
 mod create_deformer;
 mod document;
+mod env_settings;
 mod export_image;
 mod export_media;
 mod external_api;
@@ -50,6 +51,7 @@ mod texture_atlas;
 mod theme;
 mod track_layers;
 mod ui_map;
+mod view_aids;
 mod viewer_settings;
 
 use std::path::PathBuf;

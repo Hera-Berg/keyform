@@ -1078,6 +1078,7 @@ fn param_row(
 fn commit_text(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
+    name: &str,
     value: &str,
     enabled: bool,
 ) -> Option<String> {
@@ -1095,6 +1096,8 @@ fn commit_text(
             .id(id)
             .desired_width(f32::INFINITY),
     );
+    // Its own accessible name (the label beside it can be covered).
+    crate::icons::accessible_name(&r, name);
     if r.lost_focus() {
         ui.data_mut(|d| d.remove::<String>(id));
         return (buf != value).then_some(buf);
@@ -1151,7 +1154,13 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
         .num_columns(2)
         .show(ui, |ui| {
             ui.weak(crate::i18n::tr("Name"));
-            if let Some(name) = commit_text(ui, ("insp-name", s), &info.name, editable) {
+            if let Some(name) = commit_text(
+                ui,
+                ("insp-name", s),
+                crate::i18n::tr("Name"),
+                &info.name,
+                editable,
+            ) {
                 doc.edit("Change Name", |m| {
                     if let Some(i) = info_mut(m, s) {
                         i.name = name;
@@ -1160,7 +1169,13 @@ fn common_fields(ui: &mut egui::Ui, doc: &mut Document, s: Selection, log: &mut 
             }
             ui.end_row();
             ui.weak(crate::i18n::tr("ID"));
-            if let Some(id) = commit_text(ui, ("insp-id", s), &info.id, editable) {
+            if let Some(id) = commit_text(
+                ui,
+                ("insp-id", s),
+                crate::i18n::tr("ID"),
+                &info.id,
+                editable,
+            ) {
                 match id_problem(&doc.model, s, &id) {
                     Some(p) => log.warn(p),
                     None => {
@@ -1234,7 +1249,13 @@ fn clipping_fields(ui: &mut egui::Ui, doc: &mut Document, a: usize, log: &mut Lo
     let mut new_ids = None;
     ui.horizontal(|ui| {
         ui.weak(crate::i18n::tr("Clipping"));
-        if let Some(t) = commit_text(ui, ("insp-clip", a), &text, editable) {
+        if let Some(t) = commit_text(
+            ui,
+            ("insp-clip", a),
+            crate::i18n::tr("Clipping"),
+            &text,
+            editable,
+        ) {
             new_ids = Some(
                 t.split([',', ' ', ';'])
                     .map(str::trim)
