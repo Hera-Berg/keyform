@@ -5,7 +5,9 @@ lengths 60 / 120 / 240 px, thicknesses 4 / 7 / 12 / 20 / 40 px. Layer names
 encode the shape: S060_T04 … C240_T40. Prints a JSON description (layer,
 kind, length, thickness, centre line points) for the analysis script.
 
-usage: make_automesh_psd.py OUT.psd [DESC.json]"""
+usage: make_automesh_psd.py OUT.psd [DESC.json] [--thick 25,30,40,...]
+
+--thick replaces the thicknesses (Q-0049 measures 25-80 px strokes)."""
 import json
 import math
 import os
@@ -47,8 +49,14 @@ def outline_polygon(pts, t):
 
 
 def main():
-    out = sys.argv[1]
-    desc_path = sys.argv[2] if len(sys.argv) > 2 else os.path.splitext(out)[0] + ".json"
+    global THICK
+    args = sys.argv[1:]
+    if "--thick" in args:
+        k = args.index("--thick")
+        THICK = tuple(int(t) for t in args[k + 1].split(","))
+        del args[k:k + 2]
+    out = args[0]
+    desc_path = args[1] if len(args) > 1 else os.path.splitext(out)[0] + ".json"
     cols = len(THICK)
     rows = 2 * len(LENGTHS)
     mk.W, mk.H = cols * CELL, rows * CELL
