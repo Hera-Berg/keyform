@@ -1014,14 +1014,17 @@ fn draw_selection(
         return;
     };
     let stroke = egui::Stroke::new(1.0, tokens.accent.gamma_multiply(0.85));
-    // Unselected rotation deformers: a thin red needle from the origin to
-    // the handle tip with a dot at the origin (reference look; TODO(Q-0048)).
-    let needle = Color32::from_rgba_unmultiplied(226, 72, 52, 210);
+    // Unselected rotation deformers: a translucent red wedge from the origin
+    // to the handle tip, with a stronger centre line and a dark dot in a
+    // light halo at the origin. Measured in the black box (Q-0048): the
+    // length follows the zoom (handle length × zoom); the base is about 0.15
+    // of the on-screen length, at most ~28 px; halo and dot follow the base.
+    // TODO(Q-0048): observed look, not in the spec yet.
     for (origin, tip) in doc.idle_rotation_gizmos() {
         let (o, t) = (to_screen(origin), to_screen(tip));
-        painter.line_segment([o, t], egui::Stroke::new(1.5, needle));
-        painter.circle_filled(o, 6.5, needle.gamma_multiply(0.35));
-        painter.circle_filled(o, 3.5, needle);
+        for s in idle_needle_shapes(o, t) {
+            painter.add(s);
+        }
     }
     for &sel in &doc.selection.objects {
         match sel {
@@ -1296,6 +1299,39 @@ fn selection_polygon(
     .to_vec()
 }
 
+/// The idle rotation-deformer needle from origin `o` to tip `t` (screen
+/// points), as the reference draws it (see `draw_selection`).
+fn idle_needle_shapes(o: Pos2, t: Pos2) -> Vec<egui::Shape> {
+    let red = |a: f32| Color32::from_rgba_unmultiplied(235, 30, 20, (a * 255.0) as u8);
+    let along = t - o;
+    let len = along.length();
+    let base = (0.15 * len).clamp(3.0, 28.0);
+    let side = if len > 0.0 {
+        egui::vec2(-along.y, along.x) / len * (base / 2.0)
+    } else {
+        egui::Vec2::ZERO
+    };
+    let mut out = Vec::new();
+    if len > 0.0 {
+        out.push(egui::Shape::convex_polygon(
+            vec![o + side, t, o - side],
+            red(0.3),
+            egui::Stroke::NONE,
+        ));
+        out.push(egui::Shape::line_segment(
+            [o, t],
+            egui::Stroke::new((base / 6.0).clamp(1.0, 2.0), red(0.25)),
+        ));
+    }
+    out.push(egui::Shape::circle_filled(o, 0.55 * base, red(0.25)));
+    out.push(egui::Shape::circle_filled(
+        o,
+        0.25 * base,
+        Color32::from_rgba_unmultiplied(110, 30, 25, 140),
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -1346,6 +1382,24 @@ mod tests {
     /// A vertex can be nudged by 2 px: canvas drags start on the first
     /// pixel of movement (egui alone waits for 6 px and took a short drag
     /// for a click, so small nudges did nothing).
+    /// The idle needle's proportions measured in the reference (Q-0048): a
+    /// 60 px handle is a 59.5 px wedge about 9 px wide at the origin at 100 %
+    /// and 18 px at 200 %; at 400 % (238 px) the base stays near 27 px.
+    #[test]
+    fn idle_needle_matches_the_reference_proportions() {
+        let base = |len: f32| {
+            let shapes = super::idle_needle_shapes(egui::Pos2::ZERO, egui::pos2(0.0, -len));
+            let egui::Shape::Path(p) = &shapes[0] else {
+                panic!("the wedge comes first");
+            };
+            p.points[0].distance(p.points[2])
+        };
+        assert!((base(59.5) - 9.0).abs() < 1.0, "{}", base(59.5));
+        assert!((base(119.0) - 18.0).abs() < 1.5, "{}", base(119.0));
+        assert!((base(238.0) - 27.0).abs() < 1.5, "{}", base(238.0));
+        assert!(!super::idle_needle_shapes(egui::Pos2::ZERO, egui::Pos2::ZERO).is_empty());
+    }
+
     #[test]
     fn a_vertex_moves_two_pixels() {
         use crate::document::{Document, PlaybackOptions, Selection, SelectionSet};

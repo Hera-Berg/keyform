@@ -1190,9 +1190,12 @@ impl Document {
     }
 
     /// Rotation deformers drawn as a needle (origin and handle tip) while
-    /// not selected: every visible one in the Modeling workspace, as the
-    /// reference shows them (a thin red needle with a dot at the origin).
-    /// TODO(Q-0048): the spec doesn't describe this display yet.
+    /// not selected: every visible, unlocked one in the Modeling workspace,
+    /// as the reference shows them (observed for Q-0048: at every edit level,
+    /// whatever the Show Bone flag or the Parts palette filter; not in the
+    /// Animation workspace or image exports).
+    /// TODO(Q-0048): observed in the black box; canvas-and-tools.md doesn't
+    /// describe it yet.
     pub fn idle_rotation_gizmos(&self) -> Vec<([f32; 2], [f32; 2])> {
         if self.mode != Mode::Modeling {
             return Vec::new();
@@ -1200,7 +1203,8 @@ impl Document {
         (0..self.model.deformers.len())
             .filter(|&d| {
                 let o = Selection::Deformer(d);
-                self.model.deformers[d].info.visible && !self.selection.objects.contains(&o)
+                let info = &self.model.deformers[d].info;
+                info.visible && !info.locked && !self.selection.objects.contains(&o)
             })
             .filter_map(|d| {
                 self.rotation_widget(Selection::Deformer(d))
@@ -3579,6 +3583,13 @@ mod e2e_regressions {
         assert!(
             d.idle_rotation_gizmos().is_empty(),
             "hidden ones aren't drawn"
+        );
+        let info = &mut std::sync::Arc::make_mut(&mut d.model.deformers[r]).info;
+        info.visible = true;
+        info.locked = true;
+        assert!(
+            d.idle_rotation_gizmos().is_empty(),
+            "locked ones aren't drawn"
         );
     }
 
