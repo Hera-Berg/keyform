@@ -12,6 +12,8 @@ const USAGE: &str = "usage:
   kf physics <model> <physics3.json> <INPUT_ID> <OUTPUT_ID>
                                    swing INPUT (sine, 3 s) and report OUTPUT's range
   kf xml <in.cmo3|can3> <out.xml> extract the document's main.xml
+  kf xmlput <in.cmo3|can3> <main.xml> <out>
+                                   replace the document's main.xml (black-box test files)
   kf motions <in.can3> <outdir>   export the scenes as motion3.json
   kf set <in.cmo3> <out.cmo3> KIND:ID.FIELD=VALUE ...
                                    edit fields and save (see edit.rs)
@@ -62,6 +64,9 @@ fn main() -> ExitCode {
             edit::set_cmd(Path::new(input), Path::new(output), edits)
         }
         ["xml", input, output] => xml_dump(Path::new(input), Path::new(output)),
+        ["xmlput", input, xml, output] => {
+            xml_put(Path::new(input), Path::new(xml), Path::new(output))
+        }
         ["motions", input, outdir] => export_motions(Path::new(input), Path::new(outdir)),
         ["moc3info", path] => load_any(Path::new(path)).map(|m| print_summary(&m)),
         ["export", input, output] => export(Path::new(input), Path::new(output), None),
@@ -378,6 +383,23 @@ fn xml_dump(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error
     let entry = archive.main_xml().ok_or("no main_xml entry")?;
     let doc = keyform_formats::xml::XmlDocument::parse(&entry.data)?;
     std::fs::write(output, doc.write())?;
+    Ok(())
+}
+
+/// Writes `input` with its main.xml replaced by `xml` (parsed first, so
+/// malformed XML is refused); the other archive entries stay as they are.
+fn xml_put(input: &Path, xml: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut archive = keyform_formats::caff::CaffArchive::read(&std::fs::read(input)?)?;
+    let text = std::fs::read(xml)?;
+    keyform_formats::xml::XmlDocument::parse(&text)?;
+    let path = archive.main_xml().ok_or("no main_xml entry")?.path.clone();
+    let entry = archive
+        .entries
+        .iter_mut()
+        .find(|e| e.path == path)
+        .ok_or("no main_xml entry")?;
+    entry.data = text;
+    std::fs::write(output, archive.write()?)?;
     Ok(())
 }
 
