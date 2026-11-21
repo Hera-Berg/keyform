@@ -4,6 +4,7 @@
 pub mod artpath;
 pub mod automesh;
 pub mod blend_limits;
+pub mod canvas_size;
 pub mod checks;
 pub mod clipboard;
 pub mod deform_path;
@@ -16,6 +17,7 @@ pub mod keys;
 pub mod mesh;
 pub mod objects;
 pub mod rotate3d;
+pub mod search_replace;
 pub mod sway;
 pub mod template;
 pub mod warp_net;

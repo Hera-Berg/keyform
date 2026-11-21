@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use keyform_model::*;
 
+mod canvas;
 mod extended;
 mod grid;
 mod guides;
@@ -81,6 +82,7 @@ impl Cmo3Document {
         params::sync_parameters(&mut root, ctx, s, old, new)?;
         random_pose::sync_random_pose(&mut root, ctx, old, new)?;
         guides::sync_guides(&mut root, ctx, old, new)?;
+        canvas::sync_canvas(&mut root, ctx, old, new)?;
         // New layered images, model images and atlas pages (art meshes
         // created below refer to them).
         textures::sync_textures(&mut root, ctx, &self.archive, old, new)?;
@@ -684,7 +686,6 @@ fn check_model_level(old: &Model, new: &Model) -> Result<()> {
             "root part",
         ),
         (old.export == new.export, "export settings"),
-        (old.canvas == new.canvas, "canvas"),
         (old.name == new.name, "model name"),
         (old.guid == new.guid, "model GUID"),
         (old.target_version == new.target_version, "SDK target"),

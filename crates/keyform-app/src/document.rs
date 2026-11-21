@@ -3852,6 +3852,34 @@ pub(crate) mod e2e_regressions {
         assert!(a.anim.as_ref().unwrap().pending.is_none());
     }
 
+    /// Canvas Settings (dialogs.md §3): the canvas grows around the centre
+    /// anchor, root-level meshes move by half the growth, and it saves.
+    #[test]
+    fn canvas_settings_move_the_model_and_save() {
+        let (mut d, path) = character("e2e-canvas-size");
+        let (w, h) = (d.model.canvas.width, d.model.canvas.height);
+        let root = d
+            .model
+            .art_meshes
+            .iter()
+            .position(|a| a.target.is_none())
+            .unwrap();
+        let before = d.model.art_meshes[root].positions[..2].to_vec();
+        d.try_edit("Change Canvas Size", |m| {
+            keyform_edit::canvas_size::change_canvas_size(m, w + 100, h + 40, (1, 1))
+        })
+        .unwrap();
+        let after = d.model.art_meshes[root].positions[..2].to_vec();
+        assert_eq!([after[0] - before[0], after[1] - before[1]], [50.0, 20.0]);
+        d.save_project(None).unwrap();
+        let back = Document::open(&path, &mut Log::default()).unwrap();
+        assert_eq!(
+            (back.model.canvas.width, back.model.canvas.height),
+            (w + 100, h + 40)
+        );
+        assert_eq!(back.model.art_meshes[root].positions[..2], after[..]);
+    }
+
     #[test]
     fn idle_rotation_gizmos_for_unselected_rotations() {
         let (mut d, _) = character("e2e-idle-gizmos");

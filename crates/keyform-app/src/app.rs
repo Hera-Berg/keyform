@@ -163,6 +163,9 @@ pub struct KeyformApp {
     aid_dialogs: crate::view_aids::AidDialogs,
     /// File ▸ Environment Settings….
     env: crate::env_settings::EnvDialog,
+    /// File ▸ Model Statistics… / Canvas Settings….
+    stats: crate::model_stats::StatsWindow,
+    canvas_dialog: crate::canvas_settings::CanvasDialog,
     api_mode: &'static str,
     api_recording: crate::external_host::ApiRecording,
     physics_editor: crate::physics_editor::PhysicsEditor,
@@ -207,6 +210,8 @@ pub struct Settings {
     pub rotation_step: f32,
     /// "Add a number when pasting objects" (default false).
     pub paste_numbered_names: bool,
+    /// Model Statistics ▸ Auto Update (remembered, dialogs.md §19).
+    pub stats_auto_update: bool,
 }
 
 impl Default for Settings {
@@ -223,6 +228,7 @@ impl Default for Settings {
             mesh_edit_double_click: true,
             rotation_step: 45.0,
             paste_numbered_names: false,
+            stats_auto_update: false,
         }
     }
 }
@@ -350,6 +356,8 @@ impl KeyformApp {
             api_window: false,
             aid_dialogs: Default::default(),
             env: Default::default(),
+            stats: Default::default(),
+            canvas_dialog: Default::default(),
             api_mode: "Modeling",
             api_recording: Default::default(),
             settings,
@@ -1086,6 +1094,38 @@ impl KeyformApp {
                     .clicked()
                 {
                     self.api_window = true;
+                    ui.close();
+                }
+                ui.separator();
+                let has_project = self
+                    .active
+                    .and_then(|i| self.slots.get(i))
+                    .is_some_and(|s| s.doc.editable());
+                if ui
+                    .add_enabled(
+                        has_project,
+                        egui::Button::new(crate::i18n::tr("Model Statistics…")),
+                    )
+                    .clicked()
+                {
+                    self.stats.auto = self.settings.stats_auto_update;
+                    self.stats.show();
+                    ui.close();
+                }
+                let modeling = self
+                    .active
+                    .and_then(|i| self.slots.get(i))
+                    .is_some_and(|s| s.doc.editable() && s.doc.mode == Mode::Modeling);
+                if ui
+                    .add_enabled(
+                        modeling,
+                        egui::Button::new(crate::i18n::tr("Canvas Settings…")),
+                    )
+                    .clicked()
+                {
+                    if let Some(d) = self.active.and_then(|i| self.slots.get(i)) {
+                        self.canvas_dialog.open(&d.doc);
+                    }
                     ui.close();
                 }
                 ui.separator();
@@ -3459,6 +3499,19 @@ impl eframe::App for KeyformApp {
                 mesh_edit_double_click: self.settings.mesh_edit_double_click,
                 paste_numbered_names: self.settings.paste_numbered_names,
             };
+        }
+        {
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::model_stats::window(&ctx, &mut self.stats, doc);
+            self.settings.stats_auto_update = self.stats.auto;
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::canvas_settings::window(&ctx, &mut self.canvas_dialog, doc);
         }
         crate::view_aids::grid_dialog(&ctx, &mut self.aid_dialogs, &mut self.settings.aids);
         {
