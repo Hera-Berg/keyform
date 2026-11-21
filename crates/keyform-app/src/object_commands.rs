@@ -128,6 +128,16 @@ impl Document {
         })
     }
 
+    /// Edit ▸ Deselect Hidden and Locked Objects: drops hidden or locked
+    /// objects (and their points) from the selection.
+    pub fn deselect_hidden_and_locked(&mut self) {
+        let keep = |o: &Selection| info(&self.model, *o).is_some_and(|i| i.visible && !i.locked);
+        let mut set = self.selection.clone();
+        set.objects.retain(|o| keep(o));
+        set.retain_points(|p| keep(&p.0));
+        self.set_selection(set);
+    }
+
     /// Clipping ID ▸ Select Clipping Mask: selects the masks of the
     /// selected art meshes.
     pub fn select_clipping_masks(&mut self) {
@@ -198,6 +208,9 @@ mod tests {
         d.set_all_visible(true).unwrap();
         assert!(d.model.art_meshes.iter().all(|a| a.info.visible));
         d.lock_unselected().unwrap();
+        d.select(Some(Selection::ArtMesh(1)));
+        d.deselect_hidden_and_locked();
+        assert!(d.selection.objects.is_empty(), "the locked mesh drops out");
         d.set_all_locked(false).unwrap();
         assert!(d.model.art_meshes.iter().all(|a| !a.info.locked));
     }

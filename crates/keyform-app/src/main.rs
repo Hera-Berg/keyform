@@ -45,6 +45,7 @@ mod path_tool;
 mod physics_editor;
 mod psd_dialog;
 mod reference_p5;
+mod search_replace_ui;
 mod soft_select;
 mod template_dialog;
 mod template_list;

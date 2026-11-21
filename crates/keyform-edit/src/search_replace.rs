@@ -254,11 +254,13 @@ mod tests {
 
     #[test]
     fn replace_checks_ids_and_names() {
-        let mut m = Model::default();
-        m.parameters = vec![
-            Arc::new(keyform_model::Parameter::new("ParamA", 0.0, 1.0, 0.0)),
-            Arc::new(keyform_model::Parameter::new("ParamB", 0.0, 1.0, 0.0)),
-        ];
+        let mut m = Model {
+            parameters: vec![
+                Arc::new(keyform_model::Parameter::new("ParamA", 0.0, 1.0, 0.0)),
+                Arc::new(keyform_model::Parameter::new("ParamB", 0.0, 1.0, 0.0)),
+            ],
+            ..Model::default()
+        };
         let rows = items(&m);
         assert_eq!(rows.len(), 2);
         assert_eq!(

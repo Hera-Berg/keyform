@@ -165,6 +165,8 @@ pub struct KeyformApp {
     env: crate::env_settings::EnvDialog,
     /// File ▸ Model Statistics… / Canvas Settings….
     stats: crate::model_stats::StatsWindow,
+    /// Edit ▸ Search and Replace….
+    search: crate::search_replace_ui::SearchReplace,
     canvas_dialog: crate::canvas_settings::CanvasDialog,
     api_mode: &'static str,
     api_recording: crate::external_host::ApiRecording,
@@ -357,6 +359,7 @@ impl KeyformApp {
             aid_dialogs: Default::default(),
             env: Default::default(),
             stats: Default::default(),
+            search: Default::default(),
             canvas_dialog: Default::default(),
             api_mode: "Modeling",
             api_recording: Default::default(),
@@ -1242,6 +1245,33 @@ impl KeyformApp {
                     if let Some(d) = self.active_doc() {
                         d.select(None);
                     }
+                }
+                if ui
+                    .add_enabled(
+                        self.active.is_some(),
+                        egui::Button::new(crate::i18n::tr("Deselect Hidden and Locked Objects")),
+                    )
+                    .clicked()
+                {
+                    if let Some(d) = self.active_doc() {
+                        d.deselect_hidden_and_locked();
+                    }
+                }
+                ui.separator();
+                let project = self
+                    .active
+                    .and_then(|i| self.slots.get(i))
+                    .is_some_and(|s| s.doc.editable());
+                if ui
+                    .add_enabled(
+                        project,
+                        egui::Button::new(crate::i18n::tr("Search and Replace…"))
+                            .shortcut_text("Ctrl+F"),
+                    )
+                    .clicked()
+                {
+                    self.search.open = true;
+                    ui.close();
                 }
             });
             ui.menu_button(crate::i18n::tr("Show"), |ui| {
@@ -2854,6 +2884,16 @@ impl KeyformApp {
         } else if save {
             self.save_active();
         }
+        // Edit ▸ Search and Replace [Ctrl+F].
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::F)))
+            && self
+                .active
+                .and_then(|i| self.slots.get(i))
+                .is_some_and(|s| s.doc.editable())
+        {
+            self.search.open = true;
+        }
         // File ▸ Open Recent File [Ctrl+Shift+O] (before Ctrl+O, which
         // would also match).
         if ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::O))) {
@@ -3512,6 +3552,11 @@ impl eframe::App for KeyformApp {
                 .and_then(|i| self.slots.get_mut(i))
                 .map(|s| &mut s.doc);
             crate::canvas_settings::window(&ctx, &mut self.canvas_dialog, doc);
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::search_replace_ui::window(&ctx, &mut self.search, doc);
         }
         crate::view_aids::grid_dialog(&ctx, &mut self.aid_dialogs, &mut self.settings.aids);
         {

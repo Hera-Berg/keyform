@@ -92,3 +92,5 @@ Show ▸ Onion skin ▸ Modeling View	c	onion skin not implemented (view-aids.md
 Mesh Edit mode ▸ Subtools ▸ Delete Vertex	c	no Delete Vertex subtool (Delete Vertex is a command in the Mesh Edit mode menu)
 Mesh Edit mode ▸ Subtools ▸ Add points	c	no "Add points" subtool yet
 Window ▸ Workspace ▸	a	spec placeholder for the workspace list; Keyform lists Modeling / Viewer / Animation there
+Show ▸ Onion skin ▸ Animation View	c	onion skin not implemented (view-aids.md §4)
+Show ▸ Track Trajectory ▸ Animation View	c	track trajectory not implemented
