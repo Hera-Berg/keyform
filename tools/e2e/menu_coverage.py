@@ -57,8 +57,25 @@ def main():
     a = ap.parse_args()
     data = json.load(open(a.audit_json))
     seen = {norm(k): v for k, v in data["seen"].items()}
+    # Menu labels as the audit normalises them now (older audit.json files
+    # kept shortcuts such as "Enter"), plus variants without a trailing
+    # parenthesis or shortcut digit ("Still Image (Sequence)…", "Level 1
+    # (refine) 1"), which the spec's labels leave out.
+    def variants(label):
+        t = audit.norm(label)
+        out = {norm(t)}
+        t2 = re.sub(r"\s+[0-9]$", "", t)
+        out.add(norm(t2))
+        out.add(norm(re.sub(r"\s*\([^()]*\)\s*(…|\.\.\.)?$", "", t2)))
+        return out
+
     have_menu = {tuple(json.loads(k)) for k in data["menu_items"]}
-    have_norm = {tuple(norm(x) for x in p) for p in have_menu}
+    have_norm = set()
+    for p in have_menu:
+        combos = [()]
+        for x in p:
+            combos = [c + (v,) for c in combos for v in variants(x)]
+        have_norm.update(combos)
     strings = app_strings()
     over = {}
     if os.path.exists(a.overrides):
@@ -75,8 +92,8 @@ def main():
         label = norm(path[-1])
         keyboard = path[0].startswith(KEYBOARD)
         how = ""
-        if key in over:
-            cls, how = over[key]
+        if key.strip() in over:
+            cls, how = over[key.strip()]
         elif POLICY.search(key):
             cls = "a"
         else:

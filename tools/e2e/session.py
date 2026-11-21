@@ -1043,7 +1043,7 @@ def save_can3(h, psd, out):
 def export_motions(h, psd, out):
     rt = os.path.join(out, "runtime")
     h.answer_dialog(rt)
-    h.menu("File", "Export For Runtime", "Export motion files (motion3.json)…")
+    h.menu("File", "Export For Runtime", "Export motion file…")
     for _ in range(50):
         if any(f.endswith(".motion3.json") for f in os.listdir(rt)) or os.path.isdir(os.path.join(rt, "motions")):
             break
@@ -1132,7 +1132,7 @@ STEPS = [
     ("File ▸ New ▸ Animation", new_animation),
     ("Scene keys: head turn, blink, mouth", anim_keys),
     ("File ▸ Save as model.can3", save_can3),
-    ("Export motion files (motion3.json)", export_motions),
+    ("Export motion file (motion3.json)", export_motions),
     ("Model Settings: add the motion to model3.json", viewer_motion),
 ]
 

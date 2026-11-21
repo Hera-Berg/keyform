@@ -343,6 +343,16 @@ fn import(st: &mut PhysicsEditor, doc: &mut Document, rig: &mut PhysicsRig, log:
     }
 }
 
+/// File ▸ Export For Runtime ▸ Export Physics settings…: the model's
+/// physics as physics3.json (the Physics Settings window's export).
+pub fn export_model_physics(doc: &Document, log: &mut Log) {
+    let mut st = PhysicsEditor::default();
+    export(&mut st, doc, &doc.model.physics, log);
+    if let Some(m) = st.message {
+        log.warn(m);
+    }
+}
+
 fn export(st: &mut PhysicsEditor, doc: &Document, rig: &PhysicsRig, log: &mut Log) {
     let Some(v) = keyform_physics::json3::to_json(rig, &doc.model.parameters, true) else {
         st.message = Some("There are no physics settings to export.".into());

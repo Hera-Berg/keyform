@@ -7,7 +7,7 @@ File ▸ Export Image/Video ▸ Video	p	File ▸ Export Image/Video ▸ Image se
 File ▸ Export For Runtime ▸ Export motion file	p	File ▸ Export For Runtime ▸ Export motion files (motion3.json)… (rename)
 Edit ▸ Copy	c	generic copy of selected objects (Copy Form exists: Edit Form ▸ Copy Form)
 Edit ▸ Paste	c	generic paste (Paste Form exists)
-Show ▸ Texture Atlas	p	Modeling ▸ Texture Atlas
+Show ▸ Texture Atlas	c	display type: show the texture atlas instead of the model image (not the atlas editor, which is Modeling ▸ Texture Atlas)
 Show ▸ Display Quality ▸ 1/2	c	
 Modeling ▸ Parameter ▸ Reset to default values	b	Parameter palette Reset; toolbar Reset parameters
 Modeling ▸ Parameter ▸ Auto Generation of Face Motion	p	Modeling ▸ Auto Generation of Face Motion… (move under Parameter)
@@ -77,7 +77,7 @@ Mesh Edit mode ▸ Flip horizontally	c	the Edit Form ▸ Flip… dialog flips fo
 Mesh Edit mode ▸ Flip vertically	c	as Flip horizontally
 Mesh Edit mode ▸ Glue / bind the selected vertices	b	Ctrl+G; Tool Details ▸ Bind (two-mesh mesh edit)
 Mesh Edit mode ▸ Unglue / unbind the selected vertices	b	Ctrl+Shift+G; Tool Details ▸ Unbind
-Window ▸ Workspace ▸ [CMenuItem]	a	not a command: the spec's placeholder for the workspace list
+Window ▸ Workspace ▸	a	not a command: the spec's placeholder for the workspace list
 Window ▸ Workspace ▸ Reset Current Layout	p	Window ▸ Reset Current Layout
 Help ▸ Home	b	Home tab (welcome page)
 Help ▸ Go to Live2D Web Page	a	Live2D web pages / products (spec: Help links point to Keyform's own pages instead)
@@ -89,3 +89,6 @@ Help ▸ Update History	a	Live2D web pages / products (spec: Help links point to
 Help ▸ User Manual	c	should open Keyform's documentation
 Help ▸ Live2D Help	c	should open Keyform's documentation
 Show ▸ Onion skin ▸ Modeling View	c	onion skin not implemented (view-aids.md §4)
+Mesh Edit mode ▸ Subtools ▸ Delete Vertex	c	no Delete Vertex subtool (Delete Vertex is a command in the Mesh Edit mode menu)
+Mesh Edit mode ▸ Subtools ▸ Add points	c	no "Add points" subtool yet
+Window ▸ Workspace ▸	a	spec placeholder for the workspace list; Keyform lists Modeling / Viewer / Animation there

@@ -33,6 +33,7 @@ mod log;
 mod mesh_edit;
 mod motion_sync_dialog;
 mod new_model_dialog;
+mod object_commands;
 mod open_check;
 mod palettes;
 mod param_ctrl_ui;

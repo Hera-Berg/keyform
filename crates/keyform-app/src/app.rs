@@ -224,6 +224,17 @@ impl Default for Settings {
     }
 }
 
+/// Modeling ▸ Lock / Show/Hide commands (menu and shortcuts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObjCmd {
+    LockSelected,
+    LockUnselected,
+    UnlockAll,
+    HideSelected,
+    HideUnselected,
+    ShowAll,
+}
+
 /// What Edit ▸ Copy puts on the system clipboard: the copied objects'
 /// names (the objects themselves stay inside Keyform).
 fn clipboard_text(clip: &keyform_edit::clipboard::ObjectClipboard) -> String {
@@ -739,6 +750,109 @@ impl KeyformApp {
         }
     }
 
+    /// Glue / bind [Ctrl+G] or unglue / unbind [Ctrl+Shift+G] the selected
+    /// vertices: between the two meshes in mesh edit, else on the canvas
+    /// selection (glue.md "Bind / unbind").
+    fn glue_command(&mut self, unbind: bool) {
+        let bind = !unbind;
+        // In mesh edit: between the two meshes (glue.md "Bind / unbind").
+        let mut done = false;
+        if let Some(d) = self.active_doc() {
+            let max_dist = 40.0 / d.view.zoom.max(1e-6);
+            let model = d.model.clone();
+            if let Some(s) = d.mesh_edit.as_mut() {
+                done = true;
+                match s.bind(unbind, max_dist, &model) {
+                    Ok(n) => self.log.info(format!(
+                        "{n} vertex pairs {} (applied when mesh editing finishes).",
+                        if unbind { "unbound" } else { "bound" }
+                    )),
+                    Err(e) => self.log.warn(e),
+                }
+            }
+        }
+        if let Some(d) = self.active_doc().filter(|d| !done && d.mesh_edit.is_none()) {
+            let r = if bind {
+                d.glue_selected_vertices()
+            } else {
+                d.unglue_selected_vertices()
+            };
+            if let Err(e) = r {
+                self.log.warn(e);
+            }
+        }
+    }
+
+    /// Runs a Modeling ▸ Lock / Show/Hide command on the active project.
+    fn object_command(&mut self, c: ObjCmd) {
+        let Some(d) = self
+            .active_doc()
+            .filter(|d| d.editable() && d.mode == Mode::Modeling)
+        else {
+            return;
+        };
+        let r = match c {
+            ObjCmd::LockSelected => d.toggle_selected_locked(),
+            ObjCmd::LockUnselected => d.lock_unselected(),
+            ObjCmd::UnlockAll => d.set_all_locked(false),
+            ObjCmd::HideSelected => d.toggle_selected_visible(),
+            ObjCmd::HideUnselected => d.hide_unselected(),
+            ObjCmd::ShowAll => d.set_all_visible(true),
+        };
+        if let Err(e) = r {
+            self.log.warn(e);
+        }
+    }
+
+    /// Help ▸ Home: shows the Home page next to the views.
+    fn show_home(&mut self) {
+        if self.dock.find_tab(&Tab::Welcome).is_none() {
+            match self.dock.find_tab_from(|t| matches!(t, Tab::View(_))) {
+                Some(path) => {
+                    if let Ok(leaf) = self.dock.leaf_mut(path.node_path()) {
+                        leaf.append_tab(Tab::Welcome);
+                    }
+                }
+                None => self.dock.push_to_focused_leaf(Tab::Welcome),
+            }
+        }
+        if let Some(p) = self.dock.find_tab(&Tab::Welcome) {
+            let _ = self.dock.set_active_tab(p);
+        }
+    }
+
+    /// Whether the active document is an animation in its workspace.
+    fn animation_open(&self) -> bool {
+        self.active
+            .and_then(|i| self.slots.get(i))
+            .is_some_and(|s| s.doc.mode == Mode::Animation && s.doc.anim.is_some())
+    }
+
+    /// File ▸ Export Image/Video ▸ GIF Animation / Still Image (Sequence) /
+    /// Video: the media export dialog set to that format.
+    fn open_media_export(&mut self, kind: crate::export_media::MediaKind) {
+        if self.animation_open() {
+            self.export_media.kind = kind;
+            self.export_media.open = true;
+        }
+    }
+
+    /// Switches the active document's workspace (toolbar combo, Window ▸
+    /// Workspace).
+    fn set_workspace(&mut self, mode: Mode) {
+        let Some(d) = self.active_doc() else { return };
+        if mode == d.mode {
+            return;
+        }
+        match d.finish_mesh_edit() {
+            Err(e) => self.log.warn(e),
+            Ok(_) => {
+                d.mode = mode;
+                d.reset_parameters();
+            }
+        }
+    }
+
     fn active_doc(&mut self) -> Option<&mut Document> {
         self.active
             .and_then(|i| self.slots.get_mut(i))
@@ -875,20 +989,6 @@ impl KeyformApp {
                 }
                 ui.separator();
                 ui.menu_button(crate::i18n::tr("Export Image/Video"), |ui| {
-                    let animation = self
-                        .active
-                        .and_then(|i| self.slots.get(i))
-                        .is_some_and(|s| s.doc.mode == Mode::Animation && s.doc.anim.is_some());
-                    if ui
-                        .add_enabled(
-                            animation,
-                            egui::Button::new(crate::i18n::tr("Image sequence / GIF / Video…")),
-                        )
-                        .on_disabled_hover_text("Needs the Animation workspace")
-                        .clicked()
-                    {
-                        self.export_media.open = true;
-                    }
                     let modeling = self
                         .active
                         .and_then(|i| self.slots.get(i))
@@ -899,6 +999,31 @@ impl KeyformApp {
                         .clicked()
                     {
                         self.export_image.open = true;
+                    }
+                    let animation = self.animation_open();
+                    for (label, kind, key) in [
+                        ("GIF Animation…", crate::export_media::MediaKind::Gif, ""),
+                        (
+                            "Still Image (Sequence)…",
+                            crate::export_media::MediaKind::Png,
+                            "Ctrl+I",
+                        ),
+                        (
+                            "Video…",
+                            crate::export_media::MediaKind::Video,
+                            "Ctrl+Shift+M",
+                        ),
+                    ] {
+                        if ui
+                            .add_enabled(
+                                animation,
+                                egui::Button::new(crate::i18n::tr(label)).shortcut_text(key),
+                            )
+                            .on_disabled_hover_text("Needs the Animation workspace")
+                            .clicked()
+                        {
+                            self.open_media_export(kind);
+                        }
                     }
                 });
                 ui.menu_button(crate::i18n::tr("Export For Runtime"), |ui| {
@@ -911,6 +1036,18 @@ impl KeyformApp {
                     {
                         self.export_runtime_active();
                     }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            project,
+                            egui::Button::new(crate::i18n::tr("Export Physics settings…")),
+                        )
+                        .clicked()
+                    {
+                        if let Some(d) = self.active.and_then(|i| self.slots.get(i)) {
+                            crate::physics_editor::export_model_physics(&d.doc, &mut self.log);
+                        }
+                    }
                     let anim = self
                         .active
                         .and_then(|i| self.slots.get(i))
@@ -918,9 +1055,8 @@ impl KeyformApp {
                     if ui
                         .add_enabled(
                             anim,
-                            egui::Button::new(crate::i18n::tr(
-                                "Export motion files (motion3.json)…",
-                            )),
+                            egui::Button::new(crate::i18n::tr("Export motion file…"))
+                                .shortcut_text("Ctrl+Alt+Shift+S"),
                         )
                         .on_disabled_hover_text("Needs an animation (.can3)")
                         .clicked()
@@ -947,6 +1083,15 @@ impl KeyformApp {
                 {
                     let s = self.settings;
                     self.env.open(&s);
+                }
+                if ui
+                    .button(crate::i18n::tr(
+                        "External Application Integration Settings…",
+                    ))
+                    .clicked()
+                {
+                    self.api_window = true;
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -1099,16 +1244,6 @@ impl KeyformApp {
                         }
                     }
                 });
-                if ui
-                    .button(crate::i18n::tr(
-                        "External Application Integration Settings…",
-                    ))
-                    .clicked()
-                {
-                    self.api_window = true;
-                    ui.close();
-                }
-                ui.separator();
                 let has = self.active.is_some();
                 if ui
                     .add_enabled(has, egui::Button::new(crate::i18n::tr("Fit to View")))
@@ -1167,7 +1302,9 @@ impl KeyformApp {
                 }
             });
             if self.active_doc().is_some_and(|d| d.mesh_edit.is_some()) {
-                ui.menu_button(crate::i18n::tr("Mesh Edit"), |ui| self.mesh_edit_menu(ui));
+                ui.menu_button(crate::i18n::tr("Mesh Edit mode"), |ui| {
+                    self.mesh_edit_menu(ui)
+                });
             } else {
                 ui.menu_button(crate::i18n::tr("Modeling"), |ui| self.modeling_menu(ui));
             }
@@ -1180,9 +1317,34 @@ impl KeyformApp {
                     }
                 }
                 ui.separator();
-                if ui.button(crate::i18n::tr("Reset Current Layout")).clicked() {
-                    self.reset_layout();
-                }
+                ui.menu_button(crate::i18n::tr("Workspace"), |ui| {
+                    let (mode, editable, anim) = self
+                        .active
+                        .and_then(|i| self.slots.get(i))
+                        .map_or((Mode::Viewer, false, false), |s| {
+                            (s.doc.mode, s.doc.editable(), s.doc.anim.is_some())
+                        });
+                    for (m, label, ok) in [
+                        (Mode::Modeling, "Modeling", editable),
+                        (Mode::Viewer, "Viewer", self.active.is_some()),
+                        (Mode::Animation, "Animation", anim),
+                    ] {
+                        if ui
+                            .add_enabled(
+                                ok,
+                                egui::Button::selectable(mode == m, crate::i18n::tr(label)),
+                            )
+                            .clicked()
+                        {
+                            self.set_workspace(m);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(crate::i18n::tr("Reset Current Layout")).clicked() {
+                        self.reset_layout();
+                    }
+                });
                 ui.separator();
                 let mut dark = self.dark;
                 if ui
@@ -1195,6 +1357,11 @@ impl KeyformApp {
                 }
             });
             ui.menu_button(crate::i18n::tr("Help"), |ui| {
+                if ui.button(crate::i18n::tr("Home")).clicked() {
+                    self.show_home();
+                    ui.close();
+                }
+                ui.separator();
                 ui.label(format!("Keyform {}", env!("CARGO_PKG_VERSION")));
                 ui.weak(crate::i18n::tr(
                     "Clean-room 2D-mesh rigging and animation editor.",
@@ -1210,6 +1377,7 @@ impl KeyformApp {
             ui.weak(crate::i18n::tr("No model"));
             return;
         };
+        let gen_ok = doc_ok_for_physics(self);
         let doc = &mut self.slots[i].doc;
         let ok = doc.editable() && doc.mode == Mode::Modeling;
         ui.menu_button(crate::i18n::tr("Deformer"), |ui| {
@@ -1337,14 +1505,16 @@ impl KeyformApp {
         ui.menu_button(crate::i18n::tr("Parameter"), |ui| {
             if ui
                 .add_enabled(
-                    ok,
-                    egui::Button::new(crate::i18n::tr("Limit Settings for Blend Shape Weights…")),
+                    doc.mode == Mode::Modeling,
+                    egui::Button::new(crate::i18n::tr("Reset to default values"))
+                        .shortcut_text("Ctrl+1"),
                 )
                 .clicked()
             {
-                self.blend_limits.show();
+                doc.reset_parameters();
                 ui.close();
             }
+            ui.separator();
             if ui
                 .add_enabled(
                     ok,
@@ -1367,6 +1537,46 @@ impl KeyformApp {
                 }
                 ui.close();
             }
+            ui.separator();
+            ui.add_enabled_ui(gen_ok, |ui| {
+                ui.menu_button(crate::i18n::tr("Auto Generation of Face Motion"), |ui| {
+                    for label in ["Generate Face Deformer…", "Generate Face Motion…"] {
+                        if ui.button(crate::i18n::tr(label)).clicked() {
+                            self.face.open = true;
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            if ui
+                .add_enabled(
+                    gen_ok,
+                    egui::Button::new(crate::i18n::tr("Auto Generation of Sway Motion…")),
+                )
+                .clicked()
+            {
+                self.sway.show();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    gen_ok,
+                    egui::Button::new(crate::i18n::tr("Apply 3D Rotation Expression…")),
+                )
+                .clicked()
+            {
+                self.rotate3d.open = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .add_enabled(ok, egui::Button::new(crate::i18n::tr("Batch Reflect…")))
+                .clicked()
+            {
+                self.forms.open_batch(doc);
+                ui.close();
+            }
+            ui.separator();
             if ui
                 .add_enabled(
                     ok,
@@ -1378,10 +1588,23 @@ impl KeyformApp {
                 ui.close();
             }
             if ui
-                .add_enabled(ok, egui::Button::new(crate::i18n::tr("Batch Reflect…")))
+                .add_enabled(
+                    ok,
+                    egui::Button::new(crate::i18n::tr("Limit Settings for Blend Shape Weights…")),
+                )
                 .clicked()
             {
-                self.forms.open_batch(doc);
+                self.blend_limits.show();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    gen_ok,
+                    egui::Button::new(crate::i18n::tr("Motion-sync Settings…")),
+                )
+                .clicked()
+            {
+                self.motion_sync.show();
                 ui.close();
             }
         });
@@ -1437,6 +1660,62 @@ impl KeyformApp {
                 ui.close();
             }
         });
+        let mesh_selected = doc
+            .selection
+            .objects
+            .iter()
+            .any(|o| matches!(o, crate::document::Selection::ArtMesh(_)));
+        ui.menu_button(crate::i18n::tr("Clipping ID"), |ui| {
+            if ui
+                .add_enabled(
+                    mesh_selected,
+                    egui::Button::new(crate::i18n::tr("Select Clipping Mask")),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Select the masks of the selected ArtMeshes",
+                ))
+                .clicked()
+            {
+                doc.select_clipping_masks();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    mesh_selected,
+                    egui::Button::new(crate::i18n::tr("Reverse Clipping ID Lookup")),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Select the ArtMeshes that use the selected ones as a clipping mask",
+                ))
+                .clicked()
+            {
+                doc.reverse_clip_lookup();
+                ui.close();
+            }
+        });
+        ui.separator();
+        ui.menu_button(crate::i18n::tr("Model Template"), |ui| {
+            if ui
+                .add_enabled(
+                    gen_ok,
+                    egui::Button::new(crate::i18n::tr("Apply Template…")),
+                )
+                .clicked()
+            {
+                self.template.show();
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    gen_ok,
+                    egui::Button::new(crate::i18n::tr("Export template…")),
+                )
+                .clicked()
+            {
+                self.template.export = Some((String::new(), String::new(), String::new()));
+                ui.close();
+            }
+        });
         ui.separator();
         ui.menu_button(crate::i18n::tr("Texture Atlas"), |ui| {
             if ui
@@ -1452,77 +1731,97 @@ impl KeyformApp {
             }
         });
         ui.separator();
+        let mut cmd: Option<ObjCmd> = None;
+        let has_sel = !self.slots[i].doc.selection.objects.is_empty();
+        ui.menu_button(crate::i18n::tr("Lock"), |ui| {
+            for (label, key, c, need) in [
+                (
+                    "Lock/unlock Selected Objects",
+                    "Ctrl+2",
+                    ObjCmd::LockSelected,
+                    true,
+                ),
+                (
+                    "Lock the unselected objects",
+                    "Ctrl+Shift+2",
+                    ObjCmd::LockUnselected,
+                    true,
+                ),
+                ("Unlock all", "Ctrl+Alt+2", ObjCmd::UnlockAll, false),
+            ] {
+                if ui
+                    .add_enabled(
+                        ok && (has_sel || !need),
+                        egui::Button::new(crate::i18n::tr(label)).shortcut_text(key),
+                    )
+                    .clicked()
+                {
+                    cmd = Some(c);
+                    ui.close();
+                }
+            }
+        });
+        ui.menu_button(crate::i18n::tr("Show/Hide"), |ui| {
+            for (label, key, c, need) in [
+                (
+                    "Show/Hide Selected Objects",
+                    "Ctrl+3",
+                    ObjCmd::HideSelected,
+                    true,
+                ),
+                (
+                    "Hide the unselected objects",
+                    "Ctrl+Shift+3",
+                    ObjCmd::HideUnselected,
+                    true,
+                ),
+                ("Show all", "Ctrl+Alt+3", ObjCmd::ShowAll, false),
+            ] {
+                if ui
+                    .add_enabled(
+                        ok && (has_sel || !need),
+                        egui::Button::new(crate::i18n::tr(label)).shortcut_text(key),
+                    )
+                    .clicked()
+                {
+                    cmd = Some(c);
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+        let level = self.slots[i].doc.edit_level;
+        ui.menu_button(crate::i18n::tr("Edit Level"), |ui| {
+            for (l, label) in [
+                (1u8, "Level 1 (refine)"),
+                (2, "Level 2 (normal)"),
+                (3, "Level 3 (rough)"),
+            ] {
+                if ui
+                    .add_enabled(
+                        ok,
+                        egui::Button::selectable(level == l, crate::i18n::tr(label))
+                            .shortcut_text(l.to_string()),
+                    )
+                    .clicked()
+                {
+                    self.slots[i].doc.set_edit_level(l);
+                    ui.close();
+                }
+            }
+        });
+        if let Some(c) = cmd {
+            self.object_command(c);
+        }
+        ui.separator();
         if ui
             .add_enabled(
-                doc_ok_for_physics(self),
+                gen_ok,
                 egui::Button::new(crate::i18n::tr("Physics Settings…")),
             )
             .clicked()
         {
             self.physics_editor.show();
-            ui.close();
-        }
-        if ui
-            .add_enabled(
-                doc_ok_for_physics(self),
-                egui::Button::new(crate::i18n::tr("Motion-sync Settings…")),
-            )
-            .clicked()
-        {
-            self.motion_sync.show();
-            ui.close();
-        }
-        ui.menu_button(crate::i18n::tr("Model Template"), |ui| {
-            if ui
-                .add_enabled(
-                    doc_ok_for_physics(self),
-                    egui::Button::new(crate::i18n::tr("Apply Model Template…")),
-                )
-                .clicked()
-            {
-                self.template.show();
-                ui.close();
-            }
-            if ui
-                .add_enabled(
-                    doc_ok_for_physics(self),
-                    egui::Button::new(crate::i18n::tr("Export model template…")),
-                )
-                .clicked()
-            {
-                self.template.export = Some((String::new(), String::new(), String::new()));
-                ui.close();
-            }
-        });
-        ui.separator();
-        if ui
-            .add_enabled(
-                doc_ok_for_physics(self),
-                egui::Button::new(crate::i18n::tr("Auto Generation of Sway Motion…")),
-            )
-            .clicked()
-        {
-            self.sway.show();
-            ui.close();
-        }
-        if ui
-            .add_enabled(
-                doc_ok_for_physics(self),
-                egui::Button::new(crate::i18n::tr("Apply 3D Rotation Expression…")),
-            )
-            .clicked()
-        {
-            self.rotate3d.open = true;
-            ui.close();
-        }
-        if ui
-            .add_enabled(
-                doc_ok_for_physics(self),
-                egui::Button::new(crate::i18n::tr("Auto Generation of Face Motion…")),
-            )
-            .clicked()
-        {
-            self.face.open = true;
             ui.close();
         }
         if ui
@@ -1584,10 +1883,7 @@ impl KeyformApp {
         };
         let mut notice = None;
         if ui
-            .add(
-                egui::Button::new(crate::i18n::tr("Auto attach Edge (line)"))
-                    .shortcut_text("Ctrl+R"),
-            )
+            .add(egui::Button::new(crate::i18n::tr("Auto attach Edge")).shortcut_text("Ctrl+R"))
             .on_hover_text(crate::i18n::tr("Automatically join vertices"))
             .clicked()
         {
@@ -1635,7 +1931,34 @@ impl KeyformApp {
             s.delete_selected(tolerance);
             ui.close();
         }
+        let mut glue = None;
+        if ui
+            .add(
+                egui::Button::new(crate::i18n::tr("Glue / bind the selected vertices"))
+                    .shortcut_text("Ctrl+G"),
+            )
+            .clicked()
+        {
+            glue = Some(false);
+            ui.close();
+        }
+        if ui
+            .add(
+                egui::Button::new(crate::i18n::tr("Unglue / unbind the selected vertices"))
+                    .shortcut_text("Ctrl+Shift+G"),
+            )
+            .clicked()
+        {
+            glue = Some(true);
+            ui.close();
+        }
+        let mut lasso = None;
         ui.menu_button(crate::i18n::tr("Subtools"), |ui| {
+            if ui.button(crate::i18n::tr("Lasso")).clicked() {
+                s.tool = MeshTool::Select;
+                lasso = Some(true);
+                ui.close();
+            }
             for (t, name) in [
                 (MeshTool::Select, "Select Arrow"),
                 (MeshTool::AddPoint, "Add Point Tool"),
@@ -1650,6 +1973,14 @@ impl KeyformApp {
         });
         if let Some(n) = notice {
             self.log.info(n);
+        }
+        if let Some(l) = lasso {
+            if let Some(d) = self.active_doc() {
+                d.lasso = l;
+            }
+        }
+        if let Some(u) = glue {
+            self.glue_command(u);
         }
     }
 
@@ -1682,6 +2013,11 @@ impl KeyformApp {
 
     /// Playback toggles. spec: 70-advanced/viewer.md §3.7
     fn animation_menu(&mut self, ui: &mut egui::Ui) {
+        let doc = self
+            .active
+            .and_then(|i| self.slots.get_mut(i))
+            .map(|s| &mut s.doc);
+        crate::animation::main_menu(ui, doc);
         let o = &mut self.playback;
         ui.checkbox(&mut o.expression, crate::i18n::tr("Apply Expression"));
         ui.checkbox(&mut o.eye_blink, crate::i18n::tr("Automatic Eye-Blinking"));
@@ -2403,6 +2739,74 @@ impl KeyformApp {
         if ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::O))) {
             self.open_recent_file();
         }
+        // Export shortcuts (menus.md File): Still Image (Sequence) [Ctrl+I],
+        // Video [Ctrl+Shift+M], Export motion file [Ctrl+Alt+Shift+S].
+        let alt_shift_cmd = M::COMMAND | M::SHIFT | M::ALT;
+        let (video, still, motion) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&K::new(shift_cmd, Key::M)),
+                i.consume_shortcut(&K::new(M::COMMAND, Key::I)),
+                i.consume_shortcut(&K::new(alt_shift_cmd, Key::S)),
+            )
+        });
+        if video {
+            self.open_media_export(crate::export_media::MediaKind::Video);
+        } else if still {
+            self.open_media_export(crate::export_media::MediaKind::Png);
+        }
+        if motion
+            && self
+                .active
+                .and_then(|i| self.slots.get(i))
+                .is_some_and(|s| s.doc.anim.is_some())
+        {
+            self.export_motions_active();
+        }
+        // Modeling ▸ Parameter ▸ Reset to default values [Ctrl+1], Lock
+        // [Ctrl(+Shift / +Alt)+2], Show/Hide [Ctrl(+Shift / +Alt)+3].
+        if !ctx.egui_wants_keyboard_input() {
+            let alt_cmd = M::COMMAND | M::ALT;
+            let pressed = ctx.input_mut(|i| {
+                [
+                    (
+                        i.consume_shortcut(&K::new(alt_cmd, Key::Num2)),
+                        Some(ObjCmd::UnlockAll),
+                    ),
+                    (
+                        i.consume_shortcut(&K::new(shift_cmd, Key::Num2)),
+                        Some(ObjCmd::LockUnselected),
+                    ),
+                    (
+                        i.consume_shortcut(&K::new(M::COMMAND, Key::Num2)),
+                        Some(ObjCmd::LockSelected),
+                    ),
+                    (
+                        i.consume_shortcut(&K::new(alt_cmd, Key::Num3)),
+                        Some(ObjCmd::ShowAll),
+                    ),
+                    (
+                        i.consume_shortcut(&K::new(shift_cmd, Key::Num3)),
+                        Some(ObjCmd::HideUnselected),
+                    ),
+                    (
+                        i.consume_shortcut(&K::new(M::COMMAND, Key::Num3)),
+                        Some(ObjCmd::HideSelected),
+                    ),
+                    (i.consume_shortcut(&K::new(M::COMMAND, Key::Num1)), None),
+                ]
+            });
+            for (hit, c) in pressed {
+                match (hit, c) {
+                    (true, Some(c)) => self.object_command(c),
+                    (true, None) => {
+                        if let Some(d) = self.active_doc().filter(|d| d.mode == Mode::Modeling) {
+                            d.reset_parameters();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Ctrl+C / X / V (and with Shift) reach the app as clipboard events,
         // not keys (egui-winit): Edit ▸ Cut / Copy / Paste of objects, and
         // with Shift Edit Form ▸ Copy Form / Paste Form (menus.md).
@@ -2439,32 +2843,7 @@ impl KeyformApp {
             let bind =
                 !unbind && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::G)));
             if bind || unbind {
-                // In mesh edit: between the two meshes (glue.md "Bind / unbind").
-                let mut done = false;
-                if let Some(d) = self.active_doc() {
-                    let max_dist = 40.0 / d.view.zoom.max(1e-6);
-                    let model = d.model.clone();
-                    if let Some(s) = d.mesh_edit.as_mut() {
-                        done = true;
-                        match s.bind(unbind, max_dist, &model) {
-                            Ok(n) => self.log.info(format!(
-                                "{n} vertex pairs {} (applied when mesh editing finishes).",
-                                if unbind { "unbound" } else { "bound" }
-                            )),
-                            Err(e) => self.log.warn(e),
-                        }
-                    }
-                }
-                if let Some(d) = self.active_doc().filter(|d| !done && d.mesh_edit.is_none()) {
-                    let r = if bind {
-                        d.glue_selected_vertices()
-                    } else {
-                        d.unglue_selected_vertices()
-                    };
-                    if let Err(e) = r {
-                        self.log.warn(e);
-                    }
-                }
+                self.glue_command(unbind);
             }
         }
         // Arrow tool [A] / Lasso Tool [L] (menus.md "Keyboard-only commands").
@@ -2990,6 +3369,9 @@ impl eframe::App for KeyformApp {
         if crate::i18n::current() != self.settings.lang {
             crate::i18n::set(self.settings.lang);
         }
+        if let Some(d) = self.active_doc() {
+            crate::animation::run_pending(d);
+        }
         for s in &mut self.slots {
             s.doc.prefs = crate::document::Prefs {
                 rotation_step: self.settings.rotation_step,
@@ -3146,8 +3528,10 @@ impl eframe::App for KeyformApp {
                 .resizable(true)
                 .default_size(220.0)
                 .show(ui, |ui| crate::animation::timeline_ui(ui, d, &tokens));
-            // Space plays / pauses.
-            if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+            // Space and Animation ▸ Playback [Enter] play / pause.
+            if !ctx.egui_wants_keyboard_input()
+                && ctx.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter))
+            {
                 if let Some(a) = d.anim.as_mut() {
                     a.playing = !a.playing;
                 }

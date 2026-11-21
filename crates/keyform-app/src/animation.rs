@@ -21,6 +21,8 @@ pub enum AttrRef {
 
 /// An open animation and its playhead.
 pub struct AnimState {
+    /// A scene change asked for from the Animation menu, run next frame.
+    pub pending: Option<SceneOp>,
     pub doc: Can3Document,
     pub path: PathBuf,
     pub scene: usize,
@@ -525,6 +527,7 @@ impl Document {
         let mut doc = doc;
         doc.form_info = Some(form_info(&d.model));
         d.anim = Some(AnimState {
+            pending: None,
             doc,
             path: path.to_path_buf(),
             scene: 0,
@@ -589,6 +592,7 @@ impl Document {
         let mut doc = doc;
         doc.form_info = Some(form_info(&d.model));
         d.anim = Some(AnimState {
+            pending: None,
             doc,
             path,
             scene: 0,
@@ -1459,8 +1463,235 @@ fn settings_dialog(ctx: &egui::Context, st: &mut AnimState) {
     }
 }
 
-/// A structural change chosen in the timeline header.
-enum SceneOp {
+/// Runs a scene change asked for from the Animation menu (also when the
+/// Timeline palette is hidden).
+pub fn run_pending(doc: &mut Document) {
+    if let Some(op) = doc.anim.as_mut().and_then(|a| a.pending.take()) {
+        run_scene_op(doc, op);
+    }
+}
+
+/// Animation menu entries for what the timeline's own menus do (menus.md
+/// Animation: Scene, Track, Fade, Parameter Controller, Playback).
+pub fn main_menu(ui: &mut egui::Ui, doc: Option<&mut Document>) {
+    let Some(doc) = doc.filter(|d| d.anim.is_some()) else {
+        ui.add_enabled_ui(false, |ui| {
+            for m in ["Scene", "Track", "Fade", "Parameter Controller"] {
+                ui.menu_button(crate::i18n::tr(m), |_| {});
+            }
+            let _ = ui.add(egui::Button::new(crate::i18n::tr("Playback")).shortcut_text("Enter"));
+        })
+        .response
+        .on_hover_text(crate::i18n::tr("Needs an animation (.can3)"));
+        return;
+    };
+    let ms_names: Vec<String> = doc
+        .model
+        .motion_sync
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    let mut bake_ctrl = false;
+    let Some(st) = doc.anim.as_mut() else { return };
+    ui.menu_button(crate::i18n::tr("Scene"), |ui| {
+        if ui.button(crate::i18n::tr("New Scene")).clicked() {
+            st.pending = Some(SceneOp::Add);
+            ui.close();
+        }
+    });
+    let sounds: Vec<(usize, String)> = st
+        .scene()
+        .map(|s| {
+            s.tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| matches!(t.kind, TrackKind::Sound(_)))
+                .map(|(i, t)| (i, t.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    ui.menu_button(crate::i18n::tr("Track"), |ui| {
+        if ui
+            .button(crate::i18n::tr("Bake Animation from Parameter Controller"))
+            .clicked()
+        {
+            bake_ctrl = true;
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .button(crate::i18n::tr("Bake Animation from Physics…"))
+            .clicked()
+        {
+            st.pending = Some(SceneOp::OpenPhysicsBake);
+            ui.close();
+        }
+        ui.separator();
+        ui.add_enabled_ui(!sounds.is_empty() && !ms_names.is_empty(), |ui| {
+            ui.menu_button(crate::i18n::tr("Bake Animation from Motion-sync"), |ui| {
+                for (si, sname) in ms_names.iter().enumerate() {
+                    for (i, name) in &sounds {
+                        if ui.button(format!("{sname} ← {name}")).clicked() {
+                            st.pending = Some(SceneOp::BakeMotionSync(si, *i));
+                            ui.close();
+                        }
+                    }
+                }
+            });
+        });
+    });
+    ui.menu_button(crate::i18n::tr("Fade"), |ui| {
+        if ui
+            .button(crate::i18n::tr("Set fade-in/fade-out…"))
+            .clicked()
+        {
+            st.settings = st.scene().map(|s| Scene {
+                tracks: Vec::new(),
+                ..s.clone()
+            });
+            ui.close();
+        }
+    });
+    ui.menu_button(crate::i18n::tr("Parameter Controller"), |ui| {
+        ui.checkbox(&mut st.ctrl_follow, crate::i18n::tr("Follow Target"));
+    });
+    ui.separator();
+    if ui
+        .add(egui::Button::new(crate::i18n::tr("Playback")).shortcut_text("Enter"))
+        .clicked()
+    {
+        st.playing = !st.playing;
+    }
+    ui.separator();
+    if bake_ctrl {
+        if let Err(e) =
+            crate::param_ctrl_ui::run_file_op(doc, crate::param_ctrl_ui::CtrlFileOp::Bake)
+        {
+            doc.notice = Some(e);
+        }
+    }
+}
+
+/// Runs a structural scene change (timeline header or Animation menu).
+fn run_scene_op(doc: &mut Document, op: SceneOp) {
+    let scene = doc.anim.as_ref().map_or(0, |a| a.scene);
+    let frames = doc
+        .anim
+        .as_ref()
+        .and_then(|a| a.scene())
+        .map_or(120, |s| s.duration);
+    let fps = doc
+        .anim
+        .as_ref()
+        .and_then(|a| a.scene())
+        .map_or(30.0, |s| s.fps);
+    let n = doc
+        .anim
+        .as_ref()
+        .map_or(0, |a| a.doc.animation.scenes.len());
+    let r = match op {
+        SceneOp::Add => doc.anim_structure("Add Scene", |d, m| {
+            d.add_scene(&format!("Scene{}", n + 1), m, frames, fps)
+                .map(|_| ())
+        }),
+        SceneOp::Rename(name) => {
+            doc.anim_structure("Rename Scene", |d, _| d.rename_scene(scene, &name))
+        }
+        SceneOp::Delete => doc.anim_structure("Delete Scene", |d, _| d.delete_scene(scene)),
+        SceneOp::AddTrack => {
+            doc.anim_structure("Add Track", |d, m| d.add_model_track(scene, m, &m.name))
+        }
+        SceneOp::AddSound(p) => {
+            let abs = std::fs::canonicalize(&p).unwrap_or(p);
+            match std::fs::read(&abs)
+                .map_err(|e| e.to_string())
+                .and_then(|b| {
+                    keyform_anim::lipsync_bake::RawWav::parse(&b).map_err(|e| e.to_string())
+                }) {
+                Ok(w) => doc.anim_structure("Add Sound Track", |d, _| {
+                    d.add_sound_track(scene, &abs.to_string_lossy(), w.duration())
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        SceneOp::AddSceneTrack(n) => {
+            doc.anim_structure("Add Scene Track", |d, _| d.add_scene_track(scene, n))
+        }
+        SceneOp::AddImage(p) => {
+            let abs = std::fs::canonicalize(&p).unwrap_or(p);
+            match std::fs::read(&abs)
+                .map_err(|e| e.to_string())
+                .and_then(|b| {
+                    keyform_formats::image::RgbaImage::decode_png(&b).map_err(|e| e.to_string())
+                }) {
+                Ok(img) => doc.anim_structure("Add Image Track", |d, _| {
+                    d.add_image_track(scene, &abs.to_string_lossy(), (img.width, img.height))
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        SceneOp::ImportMotion(p) => doc.import_motion(&p).map(|missing| {
+            if !missing.is_empty() {
+                doc.notice = Some(format!("No attribute for: {}", missing.join(", ")));
+            }
+        }),
+        SceneOp::BakeLipSync(i) => doc
+            .anim
+            .as_mut()
+            .map_or(Err("No animation is open.".into()), |a| {
+                a.bake_lip_sync(i).map(|_| ())
+            }),
+        SceneOp::BakeMotionSync(s, i) => doc.bake_motion_sync(s, i).map(|_| ()),
+        SceneOp::OpenPhysicsBake => {
+            let outs = doc.physics_outputs();
+            if outs.is_empty() {
+                Err("The model has no physics.".into())
+            } else {
+                let params = outs
+                    .into_iter()
+                    .map(|pi| {
+                        let p = &doc.model.parameters[pi];
+                        (
+                            pi,
+                            if p.name.is_empty() {
+                                p.id.clone()
+                            } else {
+                                p.name.clone()
+                            },
+                            true,
+                        )
+                    })
+                    .collect();
+                if let Some(a) = doc.anim.as_mut() {
+                    a.physics_bake = Some(PhysicsBakeDraft {
+                        params,
+                        every_frame: false,
+                    });
+                }
+                Ok(())
+            }
+        }
+        SceneOp::BakePhysics(params, every) => doc.bake_physics(&params, every).map(|_| ()),
+        SceneOp::DeleteFormEdit(mi) => {
+            doc.delete_form_edit(mi);
+            Ok(())
+        }
+    };
+    match r {
+        Ok(()) => {
+            if let Some(a) = doc.anim.as_mut() {
+                a.rename = None;
+                if matches!(a.doc.animation.scenes.len(), k if k > n) {
+                    a.scene = a.doc.animation.scenes.len() - 1;
+                }
+            }
+        }
+        Err(e) => doc.notice = Some(e),
+    }
+}
+
+/// A structural change chosen in the timeline header or the Animation menu.
+pub enum SceneOp {
     Add,
     Rename(String),
     Delete,
@@ -1757,120 +1988,7 @@ pub fn timeline_ui(ui: &mut egui::Ui, doc: &mut Document, tokens: &crate::theme:
         }
     }
     if let Some(op) = op {
-        let scene = doc.anim.as_ref().map_or(0, |a| a.scene);
-        let frames = doc
-            .anim
-            .as_ref()
-            .and_then(|a| a.scene())
-            .map_or(120, |s| s.duration);
-        let fps = doc
-            .anim
-            .as_ref()
-            .and_then(|a| a.scene())
-            .map_or(30.0, |s| s.fps);
-        let n = doc
-            .anim
-            .as_ref()
-            .map_or(0, |a| a.doc.animation.scenes.len());
-        let r = match op {
-            SceneOp::Add => doc.anim_structure("Add Scene", |d, m| {
-                d.add_scene(&format!("Scene{}", n + 1), m, frames, fps)
-                    .map(|_| ())
-            }),
-            SceneOp::Rename(name) => {
-                doc.anim_structure("Rename Scene", |d, _| d.rename_scene(scene, &name))
-            }
-            SceneOp::Delete => doc.anim_structure("Delete Scene", |d, _| d.delete_scene(scene)),
-            SceneOp::AddTrack => {
-                doc.anim_structure("Add Track", |d, m| d.add_model_track(scene, m, &m.name))
-            }
-            SceneOp::AddSound(p) => {
-                let abs = std::fs::canonicalize(&p).unwrap_or(p);
-                match std::fs::read(&abs)
-                    .map_err(|e| e.to_string())
-                    .and_then(|b| {
-                        keyform_anim::lipsync_bake::RawWav::parse(&b).map_err(|e| e.to_string())
-                    }) {
-                    Ok(w) => doc.anim_structure("Add Sound Track", |d, _| {
-                        d.add_sound_track(scene, &abs.to_string_lossy(), w.duration())
-                    }),
-                    Err(e) => Err(e),
-                }
-            }
-            SceneOp::AddSceneTrack(n) => {
-                doc.anim_structure("Add Scene Track", |d, _| d.add_scene_track(scene, n))
-            }
-            SceneOp::AddImage(p) => {
-                let abs = std::fs::canonicalize(&p).unwrap_or(p);
-                match std::fs::read(&abs)
-                    .map_err(|e| e.to_string())
-                    .and_then(|b| {
-                        keyform_formats::image::RgbaImage::decode_png(&b).map_err(|e| e.to_string())
-                    }) {
-                    Ok(img) => doc.anim_structure("Add Image Track", |d, _| {
-                        d.add_image_track(scene, &abs.to_string_lossy(), (img.width, img.height))
-                    }),
-                    Err(e) => Err(e),
-                }
-            }
-            SceneOp::ImportMotion(p) => doc.import_motion(&p).map(|missing| {
-                if !missing.is_empty() {
-                    doc.notice = Some(format!("No attribute for: {}", missing.join(", ")));
-                }
-            }),
-            SceneOp::BakeLipSync(i) => doc
-                .anim
-                .as_mut()
-                .map_or(Err("No animation is open.".into()), |a| {
-                    a.bake_lip_sync(i).map(|_| ())
-                }),
-            SceneOp::BakeMotionSync(s, i) => doc.bake_motion_sync(s, i).map(|_| ()),
-            SceneOp::OpenPhysicsBake => {
-                let outs = doc.physics_outputs();
-                if outs.is_empty() {
-                    Err("The model has no physics.".into())
-                } else {
-                    let params = outs
-                        .into_iter()
-                        .map(|pi| {
-                            let p = &doc.model.parameters[pi];
-                            (
-                                pi,
-                                if p.name.is_empty() {
-                                    p.id.clone()
-                                } else {
-                                    p.name.clone()
-                                },
-                                true,
-                            )
-                        })
-                        .collect();
-                    if let Some(a) = doc.anim.as_mut() {
-                        a.physics_bake = Some(PhysicsBakeDraft {
-                            params,
-                            every_frame: false,
-                        });
-                    }
-                    Ok(())
-                }
-            }
-            SceneOp::BakePhysics(params, every) => doc.bake_physics(&params, every).map(|_| ()),
-            SceneOp::DeleteFormEdit(mi) => {
-                doc.delete_form_edit(mi);
-                Ok(())
-            }
-        };
-        match r {
-            Ok(()) => {
-                if let Some(a) = doc.anim.as_mut() {
-                    a.rename = None;
-                    if matches!(a.doc.animation.scenes.len(), k if k > n) {
-                        a.scene = a.doc.animation.scenes.len() - 1;
-                    }
-                }
-            }
-            Err(e) => doc.notice = Some(e),
-        }
+        run_scene_op(doc, op);
     }
     let Some(st) = doc.anim.as_mut() else { return };
     ui.horizontal(|ui| {

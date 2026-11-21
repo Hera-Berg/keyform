@@ -42,7 +42,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 from harness import Harness  # noqa: E402
 
-SHORTCUT_RE = re.compile(r"\s+((?:Ctrl|Shift|Alt|Cmd|⌘)(?:\+\S+)+|F\d+|Delete|Del|Esc|Escape)$")
+SHORTCUT_RE = re.compile(r"\s+((?:Ctrl|Shift|Alt|Cmd|⌘)(?:\+\S+)+|F\d+|Delete|Del|Esc|Escape|Enter|Home|End|Page Up|Page Down)$")
 LABEL_CALL_RE = re.compile(
     r"(?:\.button|Button::new|\.menu_button|\.checkbox\([^,()]*(?:\([^()]*\))?[^,()]*,|SelectableLabel::new\([^,]*,|"
     r"\.selectable_label\([^,]*,|\.selectable_value\([^,]*,[^,]*,|\.radio_value\([^,]*,[^,]*,|\.radio\([^,]*,|"
@@ -557,6 +557,11 @@ def main():
         data = json.load(open(a.from_json))
         seen, menu_items, inputs, timings = data["seen"], {tuple(json.loads(k)): v for k, v in data["menu_items"].items()}, data["inputs"], data["timings"]
         tooltips = data.get("tooltips", {})
+        # Normalised again: the shortcut pattern may have changed since.
+        renormed = {}
+        for k, v in seen.items():
+            renormed.setdefault(norm(k), []).extend(v)
+        seen = renormed
     else:
         ex, timings = explore(a, out)
         seen, menu_items, timings, tooltips = ex.seen, ex.menu_items, timings, ex.tooltips

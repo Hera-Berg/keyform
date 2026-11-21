@@ -6,8 +6,8 @@ Ctrl+Shift+Z	Second Redo shortcut (macOS order, menus.md); Edit ▸ Redo shows C
 Backspace	Same as Delete (Edit ▸ Delete shows "Delete"); for keyboards without a Delete key
 Modeling ▸ Edit Form ▸ Paste Form	Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C) with a mesh or deformer selected
 Modeling ▸ Edit Form ▸ Blend Form…	Enabled after Edit Form ▸ Copy Form (Ctrl+Shift+C), like Paste Form
-Mesh Edit ▸ Delete Vertex	In mesh edit with vertices selected (click or rubber-band vertices first)
-Mesh Edit ▸ Mirror Edit ▸ Center of Selected Vertices	In mesh edit with vertices selected
+Mesh Edit mode ▸ Delete Vertex	In mesh edit with vertices selected (click or rubber-band vertices first)
+Mesh Edit mode ▸ Mirror Edit ▸ Center of Selected Vertices	In mesh edit with vertices selected
 Confirm (Enter)	Toolbar ▸ Temp path, then click on the canvas: the Tool Details panel shows Confirm / Cancel
 Cancel (Esc)	Toolbar ▸ Temp path (Tool Details panel), as Confirm
 Approved	File ▸ External Application Integration Settings…: one checkbox per connected application (none connect in the audit)
@@ -76,3 +76,4 @@ Edit ▸ Paste Parameter Value	Enabled after Edit ▸ Copy Parameter Value
 File ▸ Open Recent File	Enabled once a file has been opened (the audit starts with no recent files)
 Show ▸ Guide ▸ Add Guides at Coordinates of Selected Vertices	Enabled with vertices selected (Arrow tool: press on a vertex of a selected art mesh)
 Vertical	Show ▸ Guide ▸ Guide Settings (Modeling View)…: the Type combo of a guide row (after New Guide or Add Guide to Center)
+Animation ▸ Track ▸ Bake Animation from Motion-sync	Enabled in an animation whose scene has a sound track and whose model has motion-sync settings (Modeling ▸ Parameter ▸ Motion-sync Settings…); like the timeline Scene menu entry

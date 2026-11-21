@@ -300,34 +300,9 @@ pub fn parts_ui(
 /// Show/Hide all, Lock/Unlock all (parts and art meshes), Delete empty
 /// parts. spec: palettes.md §1
 fn parts_bulk(doc: &mut Document, b: PartsBulk) {
-    use std::sync::Arc;
     let r = match b {
-        PartsBulk::ShowAll(v) => doc.try_edit(if v { "Show all" } else { "Hide all" }, |m| {
-            for p in &mut m.parts {
-                if p.info.visible != v {
-                    Arc::make_mut(p).info.visible = v;
-                }
-            }
-            for a in &mut m.art_meshes {
-                if a.info.visible != v {
-                    Arc::make_mut(a).info.visible = v;
-                }
-            }
-            Ok(())
-        }),
-        PartsBulk::LockAll(v) => doc.try_edit(if v { "Lock all" } else { "Unlock all" }, |m| {
-            for p in &mut m.parts {
-                if p.info.locked != v {
-                    Arc::make_mut(p).info.locked = v;
-                }
-            }
-            for a in &mut m.art_meshes {
-                if a.info.locked != v {
-                    Arc::make_mut(a).info.locked = v;
-                }
-            }
-            Ok(())
-        }),
+        PartsBulk::ShowAll(v) => doc.set_all_visible(v),
+        PartsBulk::LockAll(v) => doc.set_all_locked(v),
         PartsBulk::DeleteEmpty => doc
             .try_edit("Delete empty parts", |m| {
                 Ok(keyform_edit::objects::delete_empty_parts(m))

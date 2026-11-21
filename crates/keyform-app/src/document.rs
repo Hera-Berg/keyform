@@ -3371,12 +3371,12 @@ mod remap_tests {
 /// (tools/e2e/session.py), on a document made from the committed original
 /// test PSD.
 #[cfg(test)]
-mod e2e_regressions {
+pub(crate) mod e2e_regressions {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::path::Path;
 
-    fn character(scratch_name: &str) -> (Document, std::path::PathBuf) {
+    pub(crate) fn character(scratch_name: &str) -> (Document, std::path::PathBuf) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let data = std::fs::read(root.join("test-data/e2e/character.psd")).unwrap();
         let psd = keyform_formats::psd::Psd::parse(&data).unwrap();
@@ -3708,6 +3708,20 @@ mod e2e_regressions {
         assert_eq!(back.model.guides, d.model.guides);
         d.undo();
         assert!(d.model.guides.is_empty());
+    }
+
+    /// Animation ▸ Scene ▸ New Scene (main menu) runs through the pending
+    /// op, also with the Timeline palette hidden.
+    #[test]
+    fn animation_menu_new_scene() {
+        let (_, path) = character("e2e-anim-menu");
+        let mut log = Log::default();
+        let mut a = Document::new_animation(&path, &mut log).unwrap();
+        let n = a.anim.as_ref().unwrap().doc.animation.scenes.len();
+        a.anim.as_mut().unwrap().pending = Some(crate::animation::SceneOp::Add);
+        crate::animation::run_pending(&mut a);
+        assert_eq!(a.anim.as_ref().unwrap().doc.animation.scenes.len(), n + 1);
+        assert!(a.anim.as_ref().unwrap().pending.is_none());
     }
 
     #[test]
