@@ -4,6 +4,7 @@ description = "Keyform file formats: CAFF (.cmo3/.can3), XML object graph, moc3,
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

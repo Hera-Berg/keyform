@@ -77,7 +77,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev \
-            xvfb mesa-vulkan-drivers libgl1-mesa-dri python3-xlib python3-pil
+            libxkbcommon-x11-0 xvfb mesa-vulkan-drivers libgl1-mesa-dri python3-xlib python3-pil
       - run: cargo build --locked -p keyform-app -p keyform-cli
       - name: Scripted rigging session
         run: |

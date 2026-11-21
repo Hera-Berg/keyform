@@ -4,6 +4,7 @@ description = "Keyform editing: undo/redo history and model edit operations (no 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

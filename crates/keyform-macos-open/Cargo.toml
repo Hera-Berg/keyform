@@ -4,6 +4,7 @@ description = "macOS open-document Apple Events (Finder double-click) for the Ke
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 # The only crate allowed to use `unsafe` (Objective-C message sends), so it
 # does not take the workspace lints; its own are below. Empty on other

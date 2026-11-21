@@ -4,6 +4,7 @@ description = "Keyform physics: pendulum simulation and physics3.json"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

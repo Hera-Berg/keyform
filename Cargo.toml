@@ -20,6 +20,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+# egui / eframe / egui_dock 0.36 need Rust 1.95.
+rust-version = "1.95"
 
 [workspace.dependencies]
 keyform-model = { path = "crates/keyform-model" }

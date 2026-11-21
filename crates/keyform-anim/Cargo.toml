@@ -4,6 +4,7 @@ description = "Keyform animation playback: motion3, expressions (exp3), pose (po
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

@@ -4,6 +4,7 @@ description = "Keyform editor application (egui + egui_dock)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "keyform"

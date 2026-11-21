@@ -4,6 +4,7 @@ description = "Keyform command-line tools: inspect, round-trip, export, render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "kf"

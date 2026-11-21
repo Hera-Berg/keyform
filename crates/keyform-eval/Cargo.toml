@@ -4,6 +4,7 @@ description = "Keyform deterministic model evaluation (pure CPU)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

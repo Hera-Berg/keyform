@@ -4,6 +4,7 @@ description = "Keyform renderer: deterministic CPU reference rasterizer (and GPU
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 keyform-model.workspace = true

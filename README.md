@@ -24,7 +24,7 @@ Live2D Cubism Editor 5.3 project files (`.cmo3`, `.can3`) and runtime exports
 
 ## Build and test
 
-Requirements: Rust (stable, 1.80 or later) and, on Linux, the windowing and
+Requirements: Rust (stable, 1.95 or later) and, on Linux, the windowing and
 audio headers:
 
     # Debian / Ubuntu
@@ -33,6 +33,11 @@ audio headers:
     # Fedora
     sudo dnf install libxkbcommon-devel wayland-devel libX11-devel libXcursor-devel \
         libXrandr-devel libXi-devel mesa-libGL-devel alsa-lib-devel pkgconf
+
+Running the app under X11 also needs the xkbcommon X11 library
+(`libxkbcommon-x11-0` on Debian / Ubuntu, `libxkbcommon-x11` on Fedora);
+without it the app stops at startup with "Library libxkbcommon-x11.so could
+not be loaded".
 
 Windows and macOS need nothing beyond the Rust toolchain (MSVC build tools
 on Windows, Xcode command-line tools on macOS).
