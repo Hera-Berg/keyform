@@ -2379,8 +2379,8 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("kf-anim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::os::unix::fs::symlink(&can3, dir.join("a.can3"));
-        let _ = std::os::unix::fs::symlink(&model, dir.join("hiyori_pro_t11.cmo3"));
+        crate::test_util::link(&can3, &dir.join("a.can3"));
+        crate::test_util::link(&model, &dir.join("hiyori_pro_t11.cmo3"));
         let mut log = Log::default();
         let mut doc = Document::open_animation(&dir.join("a.can3"), &mut log).unwrap();
         assert_eq!(doc.mode, Mode::Animation);

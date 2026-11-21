@@ -63,7 +63,8 @@ class Harness:
         self.steps = []
         self.frames = []  # (label, PIL image) for the GIF
         self.issues = []  # workflow notes
-        self.wait_map(30)
+        # Software rendering on a CI runner can be slow to draw the first frame.
+        self.wait_map(90)
         self.find_window()
 
     # ---- window and map -------------------------------------------------
@@ -121,8 +122,23 @@ class Harness:
             m = self.read_map()
             if m and (after is None or m["frame"] > after):
                 return m
+            if self.proc.poll() is not None:
+                break
             time.sleep(0.1)
-        raise RuntimeError("no UI map")
+        raise RuntimeError("no UI map" + self._app_state())
+
+    def _app_state(self):
+        """Why the app may not be answering: its exit status and the end of
+        its log (keyform.log), for CI logs where the artifact is out of reach."""
+        code = self.proc.poll()
+        state = "still running" if code is None else f"exited with status {code}"
+        try:
+            self.log.flush()
+            with open(self.log.name, errors="replace") as f:
+                tail = f.readlines()[-40:]
+        except OSError:
+            tail = []
+        return f" (Keyform {state}; last lines of {self.log.name}:\n" + "".join(tail) + ")"
 
     def read_map(self):
         try:
@@ -249,6 +265,10 @@ class Harness:
     def click(self, p, button=1, double=False):
         self.move(p)
         time.sleep(0.08)
+        # Let the app draw a frame with the pointer here first (hover), as a
+        # person's click always does: on slow frames the move and the press
+        # otherwise land in one frame and buttons can miss the click.
+        self.settle(1, timeout=1.0)
         for k in range(2 if double else 1):
             self.button(button, True)
             # Hold for a frame: widgets that act while pressed (sliders)

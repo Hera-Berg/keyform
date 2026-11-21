@@ -489,8 +489,8 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("kf-media-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::os::unix::fs::symlink(&can3, dir.join("a.can3"));
-        let _ = std::os::unix::fs::symlink(&model, dir.join("hiyori_pro_t11.cmo3"));
+        crate::test_util::link(&can3, &dir.join("a.can3"));
+        crate::test_util::link(&model, &dir.join("hiyori_pro_t11.cmo3"));
         let mut log = Log::default();
         let doc = Document::open_animation(&dir.join("a.can3"), &mut log).unwrap();
         // 10 fps over the work area 0..141 (30 fps): every 3rd frame.

@@ -44,6 +44,8 @@ mod reference_p5;
 mod soft_select;
 mod template_dialog;
 mod template_list;
+#[cfg(test)]
+mod test_util;
 mod texture_atlas;
 mod theme;
 mod track_layers;

@@ -6,7 +6,14 @@ edition.workspace = true
 license.workspace = true
 
 # The only crate allowed to use `unsafe` (Objective-C message sends), so it
-# does not take the workspace lints. Empty on other platforms.
+# does not take the workspace lints; its own are below. Empty on other
+# platforms.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "warn"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject", "NSString", "NSURL", "NSAppleEventDescriptor", "NSAppleEventManager"] }

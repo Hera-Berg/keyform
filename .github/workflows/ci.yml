@@ -68,6 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KEYFORM_E2E_DISPLAY: ":99"
+      RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
