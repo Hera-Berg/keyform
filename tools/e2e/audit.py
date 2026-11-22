@@ -58,8 +58,13 @@ def norm(label):
     return t
 
 
+# Shortcuts shown on menu items also include single keys ("Level 1 (refine)
+# 1"); labels keep them (norm strips only modifier combinations).
+SHOWN_RE = re.compile(SHORTCUT_RE.pattern[:-2] + r"|[0-9]|[A-Z])$")
+
+
 def shortcut_of(label):
-    m = SHORTCUT_RE.search((label or "").strip())
+    m = SHOWN_RE.search((label or "").strip())
     return m.group(1) if m else ""
 
 
@@ -104,6 +109,11 @@ def code_shortcuts():
                 continue  # a variable key list: reported by its own entries
             line = body.count("\n", 0, m.start()) + 1
             out.setdefault(key_name(mods, key), f"{os.path.relpath(f, ROOT)}:{line}")
+        # The command table (shortcuts.rs): cmd(id, group, label, &["keys"]).
+        for m in re.finditer(r'(?:cmd|fixed)\(\s*"[^"]+",\s*"[^"]+",\s*"[^"]+",\s*&\[([^\]]*)\]', body):
+            line = body.count("\n", 0, m.start()) + 1
+            for k in re.findall(r'"([^"]+)"', m.group(1)):
+                out.setdefault(k, f"{os.path.relpath(f, ROOT)}:{line}")
     return out
 
 
@@ -170,6 +180,18 @@ class Explorer:
     @staticmethod
     def key(n):
         return (n["role"], n["label"] or n["value"], tuple(round(x) for x in n["rect"]))
+
+    def after_click(self, before, timeout=3.0):
+        """The widgets after a click, once something new has appeared (a
+        popup, a dialog) or `timeout` seconds have passed: on slow frames
+        (CI software rendering) a fixed short wait read the map too early."""
+        end = time.time() + timeout
+        time.sleep(0.2)
+        nodes = self.snapshot()
+        while time.time() < end and not any(self.key(x) not in before for x in nodes):
+            self.h.settle(1, timeout=0.5)
+            nodes = self.snapshot()
+        return nodes
 
     def record_all(self, nodes, how):
         for n in nodes:
@@ -398,8 +420,11 @@ class Explorer:
             titles = {x["label"] for x in nodes if x["role"] == "Tab"}
             try:
                 self.h.click(self.h.vcenter(n))
-                time.sleep(0.5)
-                after = self.snapshot()
+                if n["role"] == "ComboBox":
+                    after = self.after_click(before)
+                else:
+                    time.sleep(0.5)
+                    after = self.snapshot()
             except Exception:  # noqa: BLE001
                 continue
             new = [x for x in after if self.key(x) not in before]
@@ -446,8 +471,7 @@ class Explorer:
             base = {self.key(n) for n in self.snapshot()}
             try:
                 self.h.click(self.h.vcenter(c))
-                time.sleep(0.2)
-                new = [n for n in self.snapshot() if self.key(n) not in base]
+                new = [n for n in self.after_click(base) if self.key(n) not in base]
                 self.record_all(new, f"combo box {c['label'] or c['value']!r} ({self.state})")
             except Exception:  # noqa: BLE001
                 pass

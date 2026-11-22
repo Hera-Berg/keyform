@@ -16,6 +16,7 @@ pub mod moc3;
 pub mod psd;
 pub mod psd_import;
 pub mod psd_replace;
+pub mod psd_write;
 pub mod runtime_json;
 pub mod strings;
 pub mod texture_cleanup;

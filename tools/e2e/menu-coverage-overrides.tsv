@@ -94,3 +94,7 @@ Mesh Edit mode ▸ Subtools ▸ Add points	c	no "Add points" subtool yet
 Window ▸ Workspace ▸	a	spec placeholder for the workspace list; Keyform lists Modeling / Viewer / Animation there
 Show ▸ Onion skin ▸ Animation View	c	onion skin not implemented (view-aids.md §4)
 Show ▸ Track Trajectory ▸ Animation View	c	track trajectory not implemented
+Modeling ▸ Bulk setting of model objects ▸ Export	c	not implemented (the Import/Export buttons seen are the shortcut dialog's)
+Modeling ▸ Bulk setting of model objects ▸ Import	c	not implemented (the Import/Export buttons seen are the shortcut dialog's)
+Modeling ▸ Bulk setting of model parameters ▸ Export	c	not implemented (the Import/Export buttons seen are the shortcut dialog's)
+Modeling ▸ Bulk setting of model parameters ▸ Import	c	not implemented (the Import/Export buttons seen are the shortcut dialog's)

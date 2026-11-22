@@ -89,3 +89,59 @@ pub fn window(ctx: &egui::Context, st: &mut CanvasDialog, doc: Option<&mut Docum
         Some((w, h, col, row))
     };
 }
+
+/// File ▸ Resize Model…: one prompt, Resize Factor (%), default 100,
+/// range 1–5000; one undo step "Resize Document". spec: dialogs.md §22
+#[derive(Default)]
+pub struct ResizeDialog {
+    edit: Option<f32>,
+}
+
+impl ResizeDialog {
+    pub fn open(&mut self) {
+        self.edit = Some(100.0);
+    }
+}
+
+pub fn resize_window(ctx: &egui::Context, st: &mut ResizeDialog, doc: Option<&mut Document>) {
+    let Some(mut pct) = st.edit else {
+        return;
+    };
+    let Some(doc) = doc.filter(|d| d.editable() && d.mode == Mode::Modeling) else {
+        st.edit = None;
+        return;
+    };
+    let (mut ok, mut cancel) = (false, false);
+    let mut open = true;
+    egui::Window::new(crate::i18n::tr("Resize Model"))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::tr("Resize Factor"));
+                let r = ui.add(
+                    egui::DragValue::new(&mut pct)
+                        .range(1.0..=5000.0)
+                        .suffix(" %"),
+                );
+                crate::icons::accessible_name(&r, crate::i18n::tr("Resize Factor"));
+            });
+            ui.horizontal(|ui| {
+                ok = ui.button(crate::i18n::tr("OK")).clicked();
+                cancel = ui.button(crate::i18n::tr("Cancel")).clicked();
+            });
+        });
+    if ok {
+        if let Err(e) = doc.try_edit("Resize Document", |m| {
+            keyform_edit::canvas_size::resize_model(m, pct)
+        }) {
+            doc.notice = Some(e);
+        }
+    }
+    st.edit = if ok || cancel || !open {
+        None
+    } else {
+        Some(pct)
+    };
+}

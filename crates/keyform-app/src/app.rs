@@ -168,6 +168,11 @@ pub struct KeyformApp {
     /// Edit ▸ Search and Replace….
     search: crate::search_replace_ui::SearchReplace,
     canvas_dialog: crate::canvas_settings::CanvasDialog,
+    resize_dialog: crate::canvas_settings::ResizeDialog,
+    /// Key bindings (shortcuts.rs) and File ▸ Keyboard Shortcuts….
+    keys: crate::shortcuts::Bindings,
+    shortcuts_dialog: crate::shortcuts::ShortcutsDialog,
+    psd_export: crate::export_psd::PsdExportDialog,
     api_mode: &'static str,
     api_recording: crate::external_host::ApiRecording,
     physics_editor: crate::physics_editor::PhysicsEditor,
@@ -214,6 +219,10 @@ pub struct Settings {
     pub paste_numbered_names: bool,
     /// Model Statistics ▸ Auto Update (remembered, dialogs.md §19).
     pub stats_auto_update: bool,
+    /// PSD export: "Export All Source Images as PSD" chosen
+    /// (`PsdExportDialog_radioSimple`, default true), and its notice off.
+    pub psd_simple: bool,
+    pub psd_notice_off: bool,
 }
 
 impl Default for Settings {
@@ -231,6 +240,8 @@ impl Default for Settings {
             rotation_step: 45.0,
             paste_numbered_names: false,
             stats_auto_update: false,
+            psd_simple: true,
+            psd_notice_off: false,
         }
     }
 }
@@ -254,6 +265,7 @@ fn clipboard_text(clip: &keyform_edit::clipboard::ObjectClipboard) -> String {
 }
 
 const SETTINGS_KEY: &str = "keyform.settings";
+const SHORTCUTS_KEY: &str = "keyform.shortcuts";
 const PLUGINS_KEY: &str = "keyform.external_apps";
 const MS_PRESETS_KEY: &str = "keyform.motion_sync_presets";
 const EXPORT_IMAGE_KEY: &str = "keyform.export_image";
@@ -361,6 +373,13 @@ impl KeyformApp {
             stats: Default::default(),
             search: Default::default(),
             canvas_dialog: Default::default(),
+            resize_dialog: Default::default(),
+            keys: cc
+                .storage
+                .and_then(|s| eframe::get_value(s, SHORTCUTS_KEY))
+                .unwrap_or_default(),
+            shortcuts_dialog: Default::default(),
+            psd_export: Default::default(),
             api_mode: "Modeling",
             api_recording: Default::default(),
             settings,
@@ -889,11 +908,15 @@ impl KeyformApp {
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let keys = self.keys.clone();
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(crate::i18n::tr("File"), |ui| {
                 ui.menu_button(crate::i18n::tr("New"), |ui| {
                     if ui
-                        .add(egui::Button::new(crate::i18n::tr("Model")).shortcut_text("Ctrl+N"))
+                        .add(
+                            egui::Button::new(crate::i18n::tr("Model"))
+                                .shortcut_text(keys.text("file.new_model")),
+                        )
                         .clicked()
                     {
                         self.new_model.open = true;
@@ -914,7 +937,10 @@ impl KeyformApp {
                     }
                 });
                 if ui
-                    .add(egui::Button::new(crate::i18n::tr("Open…")).shortcut_text("Ctrl+O"))
+                    .add(
+                        egui::Button::new(crate::i18n::tr("Open…"))
+                            .shortcut_text(keys.text("file.open")),
+                    )
                     .clicked()
                 {
                     self.open_dialog();
@@ -922,7 +948,7 @@ impl KeyformApp {
                 if ui
                     .add(
                         egui::Button::new(crate::i18n::tr("Open Recent File"))
-                            .shortcut_text("Ctrl+Shift+O"),
+                            .shortcut_text(keys.text("file.open_recent")),
                     )
                     .clicked()
                 {
@@ -950,7 +976,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some(),
-                        egui::Button::new(crate::i18n::tr("Close")).shortcut_text("Ctrl+W"),
+                        egui::Button::new(crate::i18n::tr("Close"))
+                            .shortcut_text(keys.text("file.close")),
                     )
                     .clicked()
                 {
@@ -978,7 +1005,10 @@ impl KeyformApp {
                     None => ("Save", false),
                 };
                 if ui
-                    .add_enabled(can_save, egui::Button::new(label).shortcut_text("Ctrl+S"))
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new(label).shortcut_text(keys.text("file.save")),
+                    )
                     .clicked()
                 {
                     self.save_active();
@@ -987,7 +1017,7 @@ impl KeyformApp {
                     .add_enabled(
                         project,
                         egui::Button::new(crate::i18n::tr("Save as…"))
-                            .shortcut_text("Ctrl+Shift+S"),
+                            .shortcut_text(keys.text("file.save_as")),
                     )
                     .clicked()
                 {
@@ -1031,6 +1061,17 @@ impl KeyformApp {
                             self.open_media_export(kind);
                         }
                     }
+                    if ui
+                        .add_enabled(
+                            modeling,
+                            egui::Button::new(crate::i18n::tr("PSD images(beta)…"))
+                                .shortcut_text(keys.text("file.export_psd")),
+                        )
+                        .on_disabled_hover_text("Needs the Modeling view of a project")
+                        .clicked()
+                    {
+                        self.psd_export.open = true;
+                    }
                 });
                 ui.menu_button(crate::i18n::tr("Export For Runtime"), |ui| {
                     if ui
@@ -1062,7 +1103,7 @@ impl KeyformApp {
                         .add_enabled(
                             anim,
                             egui::Button::new(crate::i18n::tr("Export motion file…"))
-                                .shortcut_text("Ctrl+Alt+Shift+S"),
+                                .shortcut_text(keys.text("file.export_motion")),
                         )
                         .on_disabled_hover_text("Needs an animation (.can3)")
                         .clicked()
@@ -1089,6 +1130,16 @@ impl KeyformApp {
                 {
                     let s = self.settings;
                     self.env.open(&s);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(crate::i18n::tr("Keyboard Shortcuts…"))
+                            .shortcut_text(keys.text("file.keyboard_shortcuts")),
+                    )
+                    .clicked()
+                {
+                    self.shortcuts_dialog.open = true;
+                    ui.close();
                 }
                 if ui
                     .button(crate::i18n::tr(
@@ -1131,6 +1182,16 @@ impl KeyformApp {
                     }
                     ui.close();
                 }
+                if ui
+                    .add_enabled(
+                        modeling,
+                        egui::Button::new(crate::i18n::tr("Resize Model…")),
+                    )
+                    .clicked()
+                {
+                    self.resize_dialog.open();
+                    ui.close();
+                }
                 ui.separator();
                 if ui
                     .add(egui::Button::new(crate::i18n::tr("Exit")).shortcut_text("Alt+F4"))
@@ -1145,7 +1206,8 @@ impl KeyformApp {
                 let redo = doc.and_then(|d| d.history.redo_name()).map(str::to_owned);
                 let r = ui.add_enabled(
                     undo.is_some(),
-                    egui::Button::new(crate::i18n::tr("Undo")).shortcut_text("Ctrl+Z"),
+                    egui::Button::new(crate::i18n::tr("Undo"))
+                        .shortcut_text(keys.text("edit.undo")),
                 );
                 if r.clicked() {
                     self.undo_active(false);
@@ -1155,7 +1217,8 @@ impl KeyformApp {
                 }
                 let r = ui.add_enabled(
                     redo.is_some(),
-                    egui::Button::new(crate::i18n::tr("Redo")).shortcut_text("Ctrl+Y"),
+                    egui::Button::new(crate::i18n::tr("Redo"))
+                        .shortcut_text(keys.text("edit.redo")),
                 );
                 if r.clicked() {
                     self.undo_active(true);
@@ -1171,7 +1234,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         has_objects,
-                        egui::Button::new(crate::i18n::tr("Cut")).shortcut_text("Ctrl+X"),
+                        egui::Button::new(crate::i18n::tr("Cut"))
+                            .shortcut_text(keys.text("edit.cut")),
                     )
                     .clicked()
                 {
@@ -1180,7 +1244,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         has_objects,
-                        egui::Button::new(crate::i18n::tr("Copy")).shortcut_text("Ctrl+C"),
+                        egui::Button::new(crate::i18n::tr("Copy"))
+                            .shortcut_text(keys.text("edit.copy")),
                     )
                     .clicked()
                 {
@@ -1189,7 +1254,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some() && self.object_clip.is_some(),
-                        egui::Button::new(crate::i18n::tr("Paste")).shortcut_text("Ctrl+V"),
+                        egui::Button::new(crate::i18n::tr("Paste"))
+                            .shortcut_text(keys.text("edit.paste")),
                     )
                     .clicked()
                 {
@@ -1198,7 +1264,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some(),
-                        egui::Button::new(crate::i18n::tr("Delete")).shortcut_text("Delete"),
+                        egui::Button::new(crate::i18n::tr("Delete"))
+                            .shortcut_text(keys.text("edit.delete")),
                     )
                     .clicked()
                 {
@@ -1227,7 +1294,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some(),
-                        egui::Button::new(crate::i18n::tr("Select All")).shortcut_text("Ctrl+A"),
+                        egui::Button::new(crate::i18n::tr("Select All"))
+                            .shortcut_text(keys.text("edit.select_all")),
                     )
                     .clicked()
                 {
@@ -1238,7 +1306,8 @@ impl KeyformApp {
                 if ui
                     .add_enabled(
                         self.active.is_some(),
-                        egui::Button::new(crate::i18n::tr("Deselect")).shortcut_text("Escape"),
+                        egui::Button::new(crate::i18n::tr("Deselect"))
+                            .shortcut_text(keys.text("edit.deselect")),
                     )
                     .clicked()
                 {
@@ -1266,7 +1335,7 @@ impl KeyformApp {
                     .add_enabled(
                         project,
                         egui::Button::new(crate::i18n::tr("Search and Replace…"))
-                            .shortcut_text("Ctrl+F"),
+                            .shortcut_text(keys.text("edit.search")),
                     )
                     .clicked()
                 {
@@ -1314,7 +1383,7 @@ impl KeyformApp {
                     .add_enabled(
                         has,
                         egui::Button::new(crate::i18n::tr("Zoom In"))
-                            .shortcut_text("Ctrl+Alt+Shift+Left"),
+                            .shortcut_text(keys.text("show.zoom_in")),
                     )
                     .clicked()
                 {
@@ -1326,7 +1395,7 @@ impl KeyformApp {
                     .add_enabled(
                         has,
                         egui::Button::new(crate::i18n::tr("Zoom Out"))
-                            .shortcut_text("Ctrl+Alt+Shift+Right"),
+                            .shortcut_text(keys.text("show.zoom_out")),
                     )
                     .clicked()
                 {
@@ -1429,6 +1498,7 @@ impl KeyformApp {
 
     /// Modeling menu (subset). spec: 50-ui/menus.md "Modeling"
     fn modeling_menu(&mut self, ui: &mut egui::Ui) {
+        let keys = self.keys.clone();
         use crate::create_deformer::Kind;
         let Some(i) = self.active else {
             ui.weak(crate::i18n::tr("No model"));
@@ -1471,7 +1541,8 @@ impl KeyformApp {
             if ui
                 .add_enabled(
                     one,
-                    egui::Button::new(crate::i18n::tr("Mesh edit")).shortcut_text("Ctrl+E"),
+                    egui::Button::new(crate::i18n::tr("Mesh edit"))
+                        .shortcut_text(keys.text("modeling.mesh_edit")),
                 )
                 .clicked()
             {
@@ -1484,7 +1555,7 @@ impl KeyformApp {
                 .add_enabled(
                     ok,
                     egui::Button::new(crate::i18n::tr("Automatic Mesh generator…"))
-                        .shortcut_text("Ctrl+Shift+A"),
+                        .shortcut_text(keys.text("modeling.auto_mesh")),
                 )
                 .clicked()
             {
@@ -1512,7 +1583,7 @@ impl KeyformApp {
                 .add_enabled(
                     ok,
                     egui::Button::new(crate::i18n::tr("Generate and Register Glue"))
-                        .shortcut_text("Ctrl+G"),
+                        .shortcut_text(keys.text("modeling.glue")),
                 )
                 .on_hover_text(crate::i18n::tr(
                     "Glue the selected vertex of each of two ArtMeshes",
@@ -1528,7 +1599,7 @@ impl KeyformApp {
                 .add_enabled(
                     ok,
                     egui::Button::new(crate::i18n::tr("Unbind Glue Vertices"))
-                        .shortcut_text("Ctrl+Shift+G"),
+                        .shortcut_text(keys.text("modeling.unglue")),
                 )
                 .on_hover_text(crate::i18n::tr(
                     "Remove the glue between the selected vertex of each of two ArtMeshes",
@@ -1564,7 +1635,7 @@ impl KeyformApp {
                 .add_enabled(
                     doc.mode == Mode::Modeling,
                     egui::Button::new(crate::i18n::tr("Reset to default values"))
-                        .shortcut_text("Ctrl+1"),
+                        .shortcut_text(keys.text("modeling.reset_params")),
                 )
                 .clicked()
             {
@@ -1576,7 +1647,7 @@ impl KeyformApp {
                 .add_enabled(
                     ok,
                     egui::Button::new(crate::i18n::tr("Synthesize corners…"))
-                        .shortcut_text("Ctrl+4"),
+                        .shortcut_text(keys.text("modeling.synth_corners")),
                 )
                 .clicked()
             {
@@ -1669,7 +1740,8 @@ impl KeyformApp {
             if ui
                 .add_enabled(
                     ok,
-                    egui::Button::new(crate::i18n::tr("Copy Form")).shortcut_text("Ctrl+Shift+C"),
+                    egui::Button::new(crate::i18n::tr("Copy Form"))
+                        .shortcut_text(keys.text("modeling.copy_form")),
                 )
                 .clicked()
             {
@@ -1682,7 +1754,8 @@ impl KeyformApp {
             if ui
                 .add_enabled(
                     ok && has,
-                    egui::Button::new(crate::i18n::tr("Paste Form")).shortcut_text("Ctrl+Shift+V"),
+                    egui::Button::new(crate::i18n::tr("Paste Form"))
+                        .shortcut_text(keys.text("modeling.paste_form")),
                 )
                 .clicked()
             {
@@ -1694,7 +1767,8 @@ impl KeyformApp {
             if ui
                 .add_enabled(
                     ok && has,
-                    egui::Button::new(crate::i18n::tr("Blend Form…")).shortcut_text("Ctrl+Shift+B"),
+                    egui::Button::new(crate::i18n::tr("Blend Form…"))
+                        .shortcut_text(keys.text("modeling.blend_form")),
                 )
                 .clicked()
             {
@@ -1779,7 +1853,7 @@ impl KeyformApp {
                 .add_enabled(
                     ok,
                     egui::Button::new(crate::i18n::tr("Edit Texture Atlas…"))
-                        .shortcut_text("Ctrl+T"),
+                        .shortcut_text(keys.text("modeling.atlas")),
                 )
                 .clicked()
             {
@@ -1914,9 +1988,13 @@ impl KeyformApp {
 
     /// The "Mesh Edit mode" menu (subset). spec: 50-ui/menus.md "Mesh Edit mode"
     fn mesh_edit_menu(&mut self, ui: &mut egui::Ui) {
+        let keys = self.keys.clone();
         use crate::mesh_edit::MeshTool;
         if ui
-            .add(egui::Button::new(crate::i18n::tr("Finish Mesh editing")).shortcut_text("Ctrl+E"))
+            .add(
+                egui::Button::new(crate::i18n::tr("Finish Mesh editing"))
+                    .shortcut_text(keys.text("modeling.mesh_edit")),
+            )
             .clicked()
         {
             self.toggle_mesh_edit();
@@ -1940,7 +2018,10 @@ impl KeyformApp {
         };
         let mut notice = None;
         if ui
-            .add(egui::Button::new(crate::i18n::tr("Auto attach Edge")).shortcut_text("Ctrl+R"))
+            .add(
+                egui::Button::new(crate::i18n::tr("Auto attach Edge"))
+                    .shortcut_text(keys.text("mesh_edit.auto_attach")),
+            )
             .on_hover_text(crate::i18n::tr("Automatically join vertices"))
             .clicked()
         {
@@ -1981,7 +2062,8 @@ impl KeyformApp {
         if ui
             .add_enabled(
                 !s.selected.is_empty(),
-                egui::Button::new(crate::i18n::tr("Delete Vertex")).shortcut_text("Delete"),
+                egui::Button::new(crate::i18n::tr("Delete Vertex"))
+                    .shortcut_text(keys.text("edit.delete")),
             )
             .clicked()
         {
@@ -1992,7 +2074,7 @@ impl KeyformApp {
         if ui
             .add(
                 egui::Button::new(crate::i18n::tr("Glue / bind the selected vertices"))
-                    .shortcut_text("Ctrl+G"),
+                    .shortcut_text(keys.text("modeling.glue")),
             )
             .clicked()
         {
@@ -2002,7 +2084,7 @@ impl KeyformApp {
         if ui
             .add(
                 egui::Button::new(crate::i18n::tr("Unglue / unbind the selected vertices"))
-                    .shortcut_text("Ctrl+Shift+G"),
+                    .shortcut_text(keys.text("modeling.unglue")),
             )
             .clicked()
         {
@@ -2870,15 +2952,32 @@ impl KeyformApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        use egui::{Key, KeyboardShortcut as K, Modifiers as M};
-        let shift_cmd = M::COMMAND | M::SHIFT;
-        // Shift variants first: consume_shortcut ignores extra Shift.
-        let (save_as, save) = ctx.input_mut(|i| {
+        // Bindings from the command table (shortcuts.rs), exact modifiers.
+        let keys = self.keys.clone();
+        // File ▸ Keyboard Shortcuts [Ctrl+Alt+Shift+K]; Show ▸ Zoom In / Out.
+        let (dialog, zoom_in, zoom_out) = ctx.input_mut(|i| {
             (
-                i.consume_shortcut(&K::new(shift_cmd, Key::S)),
-                i.consume_shortcut(&K::new(M::COMMAND, Key::S)),
+                keys.hit(i, "file.keyboard_shortcuts"),
+                keys.hit(i, "show.zoom_in"),
+                keys.hit(i, "show.zoom_out"),
             )
         });
+        if dialog {
+            self.shortcuts_dialog.open = true;
+        }
+        if let Some(d) = self.active_doc() {
+            if zoom_in {
+                d.view.zoom *= 1.25;
+            }
+            if zoom_out {
+                d.view.zoom /= 1.25;
+            }
+        }
+        use egui::{Key, KeyboardShortcut as K, Modifiers as M};
+        let shift_cmd = M::COMMAND | M::SHIFT;
+        // Bindings match exact modifiers, so their order doesn't matter.
+        let (save_as, save) =
+            ctx.input_mut(|i| (keys.hit(i, "file.save_as"), keys.hit(i, "file.save")));
         if save_as {
             self.save_as_active();
         } else if save {
@@ -2886,7 +2985,7 @@ impl KeyformApp {
         }
         // Edit ▸ Search and Replace [Ctrl+F].
         if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::F)))
+            && ctx.input_mut(|i| keys.hit(i, "edit.search"))
             && self
                 .active
                 .and_then(|i| self.slots.get(i))
@@ -2896,19 +2995,26 @@ impl KeyformApp {
         }
         // File ▸ Open Recent File [Ctrl+Shift+O] (before Ctrl+O, which
         // would also match).
-        if ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::O))) {
+        if ctx.input_mut(|i| keys.hit(i, "file.open_recent")) {
             self.open_recent_file();
         }
         // Export shortcuts (menus.md File): Still Image (Sequence) [Ctrl+I],
         // Video [Ctrl+Shift+M], Export motion file [Ctrl+Alt+Shift+S].
-        let alt_shift_cmd = M::COMMAND | M::SHIFT | M::ALT;
         let (video, still, motion) = ctx.input_mut(|i| {
             (
-                i.consume_shortcut(&K::new(shift_cmd, Key::M)),
-                i.consume_shortcut(&K::new(M::COMMAND, Key::I)),
-                i.consume_shortcut(&K::new(alt_shift_cmd, Key::S)),
+                keys.hit(i, "file.export_video"),
+                keys.hit(i, "file.export_still"),
+                keys.hit(i, "file.export_motion"),
             )
         });
+        if ctx.input_mut(|i| keys.hit(i, "file.export_psd"))
+            && self
+                .active
+                .and_then(|i| self.slots.get(i))
+                .is_some_and(|s| s.doc.mode == Mode::Modeling)
+        {
+            self.psd_export.open = true;
+        }
         if video {
             self.open_media_export(crate::export_media::MediaKind::Video);
         } else if still {
@@ -2925,34 +3031,27 @@ impl KeyformApp {
         // Modeling ▸ Parameter ▸ Reset to default values [Ctrl+1], Lock
         // [Ctrl(+Shift / +Alt)+2], Show/Hide [Ctrl(+Shift / +Alt)+3].
         if !ctx.egui_wants_keyboard_input() {
-            let alt_cmd = M::COMMAND | M::ALT;
             let pressed = ctx.input_mut(|i| {
                 [
+                    (keys.hit(i, "modeling.unlock_all"), Some(ObjCmd::UnlockAll)),
                     (
-                        i.consume_shortcut(&K::new(alt_cmd, Key::Num2)),
-                        Some(ObjCmd::UnlockAll),
-                    ),
-                    (
-                        i.consume_shortcut(&K::new(shift_cmd, Key::Num2)),
+                        keys.hit(i, "modeling.lock_unselected"),
                         Some(ObjCmd::LockUnselected),
                     ),
                     (
-                        i.consume_shortcut(&K::new(M::COMMAND, Key::Num2)),
+                        keys.hit(i, "modeling.lock_selected"),
                         Some(ObjCmd::LockSelected),
                     ),
+                    (keys.hit(i, "modeling.show_all"), Some(ObjCmd::ShowAll)),
                     (
-                        i.consume_shortcut(&K::new(alt_cmd, Key::Num3)),
-                        Some(ObjCmd::ShowAll),
-                    ),
-                    (
-                        i.consume_shortcut(&K::new(shift_cmd, Key::Num3)),
+                        keys.hit(i, "modeling.hide_unselected"),
                         Some(ObjCmd::HideUnselected),
                     ),
                     (
-                        i.consume_shortcut(&K::new(M::COMMAND, Key::Num3)),
+                        keys.hit(i, "modeling.hide_selected"),
                         Some(ObjCmd::HideSelected),
                     ),
-                    (i.consume_shortcut(&K::new(M::COMMAND, Key::Num1)), None),
+                    (keys.hit(i, "modeling.reset_params"), None),
                 ]
             });
             for (hit, c) in pressed {
@@ -2989,19 +3088,14 @@ impl KeyformApp {
             }
         }
         // Delete (shortcuts.md: Delete / Backspace).
-        if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| {
-                i.consume_key(M::NONE, Key::Delete) || i.consume_key(M::NONE, Key::Backspace)
-            })
-        {
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| keys.hit(i, "edit.delete")) {
             self.delete_active();
         }
         // Glue Vertices [Ctrl+G] / unbind [Ctrl+Shift+G] in the Modeling
         // view (glue.md "Bind / unbind").
         if !ctx.egui_wants_keyboard_input() {
-            let unbind = ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::G)));
-            let bind =
-                !unbind && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::G)));
+            let unbind = ctx.input_mut(|i| keys.hit(i, "modeling.unglue"));
+            let bind = !unbind && ctx.input_mut(|i| keys.hit(i, "modeling.glue"));
             if bind || unbind {
                 self.glue_command(unbind);
             }
@@ -3010,10 +3104,10 @@ impl KeyformApp {
         if !ctx.egui_wants_keyboard_input() {
             let (a, l, b, p) = ctx.input_mut(|i| {
                 (
-                    i.consume_shortcut(&K::new(M::NONE, Key::A)),
-                    i.consume_shortcut(&K::new(M::NONE, Key::L)),
+                    keys.hit(i, "tools.arrow"),
+                    keys.hit(i, "tools.lasso"),
                     i.key_pressed(Key::B) && i.modifiers.is_none(),
-                    i.consume_shortcut(&K::new(M::NONE, Key::P)),
+                    keys.hit(i, "tools.control_point"),
                 )
             });
             // Control Point edit [P] (canvas-and-tools.md §4).
@@ -3058,8 +3152,8 @@ impl KeyformApp {
                 (
                     i.consume_shortcut(&K::new(shift_cmd, Key::C)),
                     i.consume_shortcut(&K::new(shift_cmd, Key::V)),
-                    i.consume_shortcut(&K::new(shift_cmd, Key::B)),
-                    i.consume_shortcut(&K::new(M::COMMAND, Key::Num4)),
+                    keys.hit(i, "modeling.blend_form"),
+                    keys.hit(i, "modeling.synth_corners"),
                 )
             });
             let special = self.forms.special;
@@ -3092,26 +3186,21 @@ impl KeyformApp {
             }
         }
         // File ▸ New ▸ Model [Ctrl+N].
-        if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::N)))
-        {
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| keys.hit(i, "file.new_model")) {
             self.new_model.open = true;
         }
         // Edit Texture Atlas [Ctrl+T] (menus.md "Texture Atlas").
-        if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::T)))
-        {
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| keys.hit(i, "modeling.atlas")) {
             self.open_atlas();
         }
         // Automatic Mesh generator [Ctrl+Shift+A] (menus.md "ArtMesh").
-        if !ctx.egui_wants_keyboard_input()
-            && ctx.input_mut(|i| i.consume_shortcut(&K::new(shift_cmd, Key::A)))
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| keys.hit(i, "modeling.auto_mesh"))
         {
             self.open_auto_mesh();
         }
         // Auto attach Edge (line) [Ctrl+R] in mesh edit mode (§5.1).
         if !ctx.egui_wants_keyboard_input() {
-            let ctrl_r = ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::R)));
+            let ctrl_r = ctx.input_mut(|i| keys.hit(i, "mesh_edit.auto_attach"));
             if ctrl_r {
                 if let Some(s) = self.active_doc().and_then(|d| d.mesh_edit.as_mut()) {
                     if let Err(e) = s.auto_connect() {
@@ -3121,16 +3210,20 @@ impl KeyformApp {
             }
         }
         // Mesh edit [Ctrl+E] (menus.md "ArtMesh", "Mesh Edit mode").
-        if ctx.input_mut(|i| i.consume_shortcut(&K::new(M::COMMAND, Key::E))) {
+        if ctx.input_mut(|i| keys.hit(i, "modeling.mesh_edit")) {
             self.toggle_mesh_edit();
         }
         // Edit level keys 1, 2, 3 (main-window.md §1).
         if !ctx.egui_wants_keyboard_input() {
             let level = ctx.input_mut(|i| {
-                [(Key::Num1, 1u8), (Key::Num2, 2), (Key::Num3, 3)]
-                    .into_iter()
-                    .find(|(k, _)| i.consume_key(M::NONE, *k))
-                    .map(|(_, l)| l)
+                [
+                    ("modeling.level1", 1u8),
+                    ("modeling.level2", 2),
+                    ("modeling.level3", 3),
+                ]
+                .into_iter()
+                .find(|(k, _)| keys.hit(i, k))
+                .map(|(_, l)| l)
             });
             if let (Some(l), Some(d)) = (level, self.active_doc()) {
                 if d.mode == Mode::Modeling {
@@ -3145,8 +3238,8 @@ impl KeyformApp {
             let popup_open = egui::Popup::is_any_open(ctx) || ctx.any_popup_open();
             let (all, none) = ctx.input_mut(|i| {
                 (
-                    i.consume_shortcut(&K::new(M::COMMAND, Key::A)),
-                    !popup_open && i.consume_key(M::NONE, Key::Escape),
+                    keys.hit(i, "edit.select_all"),
+                    !popup_open && keys.hit(i, "edit.deselect"),
                 )
             });
             if let Some(d) = self.active_doc() {
@@ -3160,31 +3253,16 @@ impl KeyformApp {
         }
         // Text fields keep Ctrl+Z / Ctrl+Y for their own editing.
         if !ctx.egui_wants_keyboard_input() {
-            let (redo, undo) = ctx.input_mut(|i| {
-                (
-                    i.consume_shortcut(&K::new(M::COMMAND, Key::Y))
-                        || i.consume_shortcut(&K::new(shift_cmd, Key::Z)),
-                    i.consume_shortcut(&K::new(M::COMMAND, Key::Z)),
-                )
-            });
+            let (redo, undo) =
+                ctx.input_mut(|i| (keys.hit(i, "edit.redo"), keys.hit(i, "edit.undo")));
             if redo {
                 self.undo_active(true);
             } else if undo {
                 self.undo_active(false);
             }
         }
-        let (open, close) = ctx.input_mut(|i| {
-            (
-                i.consume_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND,
-                    egui::Key::O,
-                )),
-                i.consume_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND,
-                    egui::Key::W,
-                )),
-            )
-        });
+        let (open, close) =
+            ctx.input_mut(|i| (keys.hit(i, "file.open"), keys.hit(i, "file.close")));
         if open {
             self.open_dialog();
         }
@@ -3511,6 +3589,7 @@ impl eframe::App for KeyformApp {
         self.shortcuts(&ctx);
         self.external_api(&ctx);
         self.copy_prompt_window(&ctx);
+        crate::shortcuts::window(&ctx, &mut self.shortcuts_dialog, &mut self.keys);
         let act = crate::env_settings::show(&ctx, &mut self.env, &mut self.settings, &self.recent);
         if act.reset_dialogs {
             ctx.memory_mut(|m| m.reset_areas());
@@ -3552,6 +3631,23 @@ impl eframe::App for KeyformApp {
                 .and_then(|i| self.slots.get_mut(i))
                 .map(|s| &mut s.doc);
             crate::canvas_settings::window(&ctx, &mut self.canvas_dialog, doc);
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::canvas_settings::resize_window(&ctx, &mut self.resize_dialog, doc);
+            let doc = self
+                .active
+                .and_then(|i| self.slots.get_mut(i))
+                .map(|s| &mut s.doc);
+            crate::export_psd::window(
+                &ctx,
+                &mut self.psd_export,
+                &mut self.settings.psd_simple,
+                &mut self.settings.psd_notice_off,
+                doc,
+                &mut self.log,
+            );
             let doc = self
                 .active
                 .and_then(|i| self.slots.get_mut(i))
@@ -3696,6 +3792,7 @@ impl eframe::App for KeyformApp {
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         // Animation workspace: the timeline under the views (palettes.md §7).
+        let keys = self.keys.clone();
         if let Some(d) = self
             .active
             .and_then(|i| self.slots.get_mut(i))
@@ -3707,9 +3804,9 @@ impl eframe::App for KeyformApp {
                 .resizable(true)
                 .default_size(220.0)
                 .show(ui, |ui| crate::animation::timeline_ui(ui, d, &tokens));
-            // Space and Animation ▸ Playback [Enter] play / pause.
+            // Animation ▸ Playback [Enter] plays / pauses.
             if !ctx.egui_wants_keyboard_input()
-                && ctx.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter))
+                && ctx.input_mut(|i| keys.hit(i, "animation.playback"))
             {
                 if let Some(a) = d.anim.as_mut() {
                     a.playing = !a.playing;
@@ -3894,6 +3991,7 @@ impl eframe::App for KeyformApp {
         eframe::set_value(storage, LAYOUT_VERSION_KEY, &LAYOUT_VERSION);
         eframe::set_value(storage, PLAYBACK_KEY, &self.playback);
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+        eframe::set_value(storage, SHORTCUTS_KEY, &self.keys);
         // Only approved applications are remembered.
         let kept = crate::external_host::Plugins {
             list: self.plugins.list.iter().filter(|p| p.2).cloned().collect(),

@@ -1,23 +1,27 @@
-//! Canvas Settings (Modeling ▸ Model ▸ Canvas Settings; File ▸ Canvas
-//! Settings… in menus.md): a new canvas size placed by a 3×3 anchor, the
-//! model moved to keep its place relative to the anchor.
-//! spec: 50-ui/dialogs.md §3
+//! Canvas Settings and Resize Model (File menu): a new canvas size placed
+//! by a 3×3 anchor with the model moved to keep its place, and scaling the
+//! model. spec: 50-ui/dialogs.md §3, §22
 
 use std::sync::Arc;
 
 use keyform_model::{DeformerKind, Model};
 
-/// Moves the whole model by (dx, dy) canvas pixels: every root-level form
-/// (art meshes, warp and rotation deformers, art paths without a target
-/// deformer), with blend-shape keyforms (blend shapes add the difference to
-/// the base keyform, so both move). Art-mesh rest positions move too.
-/// TODO(Q-0051): whether model images, atlas entries and guides move as well.
-pub fn move_model(m: &mut Model, dx: f32, dy: f32) {
-    let shift = |p: &mut [f32]| {
+/// Scales the whole model by `scale` about canvas (0, 0), then moves it by
+/// `offset` (dialogs.md §22 steps 1–5, done directly): wrapping every
+/// root-level object in a rotation deformer at (0, 0), setting its scale
+/// and origin and unwrapping again bakes p → p·scale + offset into their
+/// keyforms (and blend-shape keyforms, which blend shapes compare with the
+/// base keyform); a root rotation deformer also takes the scale into its
+/// own keyform scale, which carries everything below it. Children of warp
+/// deformers are in the warp's normalised space and don't change. Only
+/// keyforms change: rest positions, model images, atlases, UVs and guides
+/// stay put.
+pub fn transform_model(m: &mut Model, scale: f32, offset: [f32; 2]) {
+    let map = |p: &mut [f32]| {
         for c in p.chunks_mut(2) {
-            c[0] += dx;
+            c[0] = c[0] * scale + offset[0];
             if let Some(y) = c.get_mut(1) {
-                *y += dy;
+                *y = *y * scale + offset[1];
             }
         }
     };
@@ -26,12 +30,11 @@ pub fn move_model(m: &mut Model, dx: f32, dy: f32) {
             continue;
         }
         let a = Arc::make_mut(a);
-        shift(&mut a.positions);
         for f in &mut a.grid.keyforms {
-            shift(&mut f.positions);
+            map(&mut f.positions);
         }
         for s in &mut a.blend_shapes.shapes {
-            shift(&mut s.form.positions);
+            map(&mut s.form.positions);
         }
     }
     for d in &mut m.deformers {
@@ -41,18 +44,21 @@ pub fn move_model(m: &mut Model, dx: f32, dy: f32) {
         match &mut Arc::make_mut(d).kind {
             DeformerKind::Warp(w) => {
                 for f in &mut w.grid.keyforms {
-                    shift(&mut f.positions);
+                    map(&mut f.positions);
                 }
                 for s in &mut w.blend_shapes.shapes {
-                    shift(&mut s.form.positions);
+                    map(&mut s.form.positions);
                 }
             }
             DeformerKind::Rotation(r) => {
-                for f in &mut r.grid.keyforms {
-                    shift(&mut f.origin);
-                }
-                for s in &mut r.blend_shapes.shapes {
-                    shift(&mut s.form.origin);
+                for f in r
+                    .grid
+                    .keyforms
+                    .iter_mut()
+                    .chain(r.blend_shapes.shapes.iter_mut().map(|s| &mut s.form))
+                {
+                    map(&mut f.origin);
+                    f.scale *= scale;
                 }
             }
         }
@@ -69,11 +75,25 @@ pub fn move_model(m: &mut Model, dx: f32, dy: f32) {
             .chain(p.blend_shapes.shapes.iter_mut().map(|s| &mut s.form))
         {
             for q in &mut f.points {
-                q.position[0] += dx;
-                q.position[1] += dy;
+                map(&mut q.position);
             }
         }
     }
+}
+
+/// Moves the whole model by (dx, dy) canvas pixels (Canvas Settings).
+pub fn move_model(m: &mut Model, dx: f32, dy: f32) {
+    transform_model(m, 1.0, [dx, dy]);
+}
+
+/// File ▸ Resize Model: scales every keyform by `percent` / 100 about
+/// canvas (0, 0); the canvas size doesn't change. spec: dialogs.md §22
+pub fn resize_model(m: &mut Model, percent: f32) -> Result<(), String> {
+    if !(1.0..=5000.0).contains(&percent) {
+        return Err("The resize factor must be between 1 and 5000 %.".into());
+    }
+    transform_model(m, percent / 100.0, [0.0, 0.0]);
+    Ok(())
 }
 
 /// The offset of the old canvas inside the new one for an anchor column
@@ -125,5 +145,36 @@ mod tests {
         assert_eq!(offset(0, 100, 140), 0.0);
         assert_eq!(offset(2, 100, 60), -40.0);
         assert!(change_canvas_size(&mut m, 0, 10, (0, 0)).is_err());
+        assert!(resize_model(&mut m, 0.5).is_err());
+        assert!(resize_model(&mut m, 6000.0).is_err());
+    }
+
+    #[test]
+    fn resize_scales_keyforms_about_the_origin() {
+        use keyform_model::{KeyformGrid, RotationDeformer, RotationForm};
+        let mut m = Model::default();
+        m.deformers.push(Arc::new(keyform_model::Deformer {
+            info: keyform_model::ObjectInfo::new("R"),
+            target: None,
+            kind: DeformerKind::Rotation(RotationDeformer {
+                handle_length: 10.0,
+                circle_radius: 5.0,
+                base_angle: 0.0,
+                grid: KeyformGrid::single(RotationForm {
+                    origin: [100.0, 40.0],
+                    ..RotationForm::default()
+                }),
+                blend_shapes: Default::default(),
+            }),
+        }));
+        resize_model(&mut m, 50.0).unwrap();
+        let DeformerKind::Rotation(r) = &m.deformers[0].kind else {
+            panic!()
+        };
+        assert_eq!(r.grid.keyforms[0].origin, [50.0, 20.0]);
+        assert_eq!(
+            r.grid.keyforms[0].scale, 0.5,
+            "the scale carries the children"
+        );
     }
 }

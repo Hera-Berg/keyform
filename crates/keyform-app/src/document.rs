@@ -3865,19 +3865,29 @@ pub(crate) mod e2e_regressions {
             .position(|a| a.target.is_none())
             .unwrap();
         let before = d.model.art_meshes[root].positions[..2].to_vec();
+        let before_kf = d.model.art_meshes[root].grid.keyforms[0].positions[..2].to_vec();
         d.try_edit("Change Canvas Size", |m| {
             keyform_edit::canvas_size::change_canvas_size(m, w + 100, h + 40, (1, 1))
         })
         .unwrap();
-        let after = d.model.art_meshes[root].positions[..2].to_vec();
-        assert_eq!([after[0] - before[0], after[1] - before[1]], [50.0, 20.0]);
+        // Only keyforms move (dialogs.md §3 / §22): rest positions stay.
+        assert_eq!(d.model.art_meshes[root].positions[..2], before[..]);
+        let after = d.model.art_meshes[root].grid.keyforms[0].positions[..2].to_vec();
+        let kf_before = before_kf;
+        assert_eq!(
+            [after[0] - kf_before[0], after[1] - kf_before[1]],
+            [50.0, 20.0]
+        );
         d.save_project(None).unwrap();
         let back = Document::open(&path, &mut Log::default()).unwrap();
         assert_eq!(
             (back.model.canvas.width, back.model.canvas.height),
             (w + 100, h + 40)
         );
-        assert_eq!(back.model.art_meshes[root].positions[..2], after[..]);
+        assert_eq!(
+            back.model.art_meshes[root].grid.keyforms[0].positions[..2],
+            after[..]
+        );
     }
 
     #[test]
